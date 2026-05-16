@@ -141,6 +141,21 @@ quantile, equal weight, HTML report plus summary JSON. Multi-factor, top N,
 multi-market, standalone SignalExport, strategy persistence, and strategy-level
 rolling/anti-overfit are Post-MVP.
 
+Post-MVP strategy mode adds StrategySpec v1 templates and a browser workbench.
+Open the `策略工作台` tab after starting the server to instantiate a template,
+edit JSON, validate it, and submit a strategy backtest. The same workflow is
+available through:
+
+```bash
+curl http://localhost:8003/api/v1/strategy/templates
+curl -X POST http://localhost:8003/api/v1/strategy/templates/momentum_top_n_v1/instantiate \
+  -H "Content-Type: application/json" \
+  -d '{"overrides": {"signal_rules.top_n": 10}}'
+```
+
+The Post-MVP signal export and optimizer still produce research candidates only;
+they do not create broker/account/order instructions.
+
 ## 6. Try More Expressions
 
 ```

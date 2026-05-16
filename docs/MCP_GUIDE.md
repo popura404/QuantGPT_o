@@ -117,6 +117,14 @@ MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先�
 | `run_strategy_backtest` | 运行单因子 top quantile 等权策略回测 |
 | `score_strategy` | 根据策略回测结果计算策略级评分 |
 | `generate_strategy_report` | 根据策略回测结果生成 HTML 报告和 summary JSON |
+| `export_strategy_candidate` | 导出候选调仓信号，不包含执行字段 |
+| `diagnose_strategy` | 输出策略诊断 taxonomy 和 spec 调整建议 |
+| `run_strategy_anti_overfit` | 基于策略回测结果执行策略级反过拟合摘要 |
+| `run_strategy_rolling_validation` | 基于策略收益执行 rolling validation 摘要 |
+| `list_strategy_templates` | 返回可用策略模板和治理边界 |
+| `get_strategy_template` | 返回指定模板的 spec 和治理元数据 |
+| `instantiate_strategy_template` | 从模板生成可校验 StrategySpec |
+| `optimize_strategy_candidate` | 在风控约束下优化候选权重 |
 
 ### 通用参数
 
@@ -160,6 +168,8 @@ MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先�
 4. run_strategy_backtest        → 生成策略收益、目标权重和风控日志
 5. score_strategy               → 计算策略级评分
 6. generate_strategy_report     → 生成 HTML 报告和 summary JSON
+7. export_strategy_candidate    → 导出候选信号
+8. diagnose_strategy            → 获取诊断与修改建议
 ```
 
 最小 `validate_strategy_spec` 输入：
@@ -202,7 +212,7 @@ MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先�
 }
 ```
 
-MVP 不提供多因子、top N、多市场、独立 SignalExport、策略级 rolling/anti-overfit、券商账户或真实下单能力；这些属于 Post-MVP 或永久非目标。
+Post-MVP 已提供 StrategySpec v1、多因子、top N、独立 SignalExport、策略级 rolling/anti-overfit、模板和候选权重优化。所有策略工具仍只输出研究候选、目标权重、报告和审计信息，不提供券商账户、真实订单或自动下单能力。
 
 ### 常用因子表达式
 

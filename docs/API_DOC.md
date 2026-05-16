@@ -603,7 +603,49 @@ pending → iterating → iteration_completed / failed
 }
 ```
 
-REST v0 不单独提供 score/report endpoint；评分和报告由 backtest 任务结果承载。
+### Post-MVP Strategy Endpoints
+
+Post-MVP adds versioned strategy extensions while keeping the same non-trading
+boundary.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/v1/strategy/templates` | List template summaries and governance bounds |
+| `GET /api/v1/strategy/templates/{template_id}` | Read one template |
+| `POST /api/v1/strategy/templates/{template_id}/instantiate` | Create a StrategySpec from a template |
+| `POST /api/v1/strategy/export` | Export candidate rebalance signals from a strategy result |
+| `POST /api/v1/strategy/diagnose` | Return diagnosis taxonomy and suggested spec changes |
+| `POST /api/v1/strategy/anti-overfit` | Run strategy-level anti-overfit summary checks |
+| `POST /api/v1/strategy/rolling-validation` | Run strategy-level rolling validation summary |
+| `POST /api/v1/strategy/optimize` | Optimize candidate weights under StrategySpec risk rules |
+| `POST /api/v1/strategy/specs` | Persist an authenticated user's StrategySpec |
+| `GET /api/v1/strategy/specs` | List saved StrategySpecs |
+| `POST /api/v1/strategy/runs` | Persist a StrategyRun result |
+| `GET /api/v1/strategy/runs` | List saved StrategyRuns |
+
+Example template instantiation:
+
+```bash
+curl -X POST http://localhost:8003/api/v1/strategy/templates/momentum_top_n_v1/instantiate \
+  -H "Content-Type: application/json" \
+  -d '{"overrides": {"signal_rules.top_n": 10}}'
+```
+
+Example optimizer input:
+
+```json
+{
+  "spec": { "schema_version": "strategy_spec/v1" },
+  "signals": [
+    { "trade_date": "2024-01-02", "stock_code": "A", "score": 10.0 },
+    { "trade_date": "2024-01-02", "stock_code": "B", "score": 1.0 }
+  ]
+}
+```
+
+Signal export responses contain candidate `target_weight` rows and a
+non-live-trading notice. They do not contain `broker`, `account`, `order`,
+`api_key`, or execution instructions.
 
 ---
 

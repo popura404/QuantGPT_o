@@ -24,6 +24,16 @@ def test_strategy_spec_json_example_validates():
     assert result.is_valid, [issue.to_dict() for issue in result.issues]
 
 
+def test_strategy_spec_v1_json_example_validates():
+    text = _read_doc("docs/STRATEGY_SPEC.md")
+    match = re.search(r"## StrategySpec v1 JSON Example\s+.*?```json\n(.*?)\n```", text, re.DOTALL)
+
+    assert match is not None
+    result = validate_strategy_spec(json.loads(match.group(1)))
+
+    assert result.is_valid, [issue.to_dict() for issue in result.issues]
+
+
 def test_strategy_mvp_docs_cover_entrypoints_and_boundaries():
     strategy_spec = _read_doc("docs/STRATEGY_SPEC.md")
     mcp_guide = _read_doc("docs/MCP_GUIDE.md")
@@ -43,10 +53,15 @@ def test_strategy_mvp_docs_cover_entrypoints_and_boundaries():
         "GET /api/v1/strategy/data-fields",
         "POST /api/v1/strategy/validate",
         "POST /api/v1/strategy/backtest",
+        "POST /api/v1/strategy/export",
+        "POST /api/v1/strategy/optimize",
+        "POST /api/v1/strategy/specs",
     ):
         assert required in api_doc
 
     assert "YAML Example" in strategy_spec
+    assert "StrategySpec v1 JSON Example" in strategy_spec
     assert "MVP Non-Goals" in strategy_spec
     assert "Post-MVP" in strategy_spec
     assert "/api/v1/strategy/backtest" in quickstart
+    assert "策略工作台" in quickstart
