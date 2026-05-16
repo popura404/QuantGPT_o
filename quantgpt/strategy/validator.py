@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from ..expression_parser import extract_components, parse_expression
 from ..fundamental_data import ALL_FUNDAMENTAL_NAMES
 from . import a_share_adapter as _a_share_adapter  # noqa: F401 - registers adapter
+from . import demo_global_adapter as _demo_global_adapter  # noqa: F401 - registers adapter
 from .adapters import get_adapter
 from .errors import (
     DATA_FIELD_UNSUPPORTED,
@@ -74,6 +75,13 @@ def validate_strategy_spec(data: StrategySpecV0 | StrategySpecV1 | dict) -> Stra
         ])
 
     caps = adapter.capabilities()
+    if spec.asset_class != caps.asset_class:
+        issues.append(StrategyValidationIssue(
+            code=MARKET_UNSUPPORTED,
+            message=f"Asset class {spec.asset_class} does not match market {spec.market}",
+            path="asset_class",
+            hint=f"Use asset_class={caps.asset_class!r} for market {spec.market}.",
+        ))
     if spec.universe not in caps.universes:
         issues.append(StrategyValidationIssue(
             code=MARKET_UNSUPPORTED,

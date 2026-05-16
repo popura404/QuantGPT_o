@@ -42,6 +42,7 @@ class User(Base):
     sessions = relationship("Session", back_populates="user", lazy="selectin")
     tasks = relationship("Task", back_populates="user", lazy="selectin")
     reports = relationship("Report", back_populates="user", lazy="selectin")
+    strategies = relationship("Strategy", back_populates="user", lazy="selectin")
 
 
 class VerificationCode(Base):
@@ -205,3 +206,44 @@ class ApiKey(Base):
     created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
     user = relationship("User")
+
+
+class Strategy(Base):
+    __tablename__ = "strategies"
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id = Column(Uuid, ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    schema_version = Column(String(40), nullable=False)
+    market = Column(String(60), nullable=False, index=True)
+    universe = Column(String(80), nullable=False)
+    spec = Column(JSON, nullable=False)
+    tags = Column(JSON, nullable=True)
+    status = Column(String(30), default="active", nullable=False)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
+
+    user = relationship("User", back_populates="strategies")
+    runs = relationship("StrategyRun", back_populates="strategy", lazy="selectin")
+
+    __table_args__ = (
+        Index("ix_strategies_user_market", "user_id", "market"),
+    )
+
+
+class StrategyRun(Base):
+    __tablename__ = "strategy_runs"
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    strategy_id = Column(Uuid, ForeignKey("strategies.id"), nullable=True, index=True)
+    user_id = Column(Uuid, ForeignKey("users.id"), nullable=False, index=True)
+    task_id = Column(String(12), ForeignKey("tasks.id"), nullable=True, index=True)
+    result = Column(JSON, nullable=False)
+    report_url = Column(String(500), nullable=True)
+    summary_json = Column(String(500), nullable=True)
+    signal_export = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    strategy = relationship("Strategy", back_populates="runs")
+    user = relationship("User")
+    task = relationship("Task")
