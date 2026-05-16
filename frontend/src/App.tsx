@@ -13,6 +13,7 @@ import IterationPanel from "./components/IterationPanel";
 import CompositeBuilder from "./components/CompositeBuilder";
 import FactorComparison from "./components/FactorComparison";
 import ResearchDashboard from "./components/ResearchDashboard";
+import StrategyWorkbench from "./components/StrategyWorkbench";
 import TabNavigation, { TABS } from "./components/TabNavigation";
 import type { MainTab } from "./components/TabNavigation";
 import AppSidebar from "./components/AppSidebar";
@@ -239,6 +240,10 @@ export default function App() {
 
           {activeTab === "comparison" && (
             <FactorComparison savedExpressions={Array.from(savedExpressions)} />
+          )}
+
+          {activeTab === "strategy" && (
+            <StrategyWorkbench />
           )}
 
         </main>
