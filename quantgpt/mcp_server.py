@@ -15,7 +15,6 @@ import asyncio
 import json
 import logging
 import sys
-import time
 import traceback
 
 import pandas as pd
@@ -28,13 +27,21 @@ from .fundamental_data import ALL_FUNDAMENTAL_NAMES
 from .market_data import BENCHMARK_CODES, UNIVERSES, MarketDataFetcher, fetch_benchmark_returns, get_universe
 from .mcp_task_helper import complete_mcp_task, start_mcp_task
 from .report import generate_report
+from .strategy.service import (
+    dumps as _strategy_dumps,
+    generate_strategy_report_payload as _generate_strategy_report_payload,
+    list_strategy_data_fields as _list_strategy_data_fields,
+    list_strategy_markets as _list_strategy_markets,
+    run_strategy_backtest_payload as _run_strategy_backtest_payload,
+    score_strategy_payload as _score_strategy_payload,
+    validate_strategy_payload as _validate_strategy_payload,
+)
 from .wq_brain_service import (
     run_batch_simulation,
     run_check_alphas,
     run_list_alphas,
     run_single_simulation,
     run_submit_by_ids,
-    safe_float,
 )
 from .task_executor import _run_backtest_in_process, get_executor
 
@@ -104,6 +111,71 @@ def list_universes() -> str:
         "universes": a_share_info,
         "benchmarks": a_share_benchmarks,
     }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def list_markets() -> str:
+    """返回策略框架支持的市场和能力描述。"""
+    return _strategy_dumps(_list_strategy_markets())
+
+
+@mcp.tool()
+def list_data_fields(market: str = "a_share") -> str:
+    """返回指定市场可用于 StrategySpec 因子表达式的数据字段。"""
+    try:
+        return _strategy_dumps(_list_strategy_data_fields(market))
+    except Exception as e:
+        return _strategy_dumps({"error_code": "MARKET_UNSUPPORTED", "hint": str(e)})
+
+
+@mcp.tool()
+def validate_strategy_spec(spec: dict) -> str:
+    """校验 StrategySpec v0，失败时返回 error_code 和 hint。"""
+    return _strategy_dumps(_validate_strategy_payload(spec))
+
+
+@mcp.tool()
+async def run_strategy_backtest(
+    spec: dict,
+    start_date: str,
+    end_date: str,
+    benchmark: str = "hs300",
+    universe_date: str | None = None,
+    rebalance_anchor: str | None = None,
+) -> str:
+    """运行 StrategySpec v0 策略回测，返回策略级收益、目标权重和风控日志。"""
+    request_data = {
+        "spec": spec,
+        "start_date": start_date,
+        "end_date": end_date,
+        "benchmark": benchmark,
+        "universe_date": universe_date,
+        "rebalance_anchor": rebalance_anchor,
+    }
+    try:
+        payload = await asyncio.to_thread(_run_strategy_backtest_payload, request_data)
+        return _strategy_dumps(payload)
+    except Exception as e:
+        return _strategy_dumps({"error_code": "STRATEGY_BACKTEST_FAILED", "hint": str(e)})
+
+
+@mcp.tool()
+def score_strategy(result: dict) -> str:
+    """根据 run_strategy_backtest 输出计算策略级评分。"""
+    try:
+        return _strategy_dumps(_score_strategy_payload(result))
+    except Exception as e:
+        return _strategy_dumps({"error_code": "STRATEGY_SCORE_FAILED", "hint": str(e)})
+
+
+@mcp.tool()
+async def generate_strategy_report(result: dict) -> str:
+    """根据 run_strategy_backtest 输出生成策略 HTML 报告和 summary JSON。"""
+    try:
+        payload = await asyncio.to_thread(_generate_strategy_report_payload, result)
+        return _strategy_dumps(payload)
+    except Exception as e:
+        return _strategy_dumps({"error_code": "STRATEGY_REPORT_FAILED", "hint": str(e)})
 
 
 @mcp.tool()

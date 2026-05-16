@@ -32,7 +32,8 @@ from sqlalchemy import select, update
 
 from . import task_store
 from .db import close_db, init_db
-from .models import Task as TaskModel, User
+from .models import Task as TaskModel
+from .models import User
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +177,7 @@ from .routes.factor_library import router as factor_library_router
 from .routes.feedback import router as feedback_router
 from .routes.iteration_routes import router as iteration_router
 from .routes.sessions import router as sessions_router
+from .routes.strategy import router as strategy_router
 from .routes.wq_brain import router as wq_brain_router
 from .routes.wq_brain_batch import router as wq_brain_batch_router
 
@@ -187,6 +189,7 @@ app.include_router(composite_router)
 app.include_router(comparison_router)
 app.include_router(daily_summary_router)
 app.include_router(backtest_tasks_router)
+app.include_router(strategy_router)
 app.include_router(iteration_router)
 app.include_router(feedback_router)
 app.include_router(wq_brain_router)
