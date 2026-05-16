@@ -46,6 +46,7 @@ celery_app.conf.update(
 ALLOWED_TASKS = {
     "quantgpt.task_executor._run_backtest_in_process",
     "quantgpt.task_executor._run_backtest_precomputed_in_process",
+    "quantgpt.task_executor._run_strategy_backtest_in_process",
 }
 
 CELERY_DATA_DIR = Path(
@@ -96,8 +97,6 @@ def from_json_transport(obj):
 
 
 def _save_df(df, type_tag: str) -> dict:
-    import pandas as pd
-
     CELERY_DATA_DIR.mkdir(parents=True, exist_ok=True)
     path = CELERY_DATA_DIR / f"{uuid.uuid4().hex}.parquet"
     df.to_parquet(path)

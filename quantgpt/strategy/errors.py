@@ -40,3 +40,10 @@ class StrategyValidationResult:
             "is_valid": self.is_valid,
             "issues": [issue.to_dict() for issue in self.issues],
         }
+
+
+class StrategyValidationError(ValueError):
+    def __init__(self, issues: list[StrategyValidationIssue]):
+        self.issues = issues
+        message = "; ".join(f"{issue.code}: {issue.message}" for issue in issues)
+        super().__init__(message or "Strategy validation failed")
