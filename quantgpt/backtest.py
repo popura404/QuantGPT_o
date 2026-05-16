@@ -50,6 +50,146 @@ def api_context():
         disable_api_context()
 
 
+def compute_factor_values(
+    market_df: pd.DataFrame,
+    expression: str | None = None,
+    precomputed_factor: pd.Series | None = None,
+) -> pd.Series:
+    """Compute factor values from an expression or align a precomputed series."""
+    if precomputed_factor is not None:
+        if hasattr(precomputed_factor, "reindex"):
+            return precomputed_factor.reindex(market_df.index)
+        return precomputed_factor
+
+    if expression is None:
+        raise ValueError("必须提供 expression 或 precomputed_factor")
+
+    from .rust_bridge import RUST_ENABLED, eval_factor_expression
+
+    if RUST_ENABLED:
+        return eval_factor_expression(market_df, expression)
+
+    factor_func = parse_expression(expression)
+    return _safe_apply_factor(market_df, factor_func)
+
+
+def build_rebalance_dates(
+    trade_dates,
+    holding_period: int,
+    rebalance_anchor: str | None = None,
+) -> list:
+    """Build rebalance dates using the existing anchor-offset semantics."""
+    all_dates = sorted(pd.Series(trade_dates).dropna().unique())
+    if rebalance_anchor and holding_period > 1:
+        anchor_ts = pd.Timestamp(rebalance_anchor)
+        first_date = all_dates[0]
+        if anchor_ts <= first_date:
+            bdays_gap = len(pd.bdate_range(anchor_ts, first_date, inclusive="left"))
+            offset = bdays_gap % holding_period
+        else:
+            offset = 0
+        return all_dates[offset::holding_period]
+    return all_dates[::holding_period]
+
+
+def assign_factor_quantiles(
+    work: pd.DataFrame,
+    rebalance_dates: list,
+    n_groups: int,
+) -> tuple[pd.DataFrame, pd.DataFrame, list]:
+    """Assign factor quantile groups with T+1 rebalance effectiveness."""
+    effective_groups = n_groups
+    use_value_grouping = False
+    distinct_counts = work.groupby("trade_date")["factor_value"].nunique()
+    median_distinct = int(distinct_counts.median()) if len(distinct_counts) > 0 else 0
+
+    if median_distinct < n_groups and median_distinct >= 2:
+        effective_groups = median_distinct
+        use_value_grouping = True
+        logger.warning(
+            f"Factor has only ~{median_distinct} distinct values per date, "
+            f"reducing groups from {n_groups} to {effective_groups}, using value-based grouping"
+        )
+
+    def _assign_group(vals: pd.Series) -> pd.Series:
+        if use_value_grouping:
+            sorted_uniques = sorted(vals.dropna().unique())
+            if len(sorted_uniques) < 2:
+                return pd.Series(np.nan, index=vals.index)
+            mapping = {v: i for i, v in enumerate(sorted_uniques)}
+            return vals.map(mapping)
+        try:
+            ranks = vals.rank(method="first")
+            return pd.cut(ranks, bins=effective_groups, labels=False)
+        except ValueError:
+            return pd.Series(np.nan, index=vals.index)
+
+    rebal_data = work[work["trade_date"].isin(rebalance_dates)].copy()
+    rebal_data["_group"] = rebal_data.groupby("trade_date")["factor_value"].transform(_assign_group)
+    rebal_data = rebal_data.dropna(subset=["_group"])
+    rebal_data["_group"] = rebal_data["_group"].astype(int)
+
+    group_lookup = rebal_data.set_index(["trade_date", "stock_code"])["_group"]
+    rebalance_dates_set = sorted(set(rebal_data["trade_date"].unique()))
+    if len(rebalance_dates_set) < 2:
+        raise ValueError("Not enough rebalance dates for backtest")
+
+    rebal_arr = np.array(rebalance_dates_set, dtype="datetime64[ns]")
+    trade_dates = work["trade_date"].values.astype("datetime64[ns]")
+    indices = np.searchsorted(rebal_arr, trade_dates, side="left") - 1
+    valid_mask = indices >= 0
+    work = work[valid_mask].copy()
+    work["_rebal_date"] = rebal_arr[indices[valid_mask]]
+    work = work.dropna(subset=["daily_ret"])
+
+    work = work.merge(
+        group_lookup.rename("_group"),
+        left_on=["_rebal_date", "stock_code"],
+        right_index=True,
+        how="left",
+    )
+    work = work.dropna(subset=["_group"])
+    work["_group"] = work["_group"].astype(int)
+
+    if work["_group"].nunique() < 2:
+        raise ValueError("Could not form enough quantile groups")
+
+    return work, rebal_data, rebalance_dates_set
+
+
+def calculate_turnover_from_weights(
+    weights_by_date: dict | pd.DataFrame,
+    holding_period: int = 1,
+) -> float:
+    """Calculate average daily turnover from target-weight snapshots."""
+    if isinstance(weights_by_date, pd.DataFrame):
+        required = {"trade_date", "stock_code", "target_weight"}
+        missing = required - set(weights_by_date.columns)
+        if missing:
+            raise ValueError(f"weights_by_date missing columns: {sorted(missing)}")
+        weight_map = {
+            date: group.set_index("stock_code")["target_weight"].astype(float).to_dict()
+            for date, group in weights_by_date.groupby("trade_date")
+        }
+    else:
+        weight_map = weights_by_date
+
+    sorted_dates = sorted(weight_map.keys())
+    if len(sorted_dates) < 2:
+        return 0.0
+
+    turnovers = []
+    for i in range(1, len(sorted_dates)):
+        prev = weight_map.get(sorted_dates[i - 1], {})
+        curr = weight_map.get(sorted_dates[i], {})
+        assets = set(prev) | set(curr)
+        turnover = sum(abs(float(curr.get(asset, 0.0)) - float(prev.get(asset, 0.0))) for asset in assets) / 2
+        turnovers.append(turnover)
+
+    per_rebal = float(np.mean(turnovers)) if turnovers else 0.0
+    return per_rebal / holding_period
+
+
 def run_factor_backtest(
     market_df: pd.DataFrame,
     expression: str | None = None,
@@ -92,18 +232,7 @@ def run_factor_backtest(
     market_df = market_df.copy()
     market_df["trade_date"] = pd.to_datetime(market_df["trade_date"])
     market_df = market_df.sort_values(["stock_code", "trade_date"])
-
-    if precomputed_factor is not None:
-        market_df["factor_value"] = precomputed_factor.reindex(market_df.index) if hasattr(precomputed_factor, 'reindex') else precomputed_factor
-    elif expression is not None:
-        from .rust_bridge import RUST_ENABLED, eval_factor_expression
-        if RUST_ENABLED:
-            market_df["factor_value"] = eval_factor_expression(market_df, expression)
-        else:
-            factor_func = parse_expression(expression)
-            market_df["factor_value"] = _safe_apply_factor(market_df, factor_func)
-    else:
-        raise ValueError("必须提供 expression 或 precomputed_factor")
+    market_df["factor_value"] = compute_factor_values(market_df, expression, precomputed_factor)
 
     # Save raw factor values for IC computation (before neutralization).
     # IC should be computed on raw values (industry standard), while group
@@ -124,93 +253,18 @@ def run_factor_backtest(
     market_df["daily_ret"] = market_df.groupby("stock_code")["close"].pct_change()
 
     # 4. Identify rebalance dates
-    all_dates = sorted(market_df["trade_date"].unique())
-    if rebalance_anchor and holding_period > 1:
-        anchor_ts = pd.Timestamp(rebalance_anchor)
-        first_date = all_dates[0]
-        if anchor_ts <= first_date:
-            bdays_gap = len(pd.bdate_range(anchor_ts, first_date, inclusive="left"))
-            offset = bdays_gap % holding_period
-        else:
-            offset = 0
-        rebalance_dates = all_dates[offset::holding_period]
-    else:
-        rebalance_dates = all_dates[::holding_period]
+    rebalance_dates = build_rebalance_dates(
+        market_df["trade_date"].unique(),
+        holding_period,
+        rebalance_anchor,
+    )
 
     # 5. On each rebalance date, assign groups based on factor value
     #    Build a mapping: (trade_date, stock_code) -> group
     work = market_df[["trade_date", "stock_code", "factor_value", "daily_ret", "close"]].dropna(
         subset=["factor_value"]
     ).copy()
-
-    # Determine grouping strategy: rank-based by default (aligned with WQ BRAIN)
-    effective_groups = n_groups
-    use_value_grouping = False
-    distinct_counts = work.groupby("trade_date")["factor_value"].nunique()
-    median_distinct = int(distinct_counts.median()) if len(distinct_counts) > 0 else 0
-
-    if median_distinct < n_groups and median_distinct >= 2:
-        effective_groups = median_distinct
-        use_value_grouping = True
-        logger.warning(
-            f"Factor has only ~{median_distinct} distinct values per date, "
-            f"reducing groups from {n_groups} to {effective_groups}, using value-based grouping"
-        )
-
-    def _assign_group(vals: pd.Series) -> pd.Series:
-        if use_value_grouping:
-            sorted_uniques = sorted(vals.dropna().unique())
-            if len(sorted_uniques) < 2:
-                return pd.Series(np.nan, index=vals.index)
-            mapping = {v: i for i, v in enumerate(sorted_uniques)}
-            return vals.map(mapping)
-        try:
-            ranks = vals.rank(method="first")
-            return pd.cut(ranks, bins=effective_groups, labels=False)
-        except ValueError:
-            return pd.Series(np.nan, index=vals.index)
-
-    # Assign groups only on rebalance dates, then forward-fill to holding period
-    rebal_data = work[work["trade_date"].isin(rebalance_dates)].copy()
-    rebal_data["_group"] = rebal_data.groupby("trade_date")["factor_value"].transform(_assign_group)
-    rebal_data = rebal_data.dropna(subset=["_group"])
-    rebal_data["_group"] = rebal_data["_group"].astype(int)
-
-    # Build stock->group assignment that persists from rebalance to next rebalance
-    # Vectorized: build a lookup DataFrame indexed by (trade_date, stock_code)
-    group_lookup = rebal_data.set_index(["trade_date", "stock_code"])["_group"]
-
-    rebalance_dates_set = sorted(set(rebal_data["trade_date"].unique()))
-    if len(rebalance_dates_set) < 2:
-        raise ValueError("Not enough rebalance dates for backtest")
-
-    # Build efficient lookup: for each date, find the most recent rebalance date
-    # Use side="left" so that on the rebalance date T itself, the lookup returns
-    # the *previous* rebalance date. This ensures the new grouping only takes
-    # effect from T+1 onward, avoiding look-ahead bias (factor computed at T close
-    # → position entered at T+1 open → T+1 return is the first attributed).
-    rebal_arr = np.array(rebalance_dates_set, dtype="datetime64[ns]")
-
-    # Vectorized searchsorted instead of per-row apply
-    trade_dates = work["trade_date"].values.astype("datetime64[ns]")
-    indices = np.searchsorted(rebal_arr, trade_dates, side="left") - 1
-    valid_mask = indices >= 0
-    work = work[valid_mask].copy()
-    work["_rebal_date"] = rebal_arr[indices[valid_mask]]
-    work = work.dropna(subset=["daily_ret"])
-
-    # Vectorized merge instead of per-row dict lookup
-    work = work.merge(
-        group_lookup.rename("_group"),
-        left_on=["_rebal_date", "stock_code"],
-        right_index=True,
-        how="left",
-    )
-    work = work.dropna(subset=["_group"])
-    work["_group"] = work["_group"].astype(int)
-
-    if work["_group"].nunique() < 2:
-        raise ValueError("Could not form enough quantile groups")
+    work, rebal_data, rebalance_dates_set = assign_factor_quantiles(work, rebalance_dates, n_groups)
 
     # 6. Daily equal-weighted group returns
     daily_group_ret = (

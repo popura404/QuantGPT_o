@@ -7,6 +7,10 @@ import pytest
 from quantgpt.backtest import (
     _calc_max_drawdown,
     _calc_monotonicity,
+    assign_factor_quantiles,
+    build_rebalance_dates,
+    calculate_turnover_from_weights,
+    compute_factor_values,
     run_factor_backtest,
 )
 
@@ -37,6 +41,62 @@ def market_df():
             })
             price = new_price
     return pd.DataFrame(rows)
+
+
+class TestBacktestHelpers:
+    def test_compute_factor_values_aligns_precomputed_series_by_index(self, market_df):
+        df = market_df.copy().sort_values(["stock_code", "trade_date"])
+        factor = pd.Series(np.arange(len(df), dtype=float), index=df.index)
+        shuffled = factor.sample(frac=1, random_state=7)
+
+        result = compute_factor_values(df, precomputed_factor=shuffled)
+
+        pd.testing.assert_series_equal(result, factor)
+
+    def test_build_rebalance_dates_uses_holding_period_stride(self):
+        dates = pd.bdate_range("2024-01-02", periods=8)
+
+        result = build_rebalance_dates(dates, holding_period=3)
+
+        assert list(result) == [dates[0], dates[3], dates[6]]
+
+    def test_assign_factor_quantiles_keeps_rebalance_effect_t_plus_one(self):
+        dates = pd.bdate_range("2024-01-02", periods=6)
+        rows = []
+        for d_idx, date in enumerate(dates):
+            for s_idx, stock in enumerate(["A", "B", "C", "D"]):
+                rows.append({
+                    "trade_date": date,
+                    "stock_code": stock,
+                    "factor_value": float(s_idx + d_idx),
+                    "daily_ret": 0.01,
+                    "close": 10.0 + s_idx,
+                })
+        work = pd.DataFrame(rows)
+        rebalance_dates = [dates[0], dates[2], dates[4]]
+
+        assigned, rebal_data, rebalance_dates_set = assign_factor_quantiles(
+            work,
+            rebalance_dates,
+            n_groups=2,
+        )
+
+        assert rebalance_dates_set == rebalance_dates
+        assert not rebal_data.empty
+        assert not assigned.empty
+        assert (assigned["_rebal_date"] < assigned["trade_date"].values.astype("datetime64[ns]")).all()
+        assert set(assigned["_group"].unique()) == {0, 1}
+
+    def test_calculate_turnover_from_weights_averages_daily_turnover(self):
+        dates = pd.bdate_range("2024-01-02", periods=2)
+        weights = {
+            dates[0]: {"A": 0.5, "B": 0.5},
+            dates[1]: {"B": 0.25, "C": 0.75},
+        }
+
+        turnover = calculate_turnover_from_weights(weights, holding_period=3)
+
+        assert turnover == pytest.approx(0.25)
 
 
 class TestRunFactorBacktest:
