@@ -1,6 +1,6 @@
 # QuantGPT MCP 配置指南
 
-QuantGPT 提供标准 MCP (Model Context Protocol) 接口，支持 10 个因子研究工具。可通过 Claude Code、Claude Desktop 等 MCP 客户端直接调用。
+QuantGPT 提供标准 MCP (Model Context Protocol) 接口，支持因子研究工具和 StrategySpec v0 策略工具。可通过 Claude Code、Claude Desktop 等 MCP 客户端直接调用。
 
 ## 快速开始（推荐）
 
@@ -92,6 +92,8 @@ MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先�
 
 ## 工具列表
 
+### 因子研究工具
+
 | 工具 | 说明 |
 |------|------|
 | `list_operators` | 返回全部因子表达式算子及用法 |
@@ -104,6 +106,17 @@ MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先�
 | `run_rolling_validation` | 滚动验证 (Walk-Forward) |
 | `wq_brain_submit` | 提交因子到 WorldQuant BRAIN |
 | `ask_deepseek` | 调用 DeepSeek LLM 进行研究评审（独立 MCP） |
+
+### StrategySpec v0 策略工具
+
+| 工具 | 说明 |
+|------|------|
+| `list_markets` | 返回策略框架支持的市场；MVP 仅 `a_share` |
+| `list_data_fields` | 返回指定市场可用于策略因子表达式的数据字段 |
+| `validate_strategy_spec` | 校验 `StrategySpecV0`，失败时返回 `error_code` 和 `hint` |
+| `run_strategy_backtest` | 运行单因子 top quantile 等权策略回测 |
+| `score_strategy` | 根据策略回测结果计算策略级评分 |
+| `generate_strategy_report` | 根据策略回测结果生成 HTML 报告和 summary JSON |
 
 ### 通用参数
 
@@ -137,6 +150,59 @@ MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先�
 7. run_anti_overfit       → 检查过拟合风险
 8. run_rolling_validation → 样本外验证
 ```
+
+### StrategySpec v0 工作流
+
+```
+1. list_markets                 → 确认可用市场
+2. list_data_fields             → 确认可用字段
+3. validate_strategy_spec       → 校验结构化策略
+4. run_strategy_backtest        → 生成策略收益、目标权重和风控日志
+5. score_strategy               → 计算策略级评分
+6. generate_strategy_report     → 生成 HTML 报告和 summary JSON
+```
+
+最小 `validate_strategy_spec` 输入：
+
+```json
+{
+  "schema_version": "strategy_spec/v0",
+  "name": "simple_momentum_top_quantile",
+  "asset_class": "equity",
+  "market": "a_share",
+  "frequency": "daily",
+  "universe": "hs300",
+  "factors": [
+    {
+      "id": "momentum_20d",
+      "expression": "rank(close / ts_mean(close, 20))",
+      "direction": "higher_is_better",
+      "weight": 1.0
+    }
+  ],
+  "signal_rules": { "type": "rank_threshold", "long_quantile": 0.2 },
+  "portfolio_rule": { "weighting": "equal_weight", "rebalance_period": 5 },
+  "risk_rules": { "allow_short": false, "max_asset_weight": 0.05, "max_turnover": 0.8 },
+  "cost_model": { "type": "fixed_bps", "bps": 30 },
+  "validation": {
+    "min_history_days": 252,
+    "run_strategy_anti_overfit": false,
+    "run_strategy_rolling_validation": false
+  },
+  "outputs": { "report": true, "signal_export": false }
+}
+```
+
+错误示例：
+
+```json
+{
+  "error_code": "MARKET_UNSUPPORTED",
+  "hint": "MVP only supports market=a_share through AShareAdapter."
+}
+```
+
+MVP 不提供多因子、top N、多市场、独立 SignalExport、策略级 rolling/anti-overfit、券商账户或真实下单能力；这些属于 Post-MVP 或永久非目标。
 
 ### 常用因子表达式
 

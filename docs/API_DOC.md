@@ -10,16 +10,17 @@
 2. [认证](#认证)
 3. [会话管理](#会话管理)
 4. [回测](#回测)
-5. [实时推送 (SSE)](#实时推送-sse)
-6. [迭代优化](#迭代优化)
-7. [报告](#报告)
-8. [反馈](#反馈)
-9. [管理后台](#管理后台)
-10. [MCP Tools](#mcp-tools)
-11. [健康检查](#健康检查)
-12. [错误码](#错误码)
-13. [股票池与基准](#股票池与基准)
-14. [因子表达式语法](#因子表达式语法)
+5. [策略框架](#策略框架)
+6. [实时推送 (SSE)](#实时推送-sse)
+7. [迭代优化](#迭代优化)
+8. [报告](#报告)
+9. [反馈](#反馈)
+10. [管理后台](#管理后台)
+11. [MCP Tools](#mcp-tools)
+12. [健康检查](#健康检查)
+13. [错误码](#错误码)
+14. [股票池与基准](#股票池与基准)
+15. [因子表达式语法](#因子表达式语法)
 
 ---
 
@@ -425,6 +426,187 @@ pending → iterating → iteration_completed / failed
 
 ---
 
+## 策略框架
+
+策略框架 API 使用 `StrategySpecV0` 作为结构化输入。MVP 只支持
+`a_share + single factor + rank_threshold + equal_weight + risk v0`，不提供
+多因子、top N、多市场、独立 SignalExport、策略持久化、前端策略工作台或任何券商/账户/下单能力。
+
+### GET /api/v1/strategy/markets
+
+列出可用策略市场。无需认证。
+
+**响应 200:**
+
+```json
+{
+  "markets": [
+    {
+      "market": "a_share",
+      "asset_class": "equity",
+      "frequency": "daily"
+    }
+  ]
+}
+```
+
+### GET /api/v1/strategy/data-fields
+
+列出指定市场可用于策略因子表达式的数据字段。无需认证。
+
+**查询参数:**
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `market` | `a_share` | 市场标识；MVP 只支持 `a_share` |
+
+**响应 200:**
+
+```json
+{
+  "market": "a_share",
+  "data_fields": [
+    { "name": "close", "description": "收盘价" },
+    { "name": "volume", "description": "成交量" }
+  ]
+}
+```
+
+**错误:** 404 (市场不支持)
+
+### POST /api/v1/strategy/validate
+
+校验 `StrategySpecV0`。成功时返回规范化后的 spec；失败时返回结构化错误。
+
+**请求体:**
+
+```json
+{
+  "spec": {
+    "schema_version": "strategy_spec/v0",
+    "name": "simple_momentum_top_quantile",
+    "asset_class": "equity",
+    "market": "a_share",
+    "frequency": "daily",
+    "universe": "hs300",
+    "factors": [
+      {
+        "id": "momentum_20d",
+        "expression": "rank(close / ts_mean(close, 20))",
+        "direction": "higher_is_better",
+        "weight": 1.0
+      }
+    ],
+    "signal_rules": { "type": "rank_threshold", "long_quantile": 0.2 },
+    "portfolio_rule": { "weighting": "equal_weight", "rebalance_period": 5 },
+    "risk_rules": { "allow_short": false, "max_asset_weight": 0.05, "max_turnover": 0.8 },
+    "cost_model": { "type": "fixed_bps", "bps": 30 },
+    "validation": {
+      "min_history_days": 252,
+      "run_strategy_anti_overfit": false,
+      "run_strategy_rolling_validation": false
+    },
+    "outputs": { "report": true, "signal_export": false }
+  }
+}
+```
+
+**响应 200:**
+
+```json
+{
+  "is_valid": true,
+  "issues": [],
+  "spec": { "schema_version": "strategy_spec/v0" }
+}
+```
+
+**错误 400:**
+
+```json
+{
+  "detail": {
+    "is_valid": false,
+    "issues": [
+      {
+        "code": "MARKET_UNSUPPORTED",
+        "path": "market",
+        "message": "Input should be 'a_share'",
+        "hint": "MVP only supports market='a_share'."
+      }
+    ]
+  }
+}
+```
+
+### POST /api/v1/strategy/backtest
+
+提交策略级异步回测任务。游客请求会被限制到 `small_scale` 股票池；登录用户使用请求中的 universe。
+
+**请求体:**
+
+```json
+{
+  "spec": {
+    "schema_version": "strategy_spec/v0",
+    "name": "simple_momentum_top_quantile",
+    "asset_class": "equity",
+    "market": "a_share",
+    "frequency": "daily",
+    "universe": "hs300",
+    "factors": [
+      {
+        "id": "momentum_20d",
+        "expression": "rank(close / ts_mean(close, 20))",
+        "direction": "higher_is_better",
+        "weight": 1.0
+      }
+    ],
+    "signal_rules": { "type": "rank_threshold", "long_quantile": 0.2 },
+    "portfolio_rule": { "weighting": "equal_weight", "rebalance_period": 5 },
+    "risk_rules": { "allow_short": false, "max_asset_weight": 0.05, "max_turnover": 0.8 },
+    "cost_model": { "type": "fixed_bps", "bps": 30 },
+    "validation": {
+      "min_history_days": 252,
+      "run_strategy_anti_overfit": false,
+      "run_strategy_rolling_validation": false
+    },
+    "outputs": { "report": true, "signal_export": false }
+  },
+  "start_date": "2024-01-02",
+  "end_date": "2024-03-29",
+  "benchmark": "hs300"
+}
+```
+
+**响应 202:**
+
+```json
+{
+  "task_id": "a1b2c3d4e5f6",
+  "status": "pending"
+}
+```
+
+任务完成后，`GET /api/v1/tasks/{task_id}` 的 `result` 包含：
+
+```json
+{
+  "strategy_result": {
+    "metrics": { "sharpe": 0.8 },
+    "latest_holdings": [],
+    "risk_logs": []
+  },
+  "strategy_score": { "score": 70, "grade": "B" },
+  "summary_json": "/path/to/backtest_report_strategy.summary.json",
+  "report_url": "/api/v1/reports/backtest_report_strategy.html"
+}
+```
+
+REST v0 不单独提供 score/report endpoint；评分和报告由 backtest 任务结果承载。
+
+---
+
 ## 实时推送 (SSE)
 
 ### GET /api/v1/tasks/{task_id}/stream
@@ -694,7 +876,7 @@ curl -H "Authorization: Bearer <token>" \
 
 ## MCP Tools
 
-QuantGPT 提供 MCP (Model Context Protocol) 服务,支持 8 个工具:
+QuantGPT 提供 MCP (Model Context Protocol) 服务,支持因子研究工具和 StrategySpec v0 策略工具:
 
 | Tool | 说明 |
 |------|------|
@@ -706,6 +888,12 @@ QuantGPT 提供 MCP (Model Context Protocol) 服务,支持 8 个工具:
 | `diagnose_factor` | 诊断因子问题,推荐突变策略 (6种) |
 | `run_anti_overfit` | 独立反过拟合检测 (4项测试) |
 | `run_rolling_validation` | Walk-Forward 滚动验证 |
+| `list_markets` | 返回策略框架支持的市场 |
+| `list_data_fields` | 返回指定市场可用于策略因子表达式的数据字段 |
+| `validate_strategy_spec` | 校验 `StrategySpecV0`，失败时返回 `error_code` 和 `hint` |
+| `run_strategy_backtest` | 运行策略级回测，返回收益、目标权重和风控日志 |
+| `score_strategy` | 根据策略回测结果计算策略评分 |
+| `generate_strategy_report` | 根据策略回测结果生成 HTML 报告和 summary JSON |
 
 ### 配置 (.mcp.json)
 
@@ -822,6 +1010,8 @@ QuantGPT 提供 MCP (Model Context Protocol) 服务,支持 8 个工具:
 
 ## 典型调用流程
 
+### 因子研究流程
+
 ```
 1. POST /auth/send-code          → 发送验证码
 2. POST /auth/verify-code        → 获取 Token
@@ -832,4 +1022,15 @@ QuantGPT 提供 MCP (Model Context Protocol) 服务,支持 8 个工具:
 7. GET  /reports/{filename}      → 下载报告
 8. POST /tasks/{id}/iterate      → AI 迭代优化
 9. POST /tasks/{id}/select_candidate → 选择候选
+```
+
+### 策略 MVP 流程
+
+```
+1. GET  /strategy/markets        → 确认可用市场
+2. GET  /strategy/data-fields    → 确认可用字段
+3. POST /strategy/validate       → 校验 StrategySpecV0
+4. POST /strategy/backtest       → 提交策略回测任务
+5. GET  /tasks/{id}              → 读取 strategy_result / score / report_url
+6. GET  /reports/{filename}      → 查看策略 HTML 报告
 ```
