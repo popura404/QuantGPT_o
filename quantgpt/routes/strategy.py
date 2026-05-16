@@ -15,10 +15,14 @@ from pydantic import BaseModel, Field
 from ..auth import GUEST_USER_ID, get_optional_user
 from ..models import User
 from ..strategy.service import (
+    diagnose_strategy_payload,
+    export_strategy_candidate_payload,
     generate_strategy_report_payload,
     list_strategy_data_fields,
     list_strategy_markets,
+    run_strategy_anti_overfit_payload,
     run_strategy_backtest_payload,
+    run_strategy_rolling_validation_payload,
     validate_strategy_payload,
 )
 from ..task_store import (
@@ -46,6 +50,15 @@ class StrategyBacktestRequestBody(BaseModel):
     benchmark: str = "hs300"
     universe_date: str | None = None
     rebalance_anchor: str | None = None
+
+
+class StrategyResultRequest(BaseModel):
+    result: dict
+
+
+class StrategyRollingValidationRequest(BaseModel):
+    result: dict
+    windows: int = Field(3, ge=1, le=12)
 
 
 @router.get("/markets")
@@ -109,6 +122,38 @@ async def strategy_backtest(
     thread = threading.Thread(target=_run_strategy_backtest_task, args=(task_id, body, user_id), daemon=True)
     thread.start()
     return {"task_id": task_id, "status": "pending"}
+
+
+@router.post("/export")
+def strategy_export(req: StrategyResultRequest):
+    try:
+        return export_strategy_candidate_payload(req.result)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/diagnose")
+def strategy_diagnose(req: StrategyResultRequest):
+    try:
+        return diagnose_strategy_payload(req.result)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/anti-overfit")
+def strategy_anti_overfit(req: StrategyResultRequest):
+    try:
+        return run_strategy_anti_overfit_payload(req.result)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/rolling-validation")
+def strategy_rolling_validation(req: StrategyRollingValidationRequest):
+    try:
+        return run_strategy_rolling_validation_payload(req.result, windows=req.windows)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 def _run_strategy_backtest_task(task_id: str, request_data: dict, user_id: str) -> None:

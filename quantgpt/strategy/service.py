@@ -9,9 +9,12 @@ import pandas as pd
 from .adapters import list_data_fields as _list_data_fields
 from .adapters import list_markets as _list_markets
 from .backtest import StrategyBacktestRequest, run_strategy_backtest
+from .diagnosis import diagnose_strategy_metrics, diagnose_strategy_result
+from .export import export_strategy_candidate
 from .report import generate_strategy_report
 from .result import StrategyBacktestResult
 from .score import compute_strategy_score_from_metrics
+from .validation import run_strategy_anti_overfit, run_strategy_rolling_validation
 from .spec import parse_strategy_spec
 from .validator import validate_strategy_spec as _validate_strategy_spec
 
@@ -39,6 +42,7 @@ def run_strategy_backtest_payload(request_data: dict) -> dict:
         payload["metrics"],
         payload["risk_logs"],
         payload["validation_issues"],
+        payload["diagnostics"],
     )
     return payload
 
@@ -48,12 +52,37 @@ def score_strategy_payload(result_payload: dict) -> dict:
         result_payload.get("metrics", {}),
         result_payload.get("risk_logs", []),
         result_payload.get("validation_issues", []),
+        result_payload.get("diagnostics", {}),
     )
 
 
 def generate_strategy_report_payload(result_payload: dict, output_dir: str | None = None) -> dict:
     result = strategy_result_from_payload(result_payload)
     return generate_strategy_report(result, output_dir=output_dir)
+
+
+def export_strategy_candidate_payload(result_payload: dict, output_dir: str | None = None) -> dict:
+    result = strategy_result_from_payload(result_payload)
+    return export_strategy_candidate(result, output_dir=output_dir)
+
+
+def diagnose_strategy_payload(result_payload: dict) -> dict:
+    if "spec" in result_payload:
+        return diagnose_strategy_result(strategy_result_from_payload(result_payload))
+    return diagnose_strategy_metrics(
+        result_payload.get("metrics", {}),
+        result_payload.get("risk_logs", []),
+        result_payload.get("validation_issues", []),
+        result_payload.get("diagnostics", {}),
+    )
+
+
+def run_strategy_anti_overfit_payload(result_payload: dict) -> dict:
+    return run_strategy_anti_overfit(strategy_result_from_payload(result_payload))
+
+
+def run_strategy_rolling_validation_payload(result_payload: dict, windows: int = 3) -> dict:
+    return run_strategy_rolling_validation(strategy_result_from_payload(result_payload), windows=windows)
 
 
 def strategy_result_to_payload(result: StrategyBacktestResult) -> dict:

@@ -12,12 +12,14 @@ from ..backtest import _calc_ic_series, _calc_max_drawdown, build_rebalance_date
 from ..fundamental_data import detect_fundamental_vars, enrich_market_data
 from ..neutralize import neutralize_factor
 from .adapters import get_adapter
+from .diagnosis import diagnose_strategy_result
 from .errors import StrategyValidationError
 from .portfolio import build_strategy_portfolio
 from .result import StrategyBacktestResult
 from .risk import apply_risk_rules
 from .signals import build_rank_threshold_signals
 from .spec import StrategySpec, StrategySpecV0, StrategySpecV1
+from .validation import run_strategy_anti_overfit, run_strategy_rolling_validation
 from .validator import validate_strategy_spec
 
 
@@ -119,7 +121,12 @@ def run_strategy_backtest(
     _, rank_ic_series = _calc_ic_series(ic_frame, req.spec.portfolio_rule.rebalance_period)
     metrics = _strategy_metrics(strategy_returns, risk_result.turnover_by_rebalance, rank_ic_series)
 
-    return StrategyBacktestResult(
+    diagnostics = {
+        "factor_flipped_observed": False,
+        "strategy_anti_overfit": "not_run",
+        "strategy_rolling_validation": "not_run",
+    }
+    result = StrategyBacktestResult(
         spec=req.spec,
         start_date=req.start_date,
         end_date=req.end_date,
@@ -133,13 +140,15 @@ def run_strategy_backtest(
         latest_holdings=latest_holdings,
         metrics=metrics,
         validation_issues=[],
-        diagnostics={
-            "factor_flipped_observed": False,
-            "strategy_anti_overfit": "requested" if req.spec.validation.run_strategy_anti_overfit else "not_run",
-            "strategy_rolling_validation": "requested" if req.spec.validation.run_strategy_rolling_validation else "not_run",
-        },
+        diagnostics=diagnostics,
         factor_frame=factor_frame[["trade_date", "stock_code", "factor_value", "daily_ret"]].copy(),
     )
+    if req.spec.validation.run_strategy_anti_overfit:
+        diagnostics["strategy_anti_overfit"] = run_strategy_anti_overfit(result)
+    if req.spec.validation.run_strategy_rolling_validation:
+        diagnostics["strategy_rolling_validation"] = run_strategy_rolling_validation(result)
+    diagnostics["strategy_diagnosis"] = diagnose_strategy_result(result)
+    return result
 
 
 def _compute_strategy_factor_values(

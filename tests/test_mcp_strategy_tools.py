@@ -51,7 +51,15 @@ async def test_mcp_run_score_report_strategy_flow(monkeypatch, tmp_path):
     backtest = json.loads(await mcp_server.run_strategy_backtest(spec, "2024-01-02", "2024-02-02"))
     score = json.loads(mcp_server.score_strategy(backtest))
     report = json.loads(await mcp_server.generate_strategy_report(backtest))
+    export = json.loads(mcp_server.export_strategy_candidate(backtest))
+    diagnosis = json.loads(mcp_server.diagnose_strategy(backtest))
+    anti = json.loads(mcp_server.run_strategy_anti_overfit(backtest))
+    rolling = json.loads(mcp_server.run_strategy_rolling_validation(backtest))
 
     assert backtest["latest_holdings"][0]["stock_code"] == "A"
     assert 0 <= score["score"] <= 100
     assert report["summary_json_path"].endswith("summary.json")
+    assert export["signals"][0]["stock_code"] == "A"
+    assert "diagnoses" in diagnosis
+    assert anti["type"] == "strategy_anti_overfit"
+    assert rolling["type"] == "strategy_rolling_validation"

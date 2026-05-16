@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
+from .diagnosis import diagnose_strategy_metrics
 from .result import StrategyBacktestResult
 
 
 def compute_strategy_score(result: StrategyBacktestResult) -> dict:
     """Compute a strategy score from strategy-level returns, weights, and risk logs."""
-    return compute_strategy_score_from_metrics(result.metrics, result.risk_logs, result.validation_issues)
+    return compute_strategy_score_from_metrics(
+        result.metrics,
+        result.risk_logs,
+        result.validation_issues,
+        result.diagnostics,
+    )
 
 
 def compute_strategy_score_from_metrics(
     metrics: dict,
     risk_logs: list[dict] | None = None,
     validation_issues: list[dict] | None = None,
+    diagnostics: dict | None = None,
 ) -> dict:
     risk_logs = risk_logs or []
     validation_issues = validation_issues or []
@@ -48,8 +55,9 @@ def compute_strategy_score_from_metrics(
         "failure_reasons": failure_reasons,
         "risk_logs": risk_logs,
         "validation_issues": validation_issues,
-        "strategy_anti_overfit": "not_run",
-        "strategy_rolling_validation": "not_run",
+        "strategy_anti_overfit": (diagnostics or {}).get("strategy_anti_overfit", "not_run"),
+        "strategy_rolling_validation": (diagnostics or {}).get("strategy_rolling_validation", "not_run"),
+        "strategy_diagnosis": diagnose_strategy_metrics(metrics, risk_logs, validation_issues, diagnostics),
     }
 
 

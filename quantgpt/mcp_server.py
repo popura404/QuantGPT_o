@@ -28,11 +28,15 @@ from .market_data import BENCHMARK_CODES, UNIVERSES, MarketDataFetcher, fetch_be
 from .mcp_task_helper import complete_mcp_task, start_mcp_task
 from .report import generate_report
 from .strategy.service import (
+    diagnose_strategy_payload as _diagnose_strategy_payload,
     dumps as _strategy_dumps,
+    export_strategy_candidate_payload as _export_strategy_candidate_payload,
     generate_strategy_report_payload as _generate_strategy_report_payload,
     list_strategy_data_fields as _list_strategy_data_fields,
     list_strategy_markets as _list_strategy_markets,
+    run_strategy_anti_overfit_payload as _run_strategy_anti_overfit_payload,
     run_strategy_backtest_payload as _run_strategy_backtest_payload,
+    run_strategy_rolling_validation_payload as _run_strategy_rolling_validation_payload,
     score_strategy_payload as _score_strategy_payload,
     validate_strategy_payload as _validate_strategy_payload,
 )
@@ -176,6 +180,42 @@ async def generate_strategy_report(result: dict) -> str:
         return _strategy_dumps(payload)
     except Exception as e:
         return _strategy_dumps({"error_code": "STRATEGY_REPORT_FAILED", "hint": str(e)})
+
+
+@mcp.tool()
+def export_strategy_candidate(result: dict) -> str:
+    """导出候选调仓信号 JSON/CSV 友好的结构，不包含下单或券商字段。"""
+    try:
+        return _strategy_dumps(_export_strategy_candidate_payload(result))
+    except Exception as e:
+        return _strategy_dumps({"error_code": "STRATEGY_EXPORT_FAILED", "hint": str(e)})
+
+
+@mcp.tool()
+def diagnose_strategy(result: dict) -> str:
+    """输出策略诊断 taxonomy 和可执行的 spec 调整建议。"""
+    try:
+        return _strategy_dumps(_diagnose_strategy_payload(result))
+    except Exception as e:
+        return _strategy_dumps({"error_code": "STRATEGY_DIAGNOSIS_FAILED", "hint": str(e)})
+
+
+@mcp.tool()
+def run_strategy_anti_overfit(result: dict) -> str:
+    """基于策略回测结果执行策略级反过拟合摘要检查。"""
+    try:
+        return _strategy_dumps(_run_strategy_anti_overfit_payload(result))
+    except Exception as e:
+        return _strategy_dumps({"error_code": "STRATEGY_ANTI_OVERFIT_FAILED", "hint": str(e)})
+
+
+@mcp.tool()
+def run_strategy_rolling_validation(result: dict, windows: int = 3) -> str:
+    """基于策略回测收益执行策略级 rolling validation 摘要。"""
+    try:
+        return _strategy_dumps(_run_strategy_rolling_validation_payload(result, windows=windows))
+    except Exception as e:
+        return _strategy_dumps({"error_code": "STRATEGY_ROLLING_VALIDATION_FAILED", "hint": str(e)})
 
 
 @mcp.tool()
