@@ -1,0 +1,42 @@
+"""Strategy validation errors and result contracts."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+SCHEMA_INVALID = "SCHEMA_INVALID"
+SCHEMA_UNKNOWN_FIELD = "SCHEMA_UNKNOWN_FIELD"
+EXPRESSION_INVALID = "EXPRESSION_INVALID"
+DATA_FIELD_UNSUPPORTED = "DATA_FIELD_UNSUPPORTED"
+MARKET_UNSUPPORTED = "MARKET_UNSUPPORTED"
+RISK_SHORT_NOT_ALLOWED = "RISK_SHORT_NOT_ALLOWED"
+RULE_UNSUPPORTED = "RULE_UNSUPPORTED"
+
+
+@dataclass(slots=True)
+class StrategyValidationIssue:
+    code: str
+    message: str
+    path: str = ""
+    hint: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "code": self.code,
+            "message": self.message,
+            "path": self.path,
+            "hint": self.hint,
+        }
+
+
+@dataclass(slots=True)
+class StrategyValidationResult:
+    is_valid: bool
+    issues: list[StrategyValidationIssue] = field(default_factory=list)
+    spec: object | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "is_valid": self.is_valid,
+            "issues": [issue.to_dict() for issue in self.issues],
+        }
