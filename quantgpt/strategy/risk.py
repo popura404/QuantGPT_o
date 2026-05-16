@@ -1,4 +1,4 @@
-"""Risk rule application for StrategySpec v0."""
+"""Risk rule application for StrategySpec strategies."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from .spec import StrategySpecV0
+from .spec import StrategySpecV0, StrategySpecV1
 
 
 @dataclass(slots=True)
@@ -17,7 +17,7 @@ class RiskApplicationResult:
     risk_logs: list[dict]
 
 
-def apply_risk_rules(target_weights: pd.DataFrame, spec: StrategySpecV0) -> RiskApplicationResult:
+def apply_risk_rules(target_weights: pd.DataFrame, spec: StrategySpecV0 | StrategySpecV1) -> RiskApplicationResult:
     """Apply no-short, max-weight, and max-turnover rules in MVP order."""
     columns = ["trade_date", "stock_code", "target_weight"]
     if target_weights.empty:

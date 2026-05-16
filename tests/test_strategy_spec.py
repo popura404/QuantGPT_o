@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from quantgpt.strategy.spec import StrategySpecV0, example_strategy_spec
+from quantgpt.strategy.spec import StrategySpecV0, StrategySpecV1, example_strategy_spec, example_strategy_spec_v1
 
 
 def test_valid_example_strategy_spec_passes():
@@ -51,6 +51,24 @@ def test_post_mvp_values_are_rejected():
     data["portfolio_rule"]["weighting"] = "weighted"
     with pytest.raises(ValidationError):
         StrategySpecV0.model_validate(data)
+
+
+def test_strategy_spec_v1_accepts_multifactor_top_n_and_exports():
+    spec = StrategySpecV1.model_validate(example_strategy_spec_v1())
+
+    assert spec.schema_version == "strategy_spec/v1"
+    assert len(spec.factors) == 2
+    assert spec.signal_rules.top_n == 20
+    assert spec.portfolio_rule.weighting == "score_weighted"
+    assert spec.outputs.signal_export is True
+
+
+def test_strategy_spec_v1_still_rejects_execution_fields():
+    data = example_strategy_spec_v1()
+    data["broker"] = "not_allowed"
+
+    with pytest.raises(ValidationError):
+        StrategySpecV1.model_validate(data)
 
     data = example_strategy_spec()
     data["outputs"]["signal_export"] = True

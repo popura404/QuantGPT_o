@@ -1,4 +1,4 @@
-"""Strategy-level backtest pipeline for StrategySpec v0."""
+"""Strategy-level backtest pipeline for StrategySpec strategies."""
 
 from __future__ import annotations
 
@@ -13,18 +13,18 @@ from ..fundamental_data import detect_fundamental_vars, enrich_market_data
 from ..neutralize import neutralize_factor
 from .adapters import get_adapter
 from .errors import StrategyValidationError
-from .portfolio import build_equal_weight_portfolio
+from .portfolio import build_strategy_portfolio
 from .result import StrategyBacktestResult
 from .risk import apply_risk_rules
 from .signals import build_rank_threshold_signals
-from .spec import StrategySpecV0
+from .spec import StrategySpec, StrategySpecV0, StrategySpecV1
 from .validator import validate_strategy_spec
 
 
 class StrategyBacktestRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    spec: StrategySpecV0
+    spec: StrategySpec
     start_date: str
     end_date: str
     benchmark: str = "hs300"
@@ -70,8 +70,10 @@ def run_strategy_backtest(
         raise ValueError("No market data available for strategy backtest")
     stock_codes = stock_codes or sorted(market_df["stock_code"].dropna().astype(str).unique().tolist())
 
-    expression = req.spec.factors[0].expression
-    fund_vars = detect_fundamental_vars(expression)
+    expressions = [factor.expression for factor in req.spec.factors]
+    fund_vars = set()
+    for expression in expressions:
+        fund_vars.update(detect_fundamental_vars(expression))
     if fund_vars:
         market_df = enrich_market_data(market_df, fund_vars, stock_codes, req.start_date, req.end_date)
 
@@ -81,15 +83,12 @@ def run_strategy_backtest(
     if "daily_ret" not in market_df.columns:
         market_df["daily_ret"] = market_df.groupby("stock_code")["close"].pct_change()
 
-    market_df["factor_value"] = compute_factor_values(market_df, expression)
-    raw_factor_for_ic = market_df["factor_value"].copy()
-    if req.neutralize_industry or req.neutralize_cap:
-        market_df["factor_value"] = neutralize_factor(
-            market_df["factor_value"],
-            market_df,
-            industry=req.neutralize_industry,
-            market_cap=req.neutralize_cap,
-        )
+    market_df, raw_factor_for_ic = _compute_strategy_factor_values(
+        market_df,
+        req.spec,
+        neutralize_industry=req.neutralize_industry,
+        neutralize_cap=req.neutralize_cap,
+    )
 
     all_rebalance_dates = build_rebalance_dates(
         market_df["trade_date"].unique(),
@@ -104,7 +103,7 @@ def run_strategy_backtest(
     ).copy()
     rebalance_frame = factor_frame[factor_frame["trade_date"].isin(all_rebalance_dates)].copy()
     signals = build_rank_threshold_signals(rebalance_frame, req.spec)
-    raw_targets = build_equal_weight_portfolio(signals, req.spec)
+    raw_targets = build_strategy_portfolio(signals, req.spec)
     risk_result = apply_risk_rules(raw_targets, req.spec)
 
     strategy_returns, cost_by_rebalance = _calculate_strategy_returns(
@@ -136,11 +135,68 @@ def run_strategy_backtest(
         validation_issues=[],
         diagnostics={
             "factor_flipped_observed": False,
-            "strategy_anti_overfit": "not_run",
-            "strategy_rolling_validation": "not_run",
+            "strategy_anti_overfit": "requested" if req.spec.validation.run_strategy_anti_overfit else "not_run",
+            "strategy_rolling_validation": "requested" if req.spec.validation.run_strategy_rolling_validation else "not_run",
         },
         factor_frame=factor_frame[["trade_date", "stock_code", "factor_value", "daily_ret"]].copy(),
     )
+
+
+def _compute_strategy_factor_values(
+    market_df: pd.DataFrame,
+    spec: StrategySpecV0 | StrategySpecV1,
+    *,
+    neutralize_industry: bool,
+    neutralize_cap: bool,
+) -> tuple[pd.DataFrame, pd.Series]:
+    market_df = market_df.copy()
+    if spec.schema_version == "strategy_spec/v0":
+        factor = spec.factors[0]
+        values = compute_factor_values(market_df, factor.expression)
+        raw_factor_for_ic = values.copy()
+        if neutralize_industry or neutralize_cap:
+            values = neutralize_factor(
+                values,
+                market_df,
+                industry=neutralize_industry,
+                market_cap=neutralize_cap,
+            )
+        market_df["factor_value"] = values
+        return market_df, raw_factor_for_ic
+
+    factor_cols = []
+    weighted_cols = []
+    total_weight = sum(float(factor.weight) for factor in spec.factors)
+    if total_weight <= 0:
+        raise ValueError("StrategySpec v1 factor weights must sum to a positive value")
+
+    for idx, factor in enumerate(spec.factors):
+        raw_col = f"factor_{idx}_raw"
+        score_col = f"factor_{idx}_score"
+        market_df[raw_col] = compute_factor_values(market_df, factor.expression)
+        values = market_df[raw_col]
+        if neutralize_industry or neutralize_cap:
+            values = neutralize_factor(
+                values,
+                market_df,
+                industry=neutralize_industry,
+                market_cap=neutralize_cap,
+            )
+            market_df[raw_col] = values
+        ascending = factor.direction == "higher_is_better"
+        market_df[score_col] = market_df.groupby("trade_date")[raw_col].rank(
+            method="average",
+            pct=True,
+            ascending=ascending,
+        )
+        factor_cols.append(raw_col)
+        weighted_cols.append((score_col, float(factor.weight) / total_weight))
+
+    composite = pd.Series(0.0, index=market_df.index, dtype=float)
+    for score_col, weight in weighted_cols:
+        composite = composite.add(market_df[score_col].fillna(0.0) * weight, fill_value=0.0)
+    market_df["factor_value"] = composite
+    return market_df, market_df[factor_cols[0]].copy()
 
 
 def _calculate_strategy_returns(

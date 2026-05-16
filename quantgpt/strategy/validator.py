@@ -1,4 +1,4 @@
-"""StrategySpec v0 validation service."""
+"""StrategySpec validation service."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from .errors import (
     StrategyValidationIssue,
     StrategyValidationResult,
 )
-from .spec import StrategySpecV0
+from .spec import StrategySpecV0, StrategySpecV1, parse_strategy_spec
 
 
 def _validation_dummy() -> pd.DataFrame:
@@ -43,12 +43,12 @@ def _validation_dummy() -> pd.DataFrame:
     })
 
 
-def validate_strategy_spec(data: StrategySpecV0 | dict) -> StrategyValidationResult:
+def validate_strategy_spec(data: StrategySpecV0 | StrategySpecV1 | dict) -> StrategyValidationResult:
     issues: list[StrategyValidationIssue] = []
-    spec: StrategySpecV0 | None = None
+    spec: StrategySpecV0 | StrategySpecV1 | None = None
 
     try:
-        spec = data if isinstance(data, StrategySpecV0) else StrategySpecV0.model_validate(data)
+        spec = data if isinstance(data, (StrategySpecV0, StrategySpecV1)) else parse_strategy_spec(data)
     except ValidationError as exc:
         issues.extend(_issues_from_pydantic_errors(exc.errors()))
     except ValueError as exc:
@@ -69,7 +69,7 @@ def validate_strategy_spec(data: StrategySpecV0 | dict) -> StrategyValidationRes
                 code=MARKET_UNSUPPORTED,
                 message=f"Unsupported market: {spec.market}",
                 path="market",
-                hint="MVP only supports market='a_share'.",
+                hint="Call list_markets and choose a registered strategy market.",
             )
         ])
 
@@ -89,28 +89,28 @@ def validate_strategy_spec(data: StrategySpecV0 | dict) -> StrategyValidationRes
             hint="Set risk_rules.allow_short=false.",
         ))
 
-    expression = spec.factors[0].expression
-    try:
-        func = parse_expression(expression, mode="local")
-        func(_validation_dummy())
-    except Exception as exc:
-        issues.append(StrategyValidationIssue(
-            code=EXPRESSION_INVALID,
-            message=str(exc),
-            path="factors.0.expression",
-            hint="Use a valid local factor expression such as rank(close / ts_mean(close, 20)).",
-        ))
-
     allowed_fields = {field.name for field in caps.data_fields}
-    components = extract_components(expression)
-    unsupported = sorted(components["fields"] - allowed_fields)
-    if unsupported:
-        issues.append(StrategyValidationIssue(
-            code=DATA_FIELD_UNSUPPORTED,
-            message=f"Unsupported data fields for {spec.market}: {unsupported}",
-            path="factors.0.expression",
-            hint="Call list_data_fields before generating the expression.",
-        ))
+    for idx, factor in enumerate(spec.factors):
+        try:
+            func = parse_expression(factor.expression, mode="local")
+            func(_validation_dummy())
+        except Exception as exc:
+            issues.append(StrategyValidationIssue(
+                code=EXPRESSION_INVALID,
+                message=str(exc),
+                path=f"factors.{idx}.expression",
+                hint="Use a valid local factor expression such as rank(close / ts_mean(close, 20)).",
+            ))
+
+        components = extract_components(factor.expression)
+        unsupported = sorted(components["fields"] - allowed_fields)
+        if unsupported:
+            issues.append(StrategyValidationIssue(
+                code=DATA_FIELD_UNSUPPORTED,
+                message=f"Unsupported data fields for {spec.market}: {unsupported}",
+                path=f"factors.{idx}.expression",
+                hint="Call list_data_fields before generating the expression.",
+            ))
 
     return StrategyValidationResult(not issues, issues, spec)
 
@@ -129,13 +129,13 @@ def _issues_from_pydantic_errors(errors: list[dict]) -> list[StrategyValidationI
             hint = "Remove unknown fields; StrategySpec v0 uses extra='forbid'."
         elif loc == "market":
             code = MARKET_UNSUPPORTED
-            hint = "MVP only supports market='a_share'."
+            hint = "Call list_markets and choose a registered strategy market."
         elif loc == "risk_rules.allow_short":
             code = RISK_SHORT_NOT_ALLOWED
             hint = "Set risk_rules.allow_short=false."
         elif "signal_export" in loc or "run_strategy_" in loc or "weighting" in loc:
             code = RULE_UNSUPPORTED
-            hint = "This value belongs to a Post-MVP feature and is rejected by v0."
+            hint = "This value is not supported by the selected StrategySpec schema version."
         elif loc == "factors":
             code = RULE_UNSUPPORTED
             hint = "StrategySpec v0 requires exactly one factor."

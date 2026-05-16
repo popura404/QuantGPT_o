@@ -6,12 +6,12 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from .spec import StrategySpecV0
+from .spec import StrategySpecV0, StrategySpecV1
 
 
 @dataclass(slots=True)
 class StrategyBacktestResult:
-    spec: StrategySpecV0
+    spec: StrategySpecV0 | StrategySpecV1
     start_date: str
     end_date: str
     benchmark: str

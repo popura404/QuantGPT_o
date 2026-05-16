@@ -12,7 +12,7 @@ from .backtest import StrategyBacktestRequest, run_strategy_backtest
 from .report import generate_strategy_report
 from .result import StrategyBacktestResult
 from .score import compute_strategy_score_from_metrics
-from .spec import StrategySpecV0
+from .spec import parse_strategy_spec
 from .validator import validate_strategy_spec as _validate_strategy_spec
 
 
@@ -68,7 +68,7 @@ def strategy_result_to_payload(result: StrategyBacktestResult) -> dict:
 
 
 def strategy_result_from_payload(payload: dict) -> StrategyBacktestResult:
-    spec = StrategySpecV0.model_validate(payload["spec"])
+    spec = parse_strategy_spec(payload["spec"])
     returns = pd.Series(
         [row["value"] for row in payload.get("strategy_returns", [])],
         index=pd.to_datetime([row["date"] for row in payload.get("strategy_returns", [])]),
