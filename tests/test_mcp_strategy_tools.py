@@ -11,9 +11,11 @@ from quantgpt.strategy.spec import example_strategy_spec
 def test_mcp_strategy_discovery_tools_return_json():
     markets = json.loads(mcp_server.list_markets())
     fields = json.loads(mcp_server.list_data_fields("a_share"))
+    templates = json.loads(mcp_server.list_strategy_templates())
 
     assert any(market["market"] == "a_share" for market in markets["markets"])
     assert any(field["name"] == "close" for field in fields["data_fields"])
+    assert any(template["id"] == "momentum_top_n_v1" for template in templates["templates"])
 
 
 def test_mcp_validate_strategy_spec_returns_structured_result():
@@ -55,6 +57,10 @@ async def test_mcp_run_score_report_strategy_flow(monkeypatch, tmp_path):
     diagnosis = json.loads(mcp_server.diagnose_strategy(backtest))
     anti = json.loads(mcp_server.run_strategy_anti_overfit(backtest))
     rolling = json.loads(mcp_server.run_strategy_rolling_validation(backtest))
+    optimized = json.loads(mcp_server.optimize_strategy_candidate(
+        [{"trade_date": "2024-01-02", "stock_code": "A", "score": 1.0}],
+        spec,
+    ))
 
     assert backtest["latest_holdings"][0]["stock_code"] == "A"
     assert 0 <= score["score"] <= 100
@@ -63,3 +69,4 @@ async def test_mcp_run_score_report_strategy_flow(monkeypatch, tmp_path):
     assert "diagnoses" in diagnosis
     assert anti["type"] == "strategy_anti_overfit"
     assert rolling["type"] == "strategy_rolling_validation"
+    assert optimized["target_weights"][0]["stock_code"] == "A"

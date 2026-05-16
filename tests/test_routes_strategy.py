@@ -22,11 +22,14 @@ class ImmediateThread:
 async def test_strategy_markets_and_fields(client):
     markets = await client.get("/api/v1/strategy/markets")
     fields = await client.get("/api/v1/strategy/data-fields?market=a_share")
+    templates = await client.get("/api/v1/strategy/templates")
 
     assert markets.status_code == 200
     assert any(market["market"] == "a_share" for market in markets.json()["markets"])
     assert fields.status_code == 200
     assert any(field["name"] == "close" for field in fields.json()["data_fields"])
+    assert templates.status_code == 200
+    assert any(template["id"] == "momentum_top_n_v1" for template in templates.json()["templates"])
 
 
 async def test_strategy_validate_rejects_invalid_spec(client):
@@ -115,3 +118,26 @@ async def test_strategy_post_mvp_result_endpoints(client):
     assert anti.json()["type"] == "strategy_anti_overfit"
     assert rolling.status_code == 200
     assert rolling.json()["type"] == "strategy_rolling_validation"
+
+
+async def test_strategy_template_and_optimizer_endpoints(client):
+    template = await client.post(
+        "/api/v1/strategy/templates/momentum_top_n_v1/instantiate",
+        json={"overrides": {"signal_rules.top_n": 3, "risk_rules.max_asset_weight": 0.4}},
+    )
+    assert template.status_code == 200
+    spec = template.json()["spec"]
+    assert template.json()["validation"]["is_valid"] is True
+
+    optimized = await client.post(
+        "/api/v1/strategy/optimize",
+        json={
+            "spec": spec,
+            "signals": [
+                {"trade_date": "2024-01-02", "stock_code": "A", "score": 10.0},
+                {"trade_date": "2024-01-02", "stock_code": "B", "score": 1.0},
+            ],
+        },
+    )
+    assert optimized.status_code == 200
+    assert max(row["target_weight"] for row in optimized.json()["target_weights"]) <= 0.4

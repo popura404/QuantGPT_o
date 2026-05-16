@@ -23,8 +23,12 @@ from ..strategy.service import (
     diagnose_strategy_payload,
     export_strategy_candidate_payload,
     generate_strategy_report_payload,
+    get_strategy_template_payload,
+    instantiate_strategy_template_payload,
     list_strategy_data_fields,
     list_strategy_markets,
+    list_strategy_templates_payload,
+    optimize_candidate_weights_payload,
     run_strategy_anti_overfit_payload,
     run_strategy_backtest_payload,
     run_strategy_rolling_validation_payload,
@@ -81,6 +85,15 @@ class StrategyRunSaveRequest(BaseModel):
     signal_export: dict | None = None
 
 
+class StrategyTemplateInstantiateRequest(BaseModel):
+    overrides: dict | None = None
+
+
+class StrategyOptimizeRequest(BaseModel):
+    signals: list[dict]
+    spec: dict
+
+
 @router.get("/markets")
 def strategy_markets():
     return list_strategy_markets()
@@ -92,6 +105,27 @@ def strategy_data_fields(market: str = "a_share"):
         return list_strategy_data_fields(market)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.get("/templates")
+def strategy_templates():
+    return list_strategy_templates_payload()
+
+
+@router.get("/templates/{template_id}")
+def strategy_template(template_id: str):
+    try:
+        return get_strategy_template_payload(template_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.post("/templates/{template_id}/instantiate")
+def strategy_template_instantiate(template_id: str, req: StrategyTemplateInstantiateRequest):
+    try:
+        return instantiate_strategy_template_payload(template_id, overrides=req.overrides)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.post("/validate")
@@ -172,6 +206,14 @@ def strategy_anti_overfit(req: StrategyResultRequest):
 def strategy_rolling_validation(req: StrategyRollingValidationRequest):
     try:
         return run_strategy_rolling_validation_payload(req.result, windows=req.windows)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/optimize")
+def strategy_optimize(req: StrategyOptimizeRequest):
+    try:
+        return optimize_candidate_weights_payload(req.signals, req.spec)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

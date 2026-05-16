@@ -32,8 +32,12 @@ from .strategy.service import (
     dumps as _strategy_dumps,
     export_strategy_candidate_payload as _export_strategy_candidate_payload,
     generate_strategy_report_payload as _generate_strategy_report_payload,
+    get_strategy_template_payload as _get_strategy_template_payload,
+    instantiate_strategy_template_payload as _instantiate_strategy_template_payload,
     list_strategy_data_fields as _list_strategy_data_fields,
     list_strategy_markets as _list_strategy_markets,
+    list_strategy_templates_payload as _list_strategy_templates_payload,
+    optimize_candidate_weights_payload as _optimize_candidate_weights_payload,
     run_strategy_anti_overfit_payload as _run_strategy_anti_overfit_payload,
     run_strategy_backtest_payload as _run_strategy_backtest_payload,
     run_strategy_rolling_validation_payload as _run_strategy_rolling_validation_payload,
@@ -133,6 +137,30 @@ def list_data_fields(market: str = "a_share") -> str:
 
 
 @mcp.tool()
+def list_strategy_templates() -> str:
+    """返回 Post-MVP 策略模板和治理边界。"""
+    return _strategy_dumps(_list_strategy_templates_payload())
+
+
+@mcp.tool()
+def get_strategy_template(template_id: str) -> str:
+    """返回指定策略模板的 StrategySpec 和治理元数据。"""
+    try:
+        return _strategy_dumps(_get_strategy_template_payload(template_id))
+    except Exception as e:
+        return _strategy_dumps({"error_code": "STRATEGY_TEMPLATE_NOT_FOUND", "hint": str(e)})
+
+
+@mcp.tool()
+def instantiate_strategy_template(template_id: str, overrides: dict | None = None) -> str:
+    """按模板生成可校验 StrategySpec，可用点路径 overrides 修改参数。"""
+    try:
+        return _strategy_dumps(_instantiate_strategy_template_payload(template_id, overrides=overrides))
+    except Exception as e:
+        return _strategy_dumps({"error_code": "STRATEGY_TEMPLATE_INSTANTIATE_FAILED", "hint": str(e)})
+
+
+@mcp.tool()
 def validate_strategy_spec(spec: dict) -> str:
     """校验 StrategySpec v0，失败时返回 error_code 和 hint。"""
     return _strategy_dumps(_validate_strategy_payload(spec))
@@ -216,6 +244,15 @@ def run_strategy_rolling_validation(result: dict, windows: int = 3) -> str:
         return _strategy_dumps(_run_strategy_rolling_validation_payload(result, windows=windows))
     except Exception as e:
         return _strategy_dumps({"error_code": "STRATEGY_ROLLING_VALIDATION_FAILED", "hint": str(e)})
+
+
+@mcp.tool()
+def optimize_strategy_candidate(signals: list[dict], spec: dict) -> str:
+    """按 StrategySpec 风控约束优化候选信号权重，不生成真实订单。"""
+    try:
+        return _strategy_dumps(_optimize_candidate_weights_payload(signals, spec))
+    except Exception as e:
+        return _strategy_dumps({"error_code": "STRATEGY_OPTIMIZE_FAILED", "hint": str(e)})
 
 
 @mcp.tool()

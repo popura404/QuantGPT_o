@@ -11,11 +11,13 @@ from .adapters import list_markets as _list_markets
 from .backtest import StrategyBacktestRequest, run_strategy_backtest
 from .diagnosis import diagnose_strategy_metrics, diagnose_strategy_result
 from .export import export_strategy_candidate
+from .optimizer import optimize_candidate_weights
 from .report import generate_strategy_report
 from .result import StrategyBacktestResult
 from .score import compute_strategy_score_from_metrics
 from .validation import run_strategy_anti_overfit, run_strategy_rolling_validation
 from .spec import parse_strategy_spec
+from .templates import get_strategy_template, instantiate_strategy_template, list_strategy_templates
 from .validator import validate_strategy_spec as _validate_strategy_spec
 
 
@@ -25,6 +27,20 @@ def list_strategy_markets() -> dict:
 
 def list_strategy_data_fields(market: str = "a_share") -> dict:
     return {"market": market, "data_fields": _list_data_fields(market)}
+
+
+def list_strategy_templates_payload() -> dict:
+    return {"templates": list_strategy_templates()}
+
+
+def get_strategy_template_payload(template_id: str) -> dict:
+    return get_strategy_template(template_id)
+
+
+def instantiate_strategy_template_payload(template_id: str, overrides: dict | None = None) -> dict:
+    spec = instantiate_strategy_template(template_id, overrides=overrides)
+    validation = validate_strategy_payload(spec)
+    return {"spec": spec, "validation": validation}
 
 
 def validate_strategy_payload(spec: dict) -> dict:
@@ -83,6 +99,11 @@ def run_strategy_anti_overfit_payload(result_payload: dict) -> dict:
 
 def run_strategy_rolling_validation_payload(result_payload: dict, windows: int = 3) -> dict:
     return run_strategy_rolling_validation(strategy_result_from_payload(result_payload), windows=windows)
+
+
+def optimize_candidate_weights_payload(signals: list[dict], spec_payload: dict) -> dict:
+    spec = parse_strategy_spec(spec_payload)
+    return optimize_candidate_weights(signals, spec)
 
 
 def strategy_result_to_payload(result: StrategyBacktestResult) -> dict:
