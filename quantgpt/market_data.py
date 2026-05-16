@@ -425,7 +425,7 @@ class MarketDataFetcher:
         if os.path.exists(path):
             try:
                 df = pd.read_parquet(path)
-                df["trade_date"] = pd.to_datetime(df["trade_date"])
+                df["trade_date"] = pd.to_datetime(df["trade_date"]).astype("datetime64[ns]")
                 return df
             except Exception as e:
                 logger.warning(f"Cache load failed for {stock_code}: {e}")
@@ -434,6 +434,9 @@ class MarketDataFetcher:
     def _save_cache(self, stock_code: str, df: pd.DataFrame):
         if df is None or len(df) == 0:
             return
+        if "trade_date" in df.columns:
+            df = df.copy()
+            df["trade_date"] = pd.to_datetime(df["trade_date"]).astype("datetime64[ns]")
         df.to_parquet(self._cache_path(stock_code), index=False)
 
     # --- PLACEHOLDER_FETCH_REMOTE ---
