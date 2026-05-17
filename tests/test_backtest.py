@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from quantgpt.backtest import (
+    _calc_ic_series,
     _calc_max_drawdown,
     _calc_monotonicity,
     assign_factor_quantiles,
@@ -97,6 +98,36 @@ class TestBacktestHelpers:
         turnover = calculate_turnover_from_weights(weights, holding_period=3)
 
         assert turnover == pytest.approx(0.25)
+
+    def test_calc_ic_series_uses_calendar_forward_date_for_missing_rows(self):
+        dates = pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04"])
+        rows = []
+        for idx in range(11):
+            stock = f"S{idx:02d}"
+            rows.append({
+                "trade_date": dates[0],
+                "stock_code": stock,
+                "factor_value": 1000.0 if idx == 0 else float(idx),
+                "close": 100.0,
+            })
+            if idx != 0:
+                rows.append({
+                    "trade_date": dates[1],
+                    "stock_code": stock,
+                    "factor_value": float(idx),
+                    "close": 100.0 + idx,
+                })
+            rows.append({
+                "trade_date": dates[2],
+                "stock_code": stock,
+                "factor_value": float(idx),
+                "close": 1.0 if idx == 0 else 110.0 + idx,
+            })
+
+        ic_series, rank_ic_series = _calc_ic_series(pd.DataFrame(rows), holding_period=1)
+
+        assert ic_series.loc[dates[0]] == pytest.approx(1.0)
+        assert rank_ic_series.loc[dates[0]] == pytest.approx(1.0)
 
 
 class TestRunFactorBacktest:

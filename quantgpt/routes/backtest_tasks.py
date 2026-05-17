@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth import GUEST_USER_ID, decode_token, get_current_user, get_optional_user
+from ..auth import GUEST_USER_ID, get_current_user, get_optional_user
 from ..db import get_db
 from ..expression_parser import parse_expression
 from ..iteration import compute_factor_score

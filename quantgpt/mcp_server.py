@@ -23,27 +23,57 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from .expression_parser import __doc__ as _expr_module_doc
 from .expression_parser import parse_expression
+from .factor_values import compute_factor_values_payload as _compute_factor_values_payload
 from .fundamental_data import ALL_FUNDAMENTAL_NAMES
 from .market_data import BENCHMARK_CODES, UNIVERSES, MarketDataFetcher, fetch_benchmark_returns, get_universe
 from .mcp_task_helper import complete_mcp_task, start_mcp_task
 from .report import generate_report
 from .strategy.service import (
     diagnose_strategy_payload as _diagnose_strategy_payload,
+)
+from .strategy.service import (
     dumps as _strategy_dumps,
+)
+from .strategy.service import (
     export_strategy_candidate_payload as _export_strategy_candidate_payload,
+)
+from .strategy.service import (
     generate_strategy_report_payload as _generate_strategy_report_payload,
+)
+from .strategy.service import (
     get_strategy_template_payload as _get_strategy_template_payload,
+)
+from .strategy.service import (
     instantiate_strategy_template_payload as _instantiate_strategy_template_payload,
+)
+from .strategy.service import (
     list_strategy_data_fields as _list_strategy_data_fields,
+)
+from .strategy.service import (
     list_strategy_markets as _list_strategy_markets,
+)
+from .strategy.service import (
     list_strategy_templates_payload as _list_strategy_templates_payload,
+)
+from .strategy.service import (
     optimize_candidate_weights_payload as _optimize_candidate_weights_payload,
+)
+from .strategy.service import (
     run_strategy_anti_overfit_payload as _run_strategy_anti_overfit_payload,
+)
+from .strategy.service import (
     run_strategy_backtest_payload as _run_strategy_backtest_payload,
+)
+from .strategy.service import (
     run_strategy_rolling_validation_payload as _run_strategy_rolling_validation_payload,
+)
+from .strategy.service import (
     score_strategy_payload as _score_strategy_payload,
+)
+from .strategy.service import (
     validate_strategy_payload as _validate_strategy_payload,
 )
+from .task_executor import _run_backtest_in_process, get_executor
 from .wq_brain_service import (
     run_batch_simulation,
     run_check_alphas,
@@ -51,7 +81,6 @@ from .wq_brain_service import (
     run_single_simulation,
     run_submit_by_ids,
 )
-from .task_executor import _run_backtest_in_process, get_executor
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s", stream=sys.stderr)
 logger = logging.getLogger(__name__)
@@ -725,7 +754,8 @@ async def wq_brain_submit(
     Returns:
         JSON with IS/OOS metrics, alpha_id, checks, submittable status.
     """
-    from .wq_brain_client import get_client, is_configured as _wq_configured
+    from .wq_brain_client import get_client
+    from .wq_brain_client import is_configured as _wq_configured
 
     task_id = await start_mcp_task("wq_brain_submit", expression, {
         "expression": expression, "tag": tag, "region": region, "universe": universe,
@@ -796,7 +826,8 @@ async def wq_brain_batch_submit(
     Returns:
         JSON with per-combination results, best_fitness, submittable_count.
     """
-    from .wq_brain_client import get_client, is_configured as _wq_configured
+    from .wq_brain_client import get_client
+    from .wq_brain_client import is_configured as _wq_configured
 
     regions = regions or ["USA"]
     delays = delays or [1]
@@ -861,7 +892,8 @@ async def wq_brain_submit_by_ids(
     Returns:
         JSON with per-alpha result (ACTIVE/SC_FAIL/TIMEOUT) and summary.
     """
-    from .wq_brain_client import get_client, is_configured as _wq_configured
+    from .wq_brain_client import get_client
+    from .wq_brain_client import is_configured as _wq_configured
 
     if account != "primary":
         return json.dumps({"error": "Alpha 提交仅允许 primary 账号"})
@@ -918,7 +950,8 @@ async def wq_brain_list_alphas(
     Returns:
         JSON with alpha list, each containing alpha_id, expression, metrics.
     """
-    from .wq_brain_client import get_client, is_configured as _wq_configured
+    from .wq_brain_client import get_client
+    from .wq_brain_client import is_configured as _wq_configured
 
     if not _wq_configured(account):
         return json.dumps({"error": f"WQ BRAIN 未配置 (account={account})"})
@@ -957,7 +990,8 @@ async def wq_brain_check_alphas(
     Returns:
         JSON with summary and per-alpha status.
     """
-    from .wq_brain_client import get_client, is_configured as _wq_configured
+    from .wq_brain_client import get_client
+    from .wq_brain_client import is_configured as _wq_configured
 
     if not _wq_configured(account):
         return json.dumps({"error": f"WQ BRAIN 未配置 (account={account})"})
@@ -998,8 +1032,9 @@ async def wq_brain_finalize_submissions(
     _error_msg = None
     _result = None
     try:
-        from .wq_brain_client import get_client, is_configured as _wq_configured
         from .routes.wq_brain_batch import _finalize_alpha_statuses
+        from .wq_brain_client import get_client
+        from .wq_brain_client import is_configured as _wq_configured
 
         if not _wq_configured(account):
             return json.dumps({"error": f"WQ BRAIN 未配置 (account={account})"})
@@ -1025,6 +1060,38 @@ async def wq_brain_finalize_submissions(
         return json.dumps({"error": f"Finalize failed: {e}"})
     finally:
         await complete_mcp_task(task_id, _result, _error_msg)
+
+
+@mcp.tool()
+async def compute_factor_values(
+    expression: str,
+    universe: str = "csi500",
+    start_date: str = "",
+    end_date: str = "",
+) -> str:
+    """计算因子截面值，返回每个交易日所有股票的因子得分。
+
+    Args:
+        expression: 因子表达式，如 rank(ts_mean(close/open, 10))
+        universe: 股票池，支持 small_scale / hs300 / csi500 / csi1000 / csi2000
+        start_date: 起始日期 YYYY-MM-DD，默认 end_date 前 365 天
+        end_date: 截止日期 YYYY-MM-DD，默认今天
+
+    Returns:
+        JSON string with trading_days and data: [{date, values: {symbol: score}, count}].
+    """
+    try:
+        result = await asyncio.to_thread(
+            _compute_factor_values_payload,
+            expression,
+            universe,
+            start_date,
+            end_date,
+        )
+        return json.dumps(result, ensure_ascii=False, indent=2, default=str)
+    except Exception as e:
+        logger.warning(f"compute_factor_values failed: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
 # Operator documentation fallback

@@ -15,9 +15,9 @@ from .optimizer import optimize_candidate_weights
 from .report import generate_strategy_report
 from .result import StrategyBacktestResult
 from .score import compute_strategy_score_from_metrics
-from .validation import run_strategy_anti_overfit, run_strategy_rolling_validation
 from .spec import parse_strategy_spec
 from .templates import get_strategy_template, instantiate_strategy_template, list_strategy_templates
+from .validation import run_strategy_anti_overfit, run_strategy_rolling_validation
 from .validator import validate_strategy_spec as _validate_strategy_spec
 
 

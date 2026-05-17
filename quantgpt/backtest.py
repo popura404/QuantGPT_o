@@ -465,16 +465,29 @@ def _calc_ic_series(
 
     Returns (ic_series, rank_ic_series) as pd.Series indexed by date.
     """
-    # Compute forward N-day return per stock
-    # For day T: fwd_ret = (close[T+N] - close[T]) / close[T]
-    # Using pct_change(N).shift(-N) for clean, industry-standard forward returns.
     work = work.copy()
     work = work.sort_values(["stock_code", "trade_date"]).reset_index(drop=True)
-    work["fwd_ret"] = (
-        work.groupby("stock_code")["close"]
-        .pct_change(holding_period)
-        .shift(-holding_period)
+    work["trade_date"] = pd.to_datetime(work["trade_date"])
+
+    # Calendar-based forward returns: every stock on date T uses the same
+    # market trading date T+N, so suspensions or missing rows do not shift
+    # individual stocks onto a different horizon.
+    all_dates = sorted(work["trade_date"].dropna().unique())
+    date_fwd_map = {
+        all_dates[i]: all_dates[i + holding_period]
+        for i in range(len(all_dates) - holding_period)
+    }
+    work["_fwd_date"] = work["trade_date"].map(date_fwd_map)
+    future_close = work[["trade_date", "stock_code", "close"]].rename(
+        columns={"trade_date": "_fwd_date", "close": "_fwd_close"}
     )
+    work = work.merge(future_close, on=["_fwd_date", "stock_code"], how="left")
+    work["fwd_ret"] = np.where(
+        (work["close"] > 0) & work["_fwd_close"].notna(),
+        work["_fwd_close"] / work["close"] - 1,
+        np.nan,
+    )
+    work = work.drop(columns=["_fwd_date", "_fwd_close"])
 
     valid = work.dropna(subset=["factor_value", "fwd_ret"])
     if valid.empty:

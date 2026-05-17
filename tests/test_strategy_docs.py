@@ -6,7 +6,6 @@ from pathlib import Path
 
 from quantgpt.strategy.validator import validate_strategy_spec
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 

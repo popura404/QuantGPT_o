@@ -101,6 +101,7 @@ MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先�
 | `validate_expression` | 验证因子表达式语法 |
 | `run_backtest` | 执行因子回测，生成 HTML 报告 |
 | `score_factor` | 因子综合评分 (0-100, A/B/C/D) |
+| `compute_factor_values` | 输出每日全市场截面因子值 |
 | `diagnose_factor` | 诊断因子问题，推荐改进策略 |
 | `run_anti_overfit` | 反过拟合检测 (4 项测试) |
 | `run_rolling_validation` | 滚动验证 (Walk-Forward) |
@@ -141,6 +142,55 @@ MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先�
 | `benchmark` | str | `hs300` | 基准指数：`hs300` / `zz500` / `sz50` |
 | `neutralize_industry` | bool | `true` | 行业中性化 |
 | `neutralize_cap` | bool | `true` | 市值中性化 |
+
+---
+
+### `compute_factor_values`
+
+计算某个因子表达式在指定股票池和日期区间内的每日截面得分。该工具只输出原始因子值，不执行分组回测，也不生成报告。
+
+参数：
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `expression` | str | 必填 | 因子表达式 |
+| `universe` | str | `csi500` | 股票池：`small_scale` / `hs300` / `csi500` / `csi1000` / `csi2000` |
+| `start_date` | str | `end_date` 前 365 天 | 起始日期 YYYY-MM-DD |
+| `end_date` | str | 今天 | 结束日期 YYYY-MM-DD |
+
+示例：
+
+```json
+{
+  "expression": "rank(ts_mean(close/open, 10))",
+  "universe": "csi500",
+  "start_date": "2025-01-01",
+  "end_date": "2025-12-31"
+}
+```
+
+返回：
+
+```json
+{
+  "expression": "rank(ts_mean(close/open, 10))",
+  "universe": "csi500",
+  "start_date": "2025-01-01",
+  "end_date": "2025-12-31",
+  "trading_days": 1,
+  "data": [
+    {
+      "date": "2025-01-02",
+      "values": {
+        "sh.600000": 0.812345
+      },
+      "count": 1
+    }
+  ]
+}
+```
+
+日期跨度最大 750 天。服务会在起始日前额外取 260 天行情用于滚动表达式预热。
 
 ---
 
