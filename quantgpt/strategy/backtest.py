@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -70,37 +71,38 @@ def run_strategy_backtest(
         )
     if market_df is None or len(market_df) == 0:
         raise ValueError("No market data available for strategy backtest")
-    stock_codes = stock_codes or sorted(market_df["stock_code"].dropna().astype(str).unique().tolist())
+    market_frame = cast(pd.DataFrame, market_df)
+    stock_codes = stock_codes or sorted(market_frame["stock_code"].dropna().astype(str).unique().tolist())
 
     expressions = [factor.expression for factor in req.spec.factors]
     fund_vars = set()
     for expression in expressions:
         fund_vars.update(detect_fundamental_vars(expression))
     if fund_vars:
-        market_df = enrich_market_data(market_df, fund_vars, stock_codes, req.start_date, req.end_date)
+        market_frame = enrich_market_data(market_frame, fund_vars, stock_codes, req.start_date, req.end_date)
 
-    market_df = market_df.copy()
-    market_df["trade_date"] = pd.to_datetime(market_df["trade_date"])
-    market_df = market_df.sort_values(["stock_code", "trade_date"])
-    if "daily_ret" not in market_df.columns:
-        market_df["daily_ret"] = market_df.groupby("stock_code")["close"].pct_change()
+    market_frame = market_frame.copy()
+    market_frame["trade_date"] = pd.to_datetime(market_frame["trade_date"])
+    market_frame = market_frame.sort_values(["stock_code", "trade_date"])
+    if "daily_ret" not in market_frame.columns:
+        market_frame["daily_ret"] = market_frame.groupby("stock_code")["close"].pct_change()
 
-    market_df, raw_factor_for_ic = _compute_strategy_factor_values(
-        market_df,
+    market_frame, raw_factor_for_ic = _compute_strategy_factor_values(
+        market_frame,
         req.spec,
         neutralize_industry=req.neutralize_industry,
         neutralize_cap=req.neutralize_cap,
     )
 
     all_rebalance_dates = build_rebalance_dates(
-        market_df["trade_date"].unique(),
+        market_frame["trade_date"].unique(),
         req.spec.portfolio_rule.rebalance_period,
         req.rebalance_anchor,
     )
     if len(all_rebalance_dates) < 2:
         raise ValueError("Not enough rebalance dates for strategy backtest")
 
-    factor_frame = market_df[["trade_date", "stock_code", "factor_value", "daily_ret", "close"]].dropna(
+    factor_frame = market_frame[["trade_date", "stock_code", "factor_value", "daily_ret", "close"]].dropna(
         subset=["factor_value"]
     ).copy()
     rebalance_frame = factor_frame[factor_frame["trade_date"].isin(all_rebalance_dates)].copy()

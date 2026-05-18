@@ -1,5 +1,11 @@
 import { authFetch, BASE, parseError } from "./client";
-import type { StrategyBacktestPayload, StrategyTemplateSummary, StrategyValidationResult } from "../types/strategy";
+import type {
+  StrategyBacktestPayload,
+  StrategyBacktestResultPayload,
+  StrategyExportPayload,
+  StrategyTemplateSummary,
+  StrategyValidationResult,
+} from "../types/strategy";
 
 export async function listStrategyTemplates(): Promise<StrategyTemplateSummary[]> {
   const res = await authFetch(`${BASE}/api/v1/strategy/templates`);
@@ -39,6 +45,15 @@ export async function submitStrategyBacktest(payload: StrategyBacktestPayload): 
   const res = await authFetch(`${BASE}/api/v1/strategy/backtest`, {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export async function exportStrategyCandidate(result: StrategyBacktestResultPayload): Promise<StrategyExportPayload> {
+  const res = await authFetch(`${BASE}/api/v1/strategy/export`, {
+    method: "POST",
+    body: JSON.stringify({ result }),
   });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();

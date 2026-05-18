@@ -417,6 +417,9 @@ async def cancel_task(
         logger.info(f"[{task_id}] cancel requested by user")
         return {"task_id": task_id, "status": "cancelled"}
 
+    if user is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
     result = await db.execute(
         select(TaskModel).where(TaskModel.id == task_id, TaskModel.user_id == user.id)
     )

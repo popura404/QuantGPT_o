@@ -1,6 +1,10 @@
 import { useState, useRef, useCallback } from "react";
-import type { Task, BacktestRequest } from "../types/backtest";
+import type { BacktestResult, Task, BacktestRequest } from "../types/backtest";
 import { submitBacktest, streamTask, submitIteration, selectCandidate, cancelTask } from "../api/client";
+
+function isBacktestResult(result: Task["result"] | undefined): result is BacktestResult {
+  return Boolean(result && "params" in result && "metrics" in result && "backtest_summary" in result);
+}
 
 export function useBacktest(onComplete?: (task: Task) => void, sessionId?: string | null) {
   const [activeTask, setActiveTask] = useState<Task | null>(null);
@@ -107,7 +111,7 @@ export function useBacktest(onComplete?: (task: Task) => void, sessionId?: strin
         const result = await selectCandidate(iterTaskId, index);
         if (result.expression) {
           setActiveTask((prev) => {
-            if (!prev || !prev.result) return prev;
+            if (!prev || !isBacktestResult(prev.result)) return prev;
             return {
               ...prev,
               expression: result.expression as string,

@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth import GUEST_USER_ID, get_current_user, get_optional_user
+from ..auth import get_current_user
 from ..db import get_db
 from ..models import Strategy as StrategyModel
 from ..models import StrategyRun as StrategyRunModel
@@ -140,7 +140,7 @@ def strategy_validate(req: StrategyValidateRequest):
 async def strategy_backtest(
     req: StrategyBacktestRequestBody,
     request: Request,
-    user: User | None = Depends(get_optional_user),
+    user: User = Depends(get_current_user),
 ):
     client_ip = request.client.host if request.client else "unknown"
     if not check_rate_limit(client_ip):
@@ -149,12 +149,8 @@ async def strategy_backtest(
         raise HTTPException(status_code=503, detail="当前回测任务已满，请稍后再试")
 
     cleanup_tasks()
-    is_guest = user is None
-    user_id = str(user.id) if user else GUEST_USER_ID
+    user_id = str(user.id)
     body = req.model_dump()
-    if is_guest:
-        body["spec"] = dict(body["spec"])
-        body["spec"]["universe"] = "small_scale"
 
     validation = validate_strategy_payload(body["spec"])
     if not validation["is_valid"]:
@@ -170,7 +166,7 @@ async def strategy_backtest(
             "task_type": "strategy_backtest",
             "params": body,
             "created_at": time.time(),
-            "is_guest": is_guest,
+            "is_guest": False,
         }
 
     thread = threading.Thread(target=_run_strategy_backtest_task, args=(task_id, body, user_id), daemon=True)
@@ -179,7 +175,8 @@ async def strategy_backtest(
 
 
 @router.post("/export")
-def strategy_export(req: StrategyResultRequest):
+def strategy_export(req: StrategyResultRequest, user: User = Depends(get_current_user)):
+    del user
     try:
         return export_strategy_candidate_payload(req.result)
     except Exception as exc:

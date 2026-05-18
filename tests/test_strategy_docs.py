@@ -62,5 +62,15 @@ def test_strategy_mvp_docs_cover_entrypoints_and_boundaries():
     assert "StrategySpec v1 JSON Example" in strategy_spec
     assert "MVP Non-Goals" in strategy_spec
     assert "Post-MVP" in strategy_spec
+    assert "Current Post-MVP Capability Status" in strategy_spec
+    assert "summary_json" in strategy_spec
+    assert "server-side artifact path" in strategy_spec
+    assert "not an order protocol" in strategy_spec
     assert "/api/v1/strategy/backtest" in quickstart
     assert "策略工作台" in quickstart
+    assert "track task status" in quickstart
+    assert "candidate export" in quickstart
+    assert "anonymous 和 guest token 返回 401" in api_doc
+    assert "task submission, status tracking, result display, HTML report access, and candidate export" in _read_doc(
+        "docs/POST_MVP_SCOPE.md"
+    )

@@ -249,4 +249,7 @@ def compute_industry_signals(
     logger.info(
         f"[industry_signals] Computed signals for {len(results)} industries"
     )
-    return sanitize_for_json(json.loads(json.dumps(results, default=json_default)))
+    cleaned = sanitize_for_json(json.loads(json.dumps(results, default=json_default)))
+    if not isinstance(cleaned, list):
+        return []
+    return [item for item in cleaned if isinstance(item, dict)]

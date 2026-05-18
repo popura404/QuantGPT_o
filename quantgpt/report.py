@@ -37,34 +37,35 @@ def generate_report(
     """
     import quantstats as qs
 
-    output_dir = Path(output_dir) if output_dir else (_PROJECT_ROOT / "reports")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = Path(output_dir) if output_dir else (_PROJECT_ROOT / "reports")
+    output_path.mkdir(parents=True, exist_ok=True)
 
     returns = ls_returns.sort_index().copy()
     returns.index = pd.to_datetime(returns.index).normalize()
     returns.name = "Strategy"
 
-    if benchmark_returns is not None:
-        benchmark_returns = benchmark_returns.copy()
-        benchmark_returns.index = pd.to_datetime(benchmark_returns.index).normalize()
-        benchmark_returns = benchmark_returns.sort_index()
+    benchmark_series = benchmark_returns
+    if benchmark_series is not None:
+        benchmark_series = benchmark_series.copy()
+        benchmark_series.index = pd.to_datetime(benchmark_series.index).normalize()
+        benchmark_series = benchmark_series.sort_index()
         # Align benchmark to returns dates
-        bm_aligned = benchmark_returns.reindex(returns.index, method="ffill")
+        bm_aligned = benchmark_series.reindex(returns.index, method="ffill")
         valid = ~bm_aligned.isna()
         if valid.sum() < 2:
             logger.warning("Insufficient benchmark overlap, generating report without benchmark")
-            benchmark_returns = None
+            benchmark_series = None
         else:
             returns = returns[valid]
-            benchmark_returns = bm_aligned[valid]
+            benchmark_series = bm_aligned[valid]
 
     # Generate HTML
     timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-    report_path = str(output_dir / f"backtest_report_{timestamp}.html")
+    report_path = str(output_path / f"backtest_report_{timestamp}.html")
 
     qs.reports.html(
         returns,
-        benchmark=benchmark_returns,
+        benchmark=benchmark_series,
         output=report_path,
         title=title,
         rf=0.03,

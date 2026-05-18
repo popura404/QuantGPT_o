@@ -376,7 +376,7 @@ class WQBrainClient:
                     "detail": f"submitted and ACTIVE, SC={sc_result}",
                     "platform_status": status,
                 }
-            elif sc_result == "FAIL":
+            elif sc_result == "FAIL" and sc_check is not None:
                 sc_value = sc_check.get("value", "?")
                 sc_limit = sc_check.get("limit", "?")
                 logger.warning(f"Submit {alpha_id}: SC FAIL (value={sc_value}, limit={sc_limit})")

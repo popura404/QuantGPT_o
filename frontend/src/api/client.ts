@@ -68,6 +68,16 @@ export async function parseError(res: Response): Promise<string> {
   }
 }
 
+export class TaskFetchError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "TaskFetchError";
+    this.status = status;
+  }
+}
+
 export async function submitBacktest(req: BacktestRequest, sessionId?: string): Promise<{ task_id: string; status: string }> {
   const body = sessionId ? { ...req, session_id: sessionId } : req;
   const res = await authFetch(`${BASE}/api/v1/auto_backtest`, {
@@ -87,7 +97,7 @@ export async function cancelTask(taskId: string): Promise<void> {
 
 export async function getTask(taskId: string): Promise<Task> {
   const res = await authFetch(`${BASE}/api/v1/tasks/${taskId}`);
-  if (!res.ok) throw new Error(`Task fetch failed: ${res.status}`);
+  if (!res.ok) throw new TaskFetchError(res.status, await parseError(res));
   return res.json();
 }
 
@@ -95,11 +105,13 @@ export function streamTask(
   taskId: string,
   onUpdate: (task: Task) => void,
   onDone: () => void,
-  _onError?: (err: Event) => void,
+  onError?: (message: string) => void,
 ): () => void {
   let closed = false;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let retryCount = 0;
+  let lastStreamError: string | null = null;
+  let lastPollingError: string | null = null;
   const MAX_RETRIES = 3;
 
   function cleanup() {
@@ -107,41 +119,71 @@ export function streamTask(
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   }
 
-  function startPolling() {
+  function startPolling(context?: string) {
     if (closed || pollTimer) return;
+    if (context) onError?.(context);
     pollTimer = setInterval(async () => {
       if (closed) { cleanup(); return; }
       try {
         const task = await getTask(taskId);
+        lastPollingError = null;
         onUpdate(task);
         if (task.status === "completed" || task.status === "failed" || task.status === "cancelled" || task.status === "iteration_completed") {
           cleanup();
           onDone();
         }
-      } catch {
-        // keep polling
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "任务状态读取失败";
+        if (err instanceof TaskFetchError && [401, 403, 404].includes(err.status)) {
+          cleanup();
+          onError?.(message);
+          return;
+        }
+        if (message !== lastPollingError) {
+          lastPollingError = message;
+          onError?.(message);
+        }
       }
     }, 3000);
   }
 
-  async function acquireTicket(): Promise<string | null> {
-    if (_authDisabled) return null;
+  async function acquireTicket(): Promise<{ ticket: string | null; error?: string; fatal?: boolean }> {
+    if (_authDisabled) return { ticket: null };
     try {
       const res = await authFetch(`${BASE}/api/v1/tasks/${taskId}/sse-ticket`, {
         method: "POST",
       });
-      if (!res.ok) return null;
+      if (!res.ok) {
+        return {
+          ticket: null,
+          error: await parseError(res),
+          fatal: [401, 403, 404].includes(res.status),
+        };
+      }
       const data = await res.json();
-      return data.ticket as string;
-    } catch {
-      return null;
+      return { ticket: data.ticket as string };
+    } catch (err) {
+      return {
+        ticket: null,
+        error: err instanceof Error ? err.message : "SSE ticket 获取失败",
+      };
     }
   }
 
   async function connect() {
     if (closed) return;
 
-    const ticket = await acquireTicket();
+    const { ticket, error: ticketError, fatal } = await acquireTicket();
+    if (ticketError) {
+      lastStreamError = ticketError;
+      if (fatal) {
+        cleanup();
+        onError?.(ticketError);
+        return;
+      }
+      startPolling(ticketError);
+      return;
+    }
     const url = `${BASE}/api/v1/tasks/${taskId}/stream${ticket ? `?ticket=${ticket}` : ""}`;
 
     const es = new EventSource(url);
@@ -162,12 +204,13 @@ export function streamTask(
       es.close();
       if (closed) return;
       retryCount++;
+      lastStreamError = "任务流连接失败";
       if (retryCount <= MAX_RETRIES) {
         // Retry SSE after a short delay (need new ticket each time)
         setTimeout(connect, 2000 * retryCount);
       } else {
         // Fall back to polling
-        startPolling();
+        startPolling(lastStreamError);
       }
     });
 

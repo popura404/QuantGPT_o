@@ -33,7 +33,8 @@ def eval_factor_expression(df: pd.DataFrame, expression: str) -> pd.Series:
 
     Falls back to Python expression_parser if Rust is unavailable.
     """
-    if not RUST_ENABLED:
+    engine = _engine
+    if not RUST_ENABLED or engine is None:
         from .expression_parser import parse_expression
         fn = parse_expression(expression)
         return fn(df)
@@ -84,7 +85,7 @@ def eval_factor_expression(df: pd.DataFrame, expression: str) -> pd.Series:
         stock_offsets.append((start, len(sc)))
 
     try:
-        result = _engine.eval_expression(expression, columns, stock_offsets, date_offsets)
+        result = engine.eval_expression(expression, columns, stock_offsets, date_offsets)
         return pd.Series(result, index=df.index, name="factor_value")
     except Exception as e:
         logger.warning(f"Rust eval_expression failed ({e}), falling back to Python")
@@ -95,11 +96,12 @@ def eval_factor_expression(df: pd.DataFrame, expression: str) -> pd.Series:
 
 def compute_metrics_rust(daily_returns: pd.Series, periods_per_year: int = 252) -> dict:
     """Compute performance metrics using Rust engine."""
-    if not RUST_ENABLED:
+    engine = _engine
+    if not RUST_ENABLED or engine is None:
         return {}
 
     rets = daily_returns.to_numpy(dtype=np.float64, na_value=0.0)
     try:
-        return dict(_engine.compute_metrics(rets, float(periods_per_year)))
+        return dict(engine.compute_metrics(rets, float(periods_per_year)))
     except Exception:
         return {}

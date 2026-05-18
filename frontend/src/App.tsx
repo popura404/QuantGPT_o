@@ -1,5 +1,5 @@
 import { useCallback, useState, useEffect } from "react";
-import type { Task } from "./types/backtest";
+import type { BacktestResult, Task } from "./types/backtest";
 import { useBacktest } from "./hooks/useBacktest";
 import { useTaskHistory } from "./hooks/useTaskHistory";
 import { useSession } from "./hooks/useSession";
@@ -26,6 +26,10 @@ function getTabFromHash(): MainTab {
   const validIds = TABS.map((t) => t.id);
   if (validIds.includes(hash as MainTab)) return hash as MainTab;
   return "dashboard";
+}
+
+function isBacktestResult(result: Task["result"] | undefined): result is BacktestResult {
+  return Boolean(result && "params" in result && "metrics" in result && "backtest_summary" in result);
 }
 
 export default function App() {
@@ -141,18 +145,21 @@ export default function App() {
   );
 
   const handleSaveFactor = useCallback(async () => {
-    if (!activeTask?.result || saving) return;
-    const expr = activeTask.result.params.expression;
+    if (saving) return;
+    const result = activeTask?.result;
+    const taskId = activeTask?.task_id;
+    if (!taskId || !isBacktestResult(result)) return;
+    const expr = result.params.expression;
     if (savedExpressions.has(expr)) return;
     setSaving(true);
     try {
       await saveFactor({
-        task_id: activeTask.task_id,
+        task_id: taskId,
         expression: expr,
-        metrics: activeTask.result.metrics as unknown as Record<string, unknown>,
-        backtest_summary: activeTask.result.backtest_summary as unknown as Record<string, unknown>,
-        params: activeTask.result.params as unknown as Record<string, unknown>,
-        report_url: activeTask.result.report_url,
+        metrics: result.metrics as unknown as Record<string, unknown>,
+        backtest_summary: result.backtest_summary as unknown as Record<string, unknown>,
+        params: result.params as unknown as Record<string, unknown>,
+        report_url: result.report_url,
       });
       setSavedExpressions((prev) => new Set(prev).add(expr));
       setFactorLibKey((k) => k + 1);
@@ -174,7 +181,8 @@ export default function App() {
     activeTask.status !== "pending" &&
     activeTask.status !== "completed" &&
     activeTask.status !== "failed";
-  const showResults = activeTask?.status === "completed" && activeTask.result;
+  const activeBacktestResult = isBacktestResult(activeTask?.result) ? activeTask.result : null;
+  const showResults = activeTask?.status === "completed" && activeBacktestResult;
   const showError = activeTask?.status === "failed";
 
 
@@ -212,10 +220,10 @@ export default function App() {
 
               {showResults && activeTask.result && (
                 <ResultsDashboard
-                  result={activeTask.result}
+                  result={activeBacktestResult}
                   onSaveFactor={isGuest ? undefined : handleSaveFactor}
                   isSaving={saving}
-                  isSaved={savedExpressions.has(activeTask.result.params.expression)}
+                  isSaved={savedExpressions.has(activeBacktestResult.params.expression)}
                   iterationSlot={isGuest ? undefined :
                     <IterationPanel
                       parentTaskId={activeTask.task_id}

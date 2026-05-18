@@ -163,6 +163,24 @@ strategy-level validation support.
 Post-MVP still does not permit broker, account, order, API key, execution, or
 real-money workflow fields.
 
+## Current Post-MVP Capability Status
+
+The current repository keeps `StrategySpecV0` narrow, but it also contains
+Post-MVP strategy capabilities:
+
+- `StrategySpecV1` supports multi-factor specs, `top_n`, and `score_weighted`
+  portfolios while keeping v0 compatibility.
+- REST and MCP both expose strategy validation, async backtest, scoring,
+  report generation, diagnosis, strategy-level validation summaries, candidate
+  SignalExport, templates, optimization, and persistence endpoints.
+- The browser `策略工作台` can instantiate templates, validate JSON, submit a
+  strategy task, track status, display `strategy_score`, metrics, latest
+  holdings, open the generated HTML report, and export candidate signals.
+- `summary_json` is a server-side artifact path. Frontend clients should use
+  `strategy_result` for on-page summaries and `report_url` for report access.
+- SignalExport is a research candidate format. It is not an order protocol and
+  still contains no broker, account, API key, execution, or real-money fields.
+
 ## Backtest Request Example
 
 ```json
@@ -272,6 +290,10 @@ for the `StrategySpecV0` closeout.
 - no strategy-level anti-overfit or rolling validation execution
 - no strategy persistence table or frontend strategy workbench
 - no broker, account, order, trade execution, or real-money capability
+
+These v0 non-goals do not mean the current repository lacks Post-MVP endpoints.
+Use the "Current Post-MVP Capability Status" section above for current code
+capability.
 
 ## Validation
 

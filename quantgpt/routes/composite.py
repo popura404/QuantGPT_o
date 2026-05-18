@@ -5,6 +5,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from typing import Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
@@ -17,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["composite"])
 
+CombinationMethod = Literal["weighted_rank", "weighted_zscore", "equal_weight"]
+
 
 class FactorItem(BaseModel):
     expression: str = Field(..., description="因子表达式")
@@ -26,7 +29,10 @@ class FactorItem(BaseModel):
 
 class CompositeBacktestRequest(BaseModel):
     factors: list[FactorItem] = Field(..., min_length=2, max_length=10, description="因子列表")
-    combination_method: str = Field("weighted_rank", description="组合方式: weighted_rank / weighted_zscore / equal_weight")
+    combination_method: CombinationMethod = Field(
+        "weighted_rank",
+        description="组合方式: weighted_rank / weighted_zscore / equal_weight",
+    )
     universe: str = Field("hs300", description="股票池")
     start_date: str = Field("2023-01-01")
     end_date: str = Field("2025-12-31")
@@ -37,11 +43,11 @@ class CompositeBacktestRequest(BaseModel):
 
     @field_validator("combination_method")
     @classmethod
-    def validate_method(cls, v: str) -> str:
+    def validate_method(cls, v: str) -> CombinationMethod:
         valid = {"weighted_rank", "weighted_zscore", "equal_weight"}
         if v not in valid:
             raise ValueError(f"combination_method 必须是 {valid} 之一")
-        return v
+        return cast(CombinationMethod, v)
 
     _validate_universe = field_validator("universe")(validate_universe_value)
     _validate_dates = field_validator("start_date", "end_date")(validate_date_format)

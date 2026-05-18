@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .spec import StrategySpecV0, StrategySpecV1
+
 SCHEMA_INVALID = "SCHEMA_INVALID"
 SCHEMA_UNKNOWN_FIELD = "SCHEMA_UNKNOWN_FIELD"
 EXPRESSION_INVALID = "EXPRESSION_INVALID"
@@ -33,7 +35,7 @@ class StrategyValidationIssue:
 class StrategyValidationResult:
     is_valid: bool
     issues: list[StrategyValidationIssue] = field(default_factory=list)
-    spec: object | None = None
+    spec: StrategySpecV0 | StrategySpecV1 | None = None
 
     def to_dict(self) -> dict:
         return {

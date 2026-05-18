@@ -143,8 +143,9 @@ rolling/anti-overfit are Post-MVP.
 
 Post-MVP strategy mode adds StrategySpec v1 templates and a browser workbench.
 Open the `策略工作台` tab after starting the server to instantiate a template,
-edit JSON, validate it, and submit a strategy backtest. The same workflow is
-available through:
+edit JSON, validate it, submit a strategy backtest, track task status, view
+score/metrics/holdings, open the generated report, and run candidate export for
+signals. The same workflow is available through:
 
 ```bash
 curl http://localhost:8003/api/v1/strategy/templates

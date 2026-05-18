@@ -1,3 +1,5 @@
+import type { StrategyBacktestTaskResult } from "./strategy";
+
 export type TaskStatus =
   | "pending"
   | "generating_expression"
@@ -178,8 +180,8 @@ export interface Task {
   params?: BacktestRequest;
   expression?: string;
   error?: string;
-  result?: BacktestResult;
-  task_type?: "backtest" | "iteration" | "composite";
+  result?: BacktestResult | (StrategyBacktestTaskResult & Partial<BacktestResult>);
+  task_type?: "backtest" | "iteration" | "composite" | "strategy_backtest";
   parent_task_id?: string;
   candidates?: IterationCandidate[];
   candidates_done?: number;

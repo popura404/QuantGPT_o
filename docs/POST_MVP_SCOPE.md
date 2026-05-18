@@ -24,7 +24,7 @@ This run is authorized to complete the PMVP execution packages from
 | PMVP5 | Strategy-level anti-overfit and rolling validation summaries |
 | PMVP6 | One non-A-share demo market adapter with contract tests |
 | PMVP7 | Strategy persistence models, migration, and REST access |
-| PMVP8 | Frontend strategy workbench for spec validation and task submission |
+| PMVP8 | Frontend strategy workbench for template instantiation, spec validation, task submission, status tracking, result display, HTML report access, and candidate export |
 | PMVP9 | Strategy templates, governance metadata, and candidate optimizer |
 
 ## Permanent Boundaries

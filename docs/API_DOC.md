@@ -485,9 +485,11 @@ pending → iterating → iteration_completed / failed
 
 ## 策略框架
 
-策略框架 API 使用 `StrategySpecV0` 作为结构化输入。MVP 只支持
-`a_share + single factor + rank_threshold + equal_weight + risk v0`，不提供
-多因子、top N、多市场、独立 SignalExport、策略持久化、前端策略工作台或任何券商/账户/下单能力。
+策略框架 API 使用 `StrategySpecV0` 作为 MVP 结构化输入。MVP 只支持
+`a_share + single factor + rank_threshold + equal_weight + risk v0`。
+当前仓库还包含 Post-MVP 能力：`StrategySpecV1`、多因子、top N、候选
+SignalExport、策略持久化、模板、优化器和前端策略工作台。所有策略能力仍不提供
+券商、账户、下单、API key 执行或实盘交易能力。
 
 ### GET /api/v1/strategy/markets
 
@@ -598,7 +600,9 @@ pending → iterating → iteration_completed / failed
 
 ### POST /api/v1/strategy/backtest
 
-提交策略级异步回测任务。游客请求会被限制到 `small_scale` 股票池；登录用户使用请求中的 universe。
+提交策略级异步回测任务。认证开启时仅登录用户或 API key 用户可提交；
+anonymous 和 guest token 返回 401，且不会创建不可追踪策略任务。
+`AUTH_DISABLED=true` 时使用 dev user 路径，允许本地开发提交。
 
 **请求体:**
 
@@ -660,6 +664,9 @@ pending → iterating → iteration_completed / failed
 }
 ```
 
+`summary_json` 是服务端内部产物路径，不作为浏览器下载 URL 暴露。前端应读取
+`strategy_result` 摘要字段，并通过 `report_url` 访问 HTML 报告。
+
 ### Post-MVP Strategy Endpoints
 
 Post-MVP adds versioned strategy extensions while keeping the same non-trading
@@ -670,7 +677,7 @@ boundary.
 | `GET /api/v1/strategy/templates` | List template summaries and governance bounds |
 | `GET /api/v1/strategy/templates/{template_id}` | Read one template |
 | `POST /api/v1/strategy/templates/{template_id}/instantiate` | Create a StrategySpec from a template |
-| `POST /api/v1/strategy/export` | Export candidate rebalance signals from a strategy result |
+| `POST /api/v1/strategy/export` | Export candidate rebalance signals from a strategy result; requires login/API key |
 | `POST /api/v1/strategy/diagnose` | Return diagnosis taxonomy and suggested spec changes |
 | `POST /api/v1/strategy/anti-overfit` | Run strategy-level anti-overfit summary checks |
 | `POST /api/v1/strategy/rolling-validation` | Run strategy-level rolling validation summary |

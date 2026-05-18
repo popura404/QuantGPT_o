@@ -595,7 +595,7 @@ class MarketDataFetcher:
             return result
         return None
 
-    def calculate_forward_returns(self, df: pd.DataFrame, periods: list[int] = None) -> pd.DataFrame:
+    def calculate_forward_returns(self, df: pd.DataFrame, periods: list[int] | None = None) -> pd.DataFrame:
         """Add fwd_ret_{N}d columns."""
         periods = periods or [5]
         df = df.sort_values(["stock_code", "trade_date"])

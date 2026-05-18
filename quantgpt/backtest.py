@@ -9,6 +9,7 @@ returns per group. The strategy return is the top group's daily return.
 
 import logging
 import threading
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -163,13 +164,14 @@ def calculate_turnover_from_weights(
 ) -> float:
     """Calculate average daily turnover from target-weight snapshots."""
     if isinstance(weights_by_date, pd.DataFrame):
+        weights_frame = cast(pd.DataFrame, weights_by_date)
         required = {"trade_date", "stock_code", "target_weight"}
-        missing = required - set(weights_by_date.columns)
+        missing = required - set(weights_frame.columns)
         if missing:
             raise ValueError(f"weights_by_date missing columns: {sorted(missing)}")
         weight_map = {
             date: group.set_index("stock_code")["target_weight"].astype(float).to_dict()
-            for date, group in weights_by_date.groupby("trade_date")
+            for date, group in weights_frame.groupby("trade_date")
         }
     else:
         weight_map = weights_by_date

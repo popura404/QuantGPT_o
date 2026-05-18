@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+import pandas as pd
+
 
 @dataclass(frozen=True)
 class DataField:
@@ -50,10 +52,16 @@ class MarketAdapter(Protocol):
     def get_universe(self, universe: str, date: str | None = None) -> list[str]:
         ...
 
-    def fetch_market_data(self, universe: str, start_date: str, end_date: str, universe_date: str | None = None):
+    def fetch_market_data(
+        self,
+        universe: str,
+        start_date: str,
+        end_date: str,
+        universe_date: str | None = None,
+    ) -> tuple[pd.DataFrame, list[str]]:
         ...
 
-    def fetch_benchmark_returns(self, benchmark: str, start_date: str, end_date: str):
+    def fetch_benchmark_returns(self, benchmark: str, start_date: str, end_date: str) -> pd.Series:
         ...
 
 

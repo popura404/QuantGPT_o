@@ -1,6 +1,6 @@
 # QuantGPT MCP 配置指南
 
-QuantGPT 提供标准 MCP (Model Context Protocol) 接口，支持因子研究工具和 StrategySpec v0 策略工具。可通过 Claude Code、Claude Desktop 等 MCP 客户端直接调用。
+QuantGPT 提供标准 MCP (Model Context Protocol) 接口，支持因子研究工具、StrategySpec v0 策略工具，以及当前仓库已实现的 Post-MVP StrategySpec v1 扩展。可通过 Claude Code、Claude Desktop 等 MCP 客户端直接调用。
 
 ## 快速开始（推荐）
 
@@ -109,6 +109,9 @@ MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先�
 | `ask_deepseek` | 调用 DeepSeek LLM 进行研究评审（独立 MCP） |
 
 ### StrategySpec v0 策略工具
+
+这些工具保持非实盘边界。`export_strategy_candidate` 只输出候选调仓信号，
+不是订单协议，也不包含 broker/account/order/api_key/execution 字段。
 
 | 工具 | 说明 |
 |------|------|

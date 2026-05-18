@@ -19,29 +19,48 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from celery import Celery
-
 logger = logging.getLogger(__name__)
+
+try:
+    from celery import Celery
+except ImportError:  # pragma: no cover - exercised by default test env imports
+    Celery = None  # type: ignore[assignment]
 
 broker = os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0")
 backend = os.environ.get("CELERY_RESULT_BACKEND", "redis://localhost:6379/0")
 
-celery_app = Celery(
-    "quantgpt",
-    broker=broker,
-    backend=backend,
-)
+CELERY_AVAILABLE = Celery is not None
 
-celery_app.conf.update(
-    task_serializer="json",
-    result_serializer="json",
-    accept_content=["json"],
-    task_track_started=True,
-    task_time_limit=900,
-    task_soft_time_limit=600,
-    worker_prefetch_multiplier=1,
-    worker_max_tasks_per_child=50,
-)
+
+class _MissingCeleryApp:
+    def task(self, *args, **kwargs):
+        del args, kwargs
+
+        def decorator(fn):
+            return fn
+
+        return decorator
+
+
+if Celery is not None:
+    celery_app = Celery(
+        "quantgpt",
+        broker=broker,
+        backend=backend,
+    )
+
+    celery_app.conf.update(
+        task_serializer="json",
+        result_serializer="json",
+        accept_content=["json"],
+        task_track_started=True,
+        task_time_limit=900,
+        task_soft_time_limit=600,
+        worker_prefetch_multiplier=1,
+        worker_max_tasks_per_child=50,
+    )
+else:
+    celery_app = _MissingCeleryApp()
 
 ALLOWED_TASKS = {
     "quantgpt.task_executor._run_backtest_in_process",
@@ -125,8 +144,14 @@ def run_cpu_work(self, fn_path: str, args: list, kwargs: dict):
     if fn_path not in ALLOWED_TASKS:
         raise ValueError(f"Blocked task function: {fn_path}")
 
-    args = from_json_transport(args)
-    kwargs = from_json_transport(kwargs)
+    restored_args = from_json_transport(args)
+    restored_kwargs = from_json_transport(kwargs)
+    if not isinstance(restored_args, list):
+        raise TypeError("Celery task args must decode to a list")
+    if not isinstance(restored_kwargs, dict):
+        raise TypeError("Celery task kwargs must decode to a dict")
+    args = restored_args
+    kwargs = restored_kwargs
 
     module_path, fn_name = fn_path.rsplit(".", 1)
     mod = importlib.import_module(module_path)

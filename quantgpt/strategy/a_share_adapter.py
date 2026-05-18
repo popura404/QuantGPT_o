@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pandas as pd
+
 from .adapters import DataField, MarketCapabilities, adapter_registry
 
 
@@ -50,15 +52,23 @@ class AShareAdapter:
 
         return get_universe(universe, date=date)
 
-    def fetch_market_data(self, universe: str, start_date: str, end_date: str, universe_date: str | None = None):
+    def fetch_market_data(
+        self,
+        universe: str,
+        start_date: str,
+        end_date: str,
+        universe_date: str | None = None,
+    ) -> tuple[pd.DataFrame, list[str]]:
         from ..market_data import MarketDataFetcher
 
         stock_codes = self.get_universe(universe, date=universe_date or start_date)
         fetcher = MarketDataFetcher()
         market_df = fetcher.fetch_stocks(stock_codes, start_date, end_date)
+        if market_df is None:
+            market_df = pd.DataFrame()
         return market_df, stock_codes
 
-    def fetch_benchmark_returns(self, benchmark: str, start_date: str, end_date: str):
+    def fetch_benchmark_returns(self, benchmark: str, start_date: str, end_date: str) -> pd.Series:
         from ..market_data import fetch_benchmark_returns
 
         return fetch_benchmark_returns(benchmark, start_date, end_date)

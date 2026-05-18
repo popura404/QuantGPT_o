@@ -46,7 +46,13 @@ class DemoGlobalEquityAdapter:
             return [f"DG.{idx:03d}" for idx in range(1, 21)]
         raise ValueError(f"Unsupported demo universe: {universe}")
 
-    def fetch_market_data(self, universe: str, start_date: str, end_date: str, universe_date: str | None = None):
+    def fetch_market_data(
+        self,
+        universe: str,
+        start_date: str,
+        end_date: str,
+        universe_date: str | None = None,
+    ) -> tuple[pd.DataFrame, list[str]]:
         del universe_date
         stock_codes = self.get_universe(universe)
         dates = pd.bdate_range(start_date, end_date)
@@ -75,7 +81,7 @@ class DemoGlobalEquityAdapter:
                 })
         return pd.DataFrame(rows), stock_codes
 
-    def fetch_benchmark_returns(self, benchmark: str, start_date: str, end_date: str):
+    def fetch_benchmark_returns(self, benchmark: str, start_date: str, end_date: str) -> pd.Series:
         if benchmark != "demo_world":
             raise ValueError(f"Unsupported demo benchmark: {benchmark}")
         dates = pd.bdate_range(start_date, end_date)

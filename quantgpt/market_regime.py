@@ -94,7 +94,7 @@ def derive_market_regime(
     cat_strengths = {}
     for cat, sigs in by_cat.items():
         cat_strengths[cat] = np.mean([abs(s.signal_strength) for s in sigs])
-    dominant_category = max(cat_strengths, key=cat_strengths.get) if cat_strengths else "trend"
+    dominant_category = max(cat_strengths, key=lambda cat: cat_strengths[cat]) if cat_strengths else "trend"
 
     # --- Headline ---
     risk_comment = {

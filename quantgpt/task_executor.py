@@ -123,7 +123,9 @@ class CeleryTaskExecutor(TaskExecutor):
     }
 
     def __init__(self):
-        from .celery_app import celery_app
+        from .celery_app import CELERY_AVAILABLE, celery_app
+        if not CELERY_AVAILABLE:
+            raise RuntimeError("Celery backend requires installing the 'quantgpt[celery]' extra")
         self._app = celery_app
         logger.info("CeleryTaskExecutor initialized")
 
@@ -141,10 +143,11 @@ class CeleryTaskExecutor(TaskExecutor):
         pass
 
 
-class _CeleryFutureAdapter:
+class _CeleryFutureAdapter(Future):
     """Adapt Celery AsyncResult to concurrent.futures.Future interface."""
 
     def __init__(self, async_result):
+        super().__init__()
         self._ar = async_result
 
     def result(self, timeout=None):
