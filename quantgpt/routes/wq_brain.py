@@ -22,6 +22,7 @@ from ..task_store import (
 )
 from ..wq_brain_client import SUBMIT_THRESHOLDS, configured_accounts, get_client, is_configured
 from ..wq_brain_service import fitness_to_grade, run_list_alphas, run_single_simulation, safe_float
+from ..wq_submission_guard import require_submission_preflight
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,11 @@ class WQBrainSubmitRequest(BaseModel):
     neutralization: str = Field("SUBINDUSTRY", description="Neutralization method")
     truncation: float = Field(0.08, ge=0, le=0.5, description="Weight truncation")
     auto_submit: bool = Field(False, description="Auto-submit if checks pass")
+    submission_override_reason: str | None = Field(
+        None,
+        max_length=500,
+        description="Explicit reason to waive local OOS/data_quality preflight for formal submission",
+    )
     account: str = Field("primary", description="WQ account: 'primary' or 'alt'")
     session_id: str | None = Field(None, description="Session ID")
 
@@ -74,6 +80,7 @@ def _run_wq_brain_task(task_id: str, req: WQBrainSubmitRequest, user_id: str):
             neutralization=req.neutralization, truncation=req.truncation,
             auto_submit=req.auto_submit and account == "primary",
             user_id=user_id, tag=req.tag,
+            submission_override_reason=req.submission_override_reason,
             progress_callback=on_progress,
         )
         client.close()
@@ -238,6 +245,7 @@ async def list_submitted_alphas(
 @router.post("/{task_id}/submit-alpha")
 async def submit_alpha_from_task(
     task_id: str,
+    submission_override_reason: str | None = None,
     user: User = Depends(get_current_user),
 ):
     if not is_configured():
@@ -259,6 +267,20 @@ async def submit_alpha_from_task(
     account = task.get("params", {}).get("account", "primary")
     if account != "primary":
         raise HTTPException(status_code=403, detail="Alpha 提交仅允许 primary 账号，禁止从 alt 账号提交")
+
+    expression = result.get("expression") or task.get("expression") or task.get("params", {}).get("expression")
+    submission_preflight = require_submission_preflight(
+        expression,
+        override_reason=submission_override_reason,
+        unavailable_reason=f"Task {task_id} has no local expression provenance for submission preflight",
+    )
+    if not submission_preflight.get("allowed"):
+        raise HTTPException(status_code=400, detail={
+            "error_code": "LOCAL_PREFLIGHT_BLOCKED",
+            "message": "正式提交前必须通过本地 OOS/data_quality preflight",
+            "submission_preflight": submission_preflight,
+        })
+
     client = get_client(account)
     if not client.authenticate():
         raise HTTPException(status_code=502, detail=f"WQ BRAIN 认证失败 (account={account})")
@@ -266,6 +288,7 @@ async def submit_alpha_from_task(
     submit_result = client.submit_alpha(alpha_id)
     client.close()
     logger.info(f"[{task_id}] submit_alpha({alpha_id}) result: {submit_result}")
+    task["result"]["submission_preflight"] = submission_preflight
 
     if submit_result.get("ok"):
         task["result"]["submitted"] = True
@@ -292,6 +315,7 @@ async def submit_alpha_from_task(
         "alpha_id": alpha_id,
         "submitted": submit_result.get("ok", False),
         "detail": submit_result.get("detail", ""),
+        "submission_preflight": submission_preflight,
     }
 
 
@@ -316,6 +340,8 @@ async def check_alpha_platform_status(
 async def submit_alpha_by_id(
     alpha_id: str,
     account: str = "primary",
+    expression: str | None = None,
+    submission_override_reason: str | None = None,
     user: User = Depends(get_current_user),
 ):
     """Submit alpha directly by alpha_id. Polls until platform confirms or SC fails."""
@@ -323,12 +349,26 @@ async def submit_alpha_by_id(
         raise HTTPException(status_code=403, detail="Alpha 提交仅允许 primary 账号")
     if not is_configured(account):
         raise HTTPException(status_code=503, detail="WQ BRAIN 未配置")
+
+    submission_preflight = require_submission_preflight(
+        expression,
+        override_reason=submission_override_reason,
+        unavailable_reason=f"Alpha {alpha_id} has no local expression provenance for submission preflight",
+    )
+    if not submission_preflight.get("allowed"):
+        raise HTTPException(status_code=400, detail={
+            "error_code": "LOCAL_PREFLIGHT_BLOCKED",
+            "message": "正式提交前必须通过本地 OOS/data_quality preflight",
+            "submission_preflight": submission_preflight,
+        })
+
     client = get_client(account)
     if not client.authenticate():
         raise HTTPException(status_code=502, detail=f"WQ BRAIN 认证失败 (account={account})")
     result = client.submit_alpha(alpha_id)
     client.close()
     logger.info(f"submit-by-id {alpha_id}: {result}")
+    result["submission_preflight"] = submission_preflight
     return result
 
 

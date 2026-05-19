@@ -1,9 +1,14 @@
 import { useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { useColorMode } from "../contexts/ColorModeContext";
+import type { DataQualityRequest, DirectionMode, OOSRequest } from "../types/backtest";
+import OOSSettingsPanel from "./backtest/OOSSettingsPanel";
+import DataQualitySettingsPanel from "./backtest/DataQualitySettingsPanel";
+import DirectionSettingsPanel from "./backtest/DirectionSettingsPanel";
 
-interface AdvancedSettingsValues {
+export interface AdvancedSettingsValues {
   universe: string;
+  universe_date: string | null;
   start_date: string;
   end_date: string;
   n_groups: number;
@@ -11,6 +16,12 @@ interface AdvancedSettingsValues {
   benchmark: string;
   neutralize_industry: boolean;
   neutralize_cap: boolean;
+  rebalance_anchor: string | null;
+  direction_mode: DirectionMode;
+  fixed_direction: 1 | -1 | null;
+  oos_enabled: boolean;
+  oos: OOSRequest;
+  data_quality: DataQualityRequest;
 }
 
 interface Props {
@@ -24,6 +35,19 @@ export default function AdvancedSettings({ values, onChange }: Props) {
 
   const set = <K extends keyof AdvancedSettingsValues>(key: K, val: AdvancedSettingsValues[K]) =>
     onChange({ ...values, [key]: val });
+
+  const setDirection = (directionMode: DirectionMode, fixedDirection: 1 | -1 | null) => {
+    onChange({ ...values, direction_mode: directionMode, fixed_direction: fixedDirection });
+  };
+
+  const setOosEnabled = (enabled: boolean) => {
+    onChange({
+      ...values,
+      oos_enabled: enabled,
+      direction_mode: enabled ? "auto_full" : values.direction_mode,
+      fixed_direction: enabled ? null : values.fixed_direction,
+    });
+  };
 
   return (
     <div className={`border rounded-xl overflow-hidden ${
@@ -110,6 +134,32 @@ export default function AdvancedSettings({ values, onChange }: Props) {
               />
             </label>
             <label className="block">
+              <span className={`text-xs ${isDark ? "text-gray-400" : "text-gray-500"}`}>股票池基准日期</span>
+              <input
+                type="date"
+                value={values.universe_date ?? ""}
+                onChange={(e) => set("universe_date", e.target.value || null)}
+                className={`mt-1 block w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 ${
+                  isDark
+                    ? "border-gray-700 bg-gray-800 text-gray-100 focus:ring-blue-500/20 focus:border-blue-500"
+                    : "border-gray-200 bg-white focus:ring-blue-500/20 focus:border-blue-500"
+                }`}
+              />
+            </label>
+            <label className="block">
+              <span className={`text-xs ${isDark ? "text-gray-400" : "text-gray-500"}`}>换仓锚定日期</span>
+              <input
+                type="date"
+                value={values.rebalance_anchor ?? ""}
+                onChange={(e) => set("rebalance_anchor", e.target.value || null)}
+                className={`mt-1 block w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 ${
+                  isDark
+                    ? "border-gray-700 bg-gray-800 text-gray-100 focus:ring-blue-500/20 focus:border-blue-500"
+                    : "border-gray-200 bg-white focus:ring-blue-500/20 focus:border-blue-500"
+                }`}
+              />
+            </label>
+            <label className="block">
               <span className={`text-xs ${isDark ? "text-gray-400" : "text-gray-500"}`}>分组数量</span>
               <input
                 type="number"
@@ -172,6 +222,25 @@ export default function AdvancedSettings({ values, onChange }: Props) {
               中性化可消除行业/市值偏暴露，获得更纯粹的因子 alpha
             </p>
           </div>
+
+          <DirectionSettingsPanel
+            oosEnabled={values.oos_enabled}
+            directionMode={values.direction_mode}
+            fixedDirection={values.fixed_direction}
+            onChange={setDirection}
+          />
+
+          <OOSSettingsPanel
+            enabled={values.oos_enabled}
+            value={values.oos}
+            onEnabledChange={setOosEnabled}
+            onChange={(next) => set("oos", next)}
+          />
+
+          <DataQualitySettingsPanel
+            value={values.data_quality}
+            onChange={(next) => set("data_quality", next)}
+          />
         </div>
       )}
     </div>

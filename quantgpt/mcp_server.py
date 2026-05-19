@@ -77,6 +77,7 @@ from .strategy.service import (
 )
 from .task_executor import _run_backtest_in_process, _run_oos_backtest_in_process, get_executor
 from .validation.oos_backtest import to_public_oos_result
+from .validation.oos_score import compute_oos_score
 from .validation.split import OOSConfig
 from .wq_brain_service import (
     run_batch_simulation,
@@ -85,6 +86,7 @@ from .wq_brain_service import (
     run_single_simulation,
     run_submit_by_ids,
 )
+from .wq_submission_guard import require_submission_preflight
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s", stream=sys.stderr)
 logger = logging.getLogger(__name__)
@@ -544,6 +546,13 @@ async def score_factor(
     benchmark: str = "hs300",
     neutralize_industry: bool = True,
     neutralize_cap: bool = True,
+    rebalance_anchor: str | None = None,
+    oos_enabled: bool = False,
+    data_quality: bool | None = None,
+    data_quality_mode: Literal["report_only", "filter", "strict"] = "filter",
+    max_abs_daily_ret: float = 0.25,
+    max_missing_ratio_per_stock: float = 0.2,
+    adjustment: Literal["qfq", "hfq", "none", "unknown"] = "unknown",
 ) -> str:
     """执行因子回测并返回综合评分(0-100)和等级(A/B/C/D)。
 
@@ -559,6 +568,9 @@ async def score_factor(
         benchmark: 基准 (hs300/zz500/sz50/csi1000)
         neutralize_industry: 行业中性化(默认开启)
         neutralize_cap: 市值中性化(默认开启)
+        rebalance_anchor: 换仓网格锚定日期
+        oos_enabled: 启用训练/验证/测试样本外评估
+        data_quality: 是否运行基础行情数据质量门；None 表示兼容默认
 
     Returns:
         JSON with score, grade, component_scores, key metrics.
@@ -568,6 +580,8 @@ async def score_factor(
     task_id = await start_mcp_task("score", expression, {
         "universe": universe, "start_date": start_date, "end_date": end_date,
         "n_groups": n_groups, "holding_period": holding_period, "benchmark": benchmark,
+        "rebalance_anchor": rebalance_anchor, "oos_enabled": oos_enabled,
+        "data_quality": data_quality,
     })
     _error_msg = None
     _result = None
@@ -576,14 +590,103 @@ async def score_factor(
         if market_df is None or len(market_df) == 0:
             return json.dumps({"error": "No market data available."})
 
+        data_quality_report = None
+        dq_enabled = oos_enabled if data_quality is None else data_quality
+        if dq_enabled:
+            dq_config = DataQualityConfig(
+                enabled=True,
+                mode=data_quality_mode,
+                max_abs_daily_ret=max_abs_daily_ret,
+                max_missing_ratio_per_stock=max_missing_ratio_per_stock,
+                adjustment=adjustment,
+            )
+            market_df, data_quality_report = await asyncio.to_thread(run_data_quality_gate, market_df, dq_config)
+        elif oos_enabled:
+            data_quality_report = {
+                "enabled": False,
+                "data_quality_scope": "full_requested_sample",
+                "issues": [],
+                "warnings": ["OOS validation was run without the data-quality gate because data_quality=false"],
+            }
+
         market_df = await asyncio.to_thread(_enrich_with_fundamentals, expression, market_df, stock_codes, start_date, end_date)
 
         executor = get_executor()
-        future = executor.submit_cpu_work(
-            _run_backtest_in_process, market_df, expression, n_groups, holding_period,
-            neutralize_industry=neutralize_industry, neutralize_cap=neutralize_cap,
-        )
+        if oos_enabled:
+            oos_config = OOSConfig(rebalance_anchor=rebalance_anchor)
+            future = executor.submit_cpu_work(
+                _run_oos_backtest_in_process, market_df, expression, n_groups, holding_period,
+                neutralize_industry=neutralize_industry, neutralize_cap=neutralize_cap,
+                rebalance_anchor=rebalance_anchor, oos_config=oos_config,
+            )
+        else:
+            future = executor.submit_cpu_work(
+                _run_backtest_in_process, market_df, expression, n_groups, holding_period,
+                neutralize_industry=neutralize_industry, neutralize_cap=neutralize_cap,
+                rebalance_anchor=rebalance_anchor,
+            )
         result = await asyncio.to_thread(future.result, 600)
+
+        params = {
+            "expression": expression,
+            "universe": universe,
+            "start_date": start_date,
+            "end_date": end_date,
+            "n_groups": n_groups,
+            "holding_period": holding_period,
+            "benchmark": benchmark,
+            "neutralize_industry": neutralize_industry,
+            "neutralize_cap": neutralize_cap,
+            "rebalance_anchor": rebalance_anchor,
+            "oos_enabled": oos_enabled,
+            "data_quality": data_quality,
+            "stock_count": len(stock_codes),
+        }
+
+        if oos_enabled:
+            public_oos = to_public_oos_result(result.get("oos_result", {}))
+            if data_quality_report is not None:
+                public_oos["data_quality"] = data_quality_report
+            oos_scoring = compute_oos_score(public_oos, data_quality=data_quality_report)
+            test_metrics = public_oos.get("test", {}).get("metrics", {})
+            _result = {
+                "score": oos_scoring["score"],
+                "grade": oos_scoring["grade"],
+                "decision": oos_scoring["decision"],
+                "overfit_risk": oos_scoring["overfit_risk"],
+                "component_scores": {
+                    "train": oos_scoring["train_score"],
+                    "valid": oos_scoring["valid_score"],
+                    "test": oos_scoring["test_score"],
+                    "stability": oos_scoring["stability_score"],
+                    "decay_penalty": oos_scoring["decay_penalty"],
+                    "data_quality_penalty": oos_scoring["data_quality_penalty"],
+                },
+                "key_metrics": {
+                    "ic_mean": test_metrics.get("ic_mean", test_metrics.get("direction_adjusted_rank_ic_mean", 0)),
+                    "ic_ir": test_metrics.get("ic_ir", 0),
+                    "monotonicity": test_metrics.get("monotonicity_score", 0),
+                    "top_group_sharpe": test_metrics.get("top_group_sharpe", 0),
+                    "turnover": test_metrics.get("turnover", 0),
+                    "wq_fitness": test_metrics.get("wq_fitness", 0),
+                    "sharpe": test_metrics.get("sharpe", test_metrics.get("long_short_sharpe", 0)),
+                    "max_drawdown": test_metrics.get("max_drawdown", 0),
+                },
+                "interpretation": {
+                    "rating": oos_scoring["grade"],
+                    "decision": oos_scoring["decision"],
+                    "metrics_scope": oos_scoring["metrics_scope"],
+                },
+                "oos_score": oos_scoring,
+                "oos_result": public_oos,
+                "direction_policy": "train_fixed",
+                "report_scope": result.get("report_scope", "legacy_compat_single_run"),
+                "compatibility_warning": result.get("compatibility_warning"),
+                "params": params,
+            }
+            if data_quality_report is not None:
+                _result["data_quality"] = data_quality_report
+            return json.dumps(_result, ensure_ascii=False, indent=2, default=str)
 
         bm_returns = None
         try:
@@ -626,7 +729,10 @@ async def score_factor(
                 "max_drawdown": report_result["metrics"].get("max_drawdown", 0),
             },
             "interpretation": {"rating": scoring["grade"]},
+            "params": params,
         }
+        if data_quality_report is not None:
+            _result["data_quality"] = data_quality_report
         return json.dumps(_result, ensure_ascii=False, indent=2, default=str)
 
     except Exception as e:
@@ -833,6 +939,7 @@ async def wq_brain_submit(
     neutralization: str = "SUBINDUSTRY",
     truncation: float = 0.08,
     auto_submit: bool = False,
+    submission_override_reason: str | None = None,
 ) -> str:
     """提交因子表达式到 WorldQuant BRAIN 平台进行真实模拟。
 
@@ -851,6 +958,7 @@ async def wq_brain_submit(
         neutralization: 中性化 (SUBINDUSTRY, INDUSTRY, SECTOR, MARKET, NONE)
         truncation: 权重截断 (0-0.5)
         auto_submit: 如果检查全部通过，自动提交到 WQ 审核
+        submission_override_reason: 本地 OOS/data_quality preflight 不可用时的显式提交豁免理由
 
     Returns:
         JSON with IS/OOS metrics, alpha_id, checks, submittable status.
@@ -862,6 +970,7 @@ async def wq_brain_submit(
         "expression": expression, "tag": tag, "region": region, "universe": universe,
         "delay": delay, "decay": decay, "neutralization": neutralization,
         "truncation": truncation, "auto_submit": auto_submit,
+        "submission_override_reason": submission_override_reason,
     })
     _error_msg = None
     _result = None
@@ -879,6 +988,7 @@ async def wq_brain_submit(
             expression, region=region, universe=universe,
             delay=delay, decay=decay, neutralization=neutralization,
             truncation=truncation, auto_submit=auto_submit, tag=tag,
+            submission_override_reason=submission_override_reason,
         )
         await asyncio.to_thread(client.close)
 
@@ -907,6 +1017,7 @@ async def wq_brain_batch_submit(
     decay: int = 0,
     truncation: float = 0.08,
     auto_submit: bool = False,
+    submission_override_reason: str | None = None,
 ) -> str:
     """批量扫描因子表达式在多个参数组合下的 WQ BRAIN 表现。
 
@@ -923,6 +1034,7 @@ async def wq_brain_batch_submit(
         decay: Alpha 衰减 (0-20, 共用)
         truncation: 权重截断 (0-0.5, 共用)
         auto_submit: 全部检查通过时自动提交
+        submission_override_reason: 本地 OOS/data_quality preflight 不可用时的显式提交豁免理由
 
     Returns:
         JSON with per-combination results, best_fitness, submittable_count.
@@ -940,6 +1052,7 @@ async def wq_brain_batch_submit(
         "regions": regions, "delays": delays, "universes": universes,
         "neutralizations": neutralizations, "decay": decay, "truncation": truncation,
         "auto_submit": auto_submit,
+        "submission_override_reason": submission_override_reason,
     })
     _error_msg = None
     _result = None
@@ -961,6 +1074,7 @@ async def wq_brain_batch_submit(
             regions=regions, delays=delays, universes=universes,
             neutralizations=neutralizations, decay=decay, truncation=truncation,
             auto_submit=auto_submit, tag=tag,
+            submission_override_reason=submission_override_reason,
         )
         await asyncio.to_thread(client.close)
 
@@ -980,6 +1094,8 @@ async def wq_brain_batch_submit(
 async def wq_brain_submit_by_ids(
     alpha_ids: list[str],
     account: str = "primary",
+    expressions_by_alpha_id: dict[str, str] | None = None,
+    submission_override_reason: str | None = None,
 ) -> str:
     """批量提交已模拟的 alpha（通过 alpha_id 直接提交，无需重新模拟）。
 
@@ -989,6 +1105,8 @@ async def wq_brain_submit_by_ids(
     Args:
         alpha_ids: 要提交的 alpha_id 列表（最多 50 个）
         account: WQ 账号（提交只能用 'primary'）
+        expressions_by_alpha_id: 可选的 alpha_id 到表达式映射，用于本地 OOS/data_quality preflight
+        submission_override_reason: 缺少本地表达式溯源或 preflight 不通过时的显式提交豁免理由
 
     Returns:
         JSON with per-alpha result (ACTIVE/SC_FAIL/TIMEOUT) and summary.
@@ -1006,7 +1124,12 @@ async def wq_brain_submit_by_ids(
     task_id = await start_mcp_task(
         "wq_brain_submit_by_ids",
         None,
-        {"alpha_ids": alpha_ids, "account": account},
+        {
+            "alpha_ids": alpha_ids,
+            "account": account,
+            "has_expression_provenance": bool(expressions_by_alpha_id),
+            "submission_override_reason": submission_override_reason,
+        },
     )
     _result = None
     _error_msg = None
@@ -1018,7 +1141,28 @@ async def wq_brain_submit_by_ids(
             _error_msg = "WQ BRAIN 认证失败"
             return json.dumps({"error": _error_msg})
 
-        _result = await asyncio.to_thread(run_submit_by_ids, client, alpha_ids)
+        expressions_by_alpha_id = expressions_by_alpha_id or {}
+        preflight_cache: dict[str, dict] = {}
+
+        def _preflight_for_alpha(alpha_id: str) -> dict:
+            expression = expressions_by_alpha_id.get(alpha_id)
+            cache_key = expression or f"missing:{alpha_id}"
+            if cache_key not in preflight_cache:
+                preflight_cache[cache_key] = require_submission_preflight(
+                    expression,
+                    override_reason=submission_override_reason,
+                    unavailable_reason=(
+                        f"Alpha {alpha_id} has no local expression provenance for submission preflight"
+                    ),
+                )
+            return preflight_cache[cache_key]
+
+        _result = await asyncio.to_thread(
+            run_submit_by_ids,
+            client,
+            alpha_ids,
+            submission_preflight_lookup=_preflight_for_alpha,
+        )
         await asyncio.to_thread(client.close)
 
         return json.dumps(_result, ensure_ascii=False, indent=2, default=str)

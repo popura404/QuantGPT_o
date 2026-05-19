@@ -172,3 +172,12 @@ class TestSubmitAlphaEndpoint:
         with patch.dict(os.environ, {"WQ_BRAIN_EMAIL": "a@b.com", "WQ_BRAIN_PASSWORD": "pw"}, clear=False):
             resp = await client.post("/api/v1/wq-brain/nonexistent/submit-alpha", headers=auth_headers)
             assert resp.status_code == 404
+
+    async def test_direct_submit_by_id_requires_local_preflight(self, client, test_user, auth_headers):
+        with patch.dict(os.environ, {"WQ_BRAIN_EMAIL": "a@b.com", "WQ_BRAIN_PASSWORD": "pw"}, clear=False):
+            resp = await client.post("/api/v1/wq-brain/submit-by-id/alpha-1", headers=auth_headers)
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert detail["error_code"] == "LOCAL_PREFLIGHT_BLOCKED"
+        assert detail["submission_preflight"]["status"] == "unavailable"

@@ -6,6 +6,7 @@ from concurrent.futures import Future
 import pandas as pd
 import pytest
 
+from quantgpt.auth import GUEST_USER_ID, create_guest_token
 from quantgpt.task_store import tasks, tasks_lock
 
 pytestmark = pytest.mark.asyncio
@@ -73,6 +74,36 @@ class TestListTasks:
         assert len(data["tasks"]) == 1
         assert data["tasks"][0]["task_id"] == "test-task-1"
 
+    async def test_running_filter_excludes_terminal_memory_and_db_tasks(self, client, test_user, auth_headers, db_session):
+        from quantgpt.models import Task as TaskModel
+
+        with tasks_lock:
+            tasks["memory-running"] = {
+                "task_id": "memory-running",
+                "user_id": str(test_user.id),
+                "status": "backtesting",
+                "created_at": time.time(),
+            }
+            tasks["memory-cancelled"] = {
+                "task_id": "memory-cancelled",
+                "user_id": str(test_user.id),
+                "status": "cancelled",
+                "created_at": time.time(),
+            }
+        db_session.add_all([
+            TaskModel(id="db-pending", user_id=test_user.id, status="pending", task_type="backtest"),
+            TaskModel(id="db-cancelled", user_id=test_user.id, status="cancelled", task_type="backtest"),
+        ])
+        await db_session.commit()
+
+        resp = await client.get("/api/v1/tasks?status=running", headers=auth_headers)
+
+        assert resp.status_code == 200
+        ids = {task["task_id"] for task in resp.json()["tasks"]}
+        assert {"memory-running", "db-pending"}.issubset(ids)
+        assert "memory-cancelled" not in ids
+        assert "db-cancelled" not in ids
+
 
 class TestGetTask:
     async def test_get_existing_task(self, client, test_user, auth_headers, db_session):
@@ -97,6 +128,37 @@ class TestGetTask:
     async def test_get_nonexistent_task(self, client, test_user, auth_headers):
         resp = await client.get("/api/v1/tasks/nonexistent", headers=auth_headers)
         assert resp.status_code == 404
+
+    async def test_guest_token_can_read_guest_memory_task_and_create_sse_ticket(self, client):
+        with tasks_lock:
+            tasks["guest-task"] = {
+                "task_id": "guest-task",
+                "user_id": GUEST_USER_ID,
+                "status": "pending",
+                "created_at": time.time(),
+            }
+        headers = {"Authorization": f"Bearer {create_guest_token()}"}
+
+        detail = await client.get("/api/v1/tasks/guest-task", headers=headers)
+        ticket = await client.post("/api/v1/tasks/guest-task/sse-ticket", headers=headers)
+
+        assert detail.status_code == 200
+        assert detail.json()["task_id"] == "guest-task"
+        assert ticket.status_code == 200
+        assert ticket.json()["ticket"]
+
+    async def test_anonymous_request_cannot_read_guest_memory_task(self, client):
+        with tasks_lock:
+            tasks["guest-task"] = {
+                "task_id": "guest-task",
+                "user_id": GUEST_USER_ID,
+                "status": "pending",
+                "created_at": time.time(),
+            }
+
+        resp = await client.get("/api/v1/tasks/guest-task")
+
+        assert resp.status_code == 401
 
 
 class TestCancelTask:

@@ -7,16 +7,17 @@ import { useAuth } from "./contexts/AuthContext";
 import { useColorMode } from "./contexts/ColorModeContext";
 import Header from "./components/Header";
 import BacktestForm from "./components/BacktestForm";
-import ProgressTracker from "./components/ProgressTracker";
 import ResultsDashboard from "./components/ResultsDashboard";
 import IterationPanel from "./components/IterationPanel";
 import CompositeBuilder from "./components/CompositeBuilder";
 import FactorComparison from "./components/FactorComparison";
 import ResearchDashboard from "./components/ResearchDashboard";
 import StrategyWorkbench from "./components/StrategyWorkbench";
+import WQBrainWorkspace from "./components/wq/WQBrainWorkspace";
 import TabNavigation, { TABS } from "./components/TabNavigation";
 import type { MainTab } from "./components/TabNavigation";
 import AppSidebar from "./components/AppSidebar";
+import TaskProgressPanel from "./components/tasks/TaskProgressPanel";
 import { saveFactor, fetchFactors } from "./api/factorLibrary";
 import { submitCompositeBacktest } from "./api/composite";
 import type { CompositeBacktestPayload } from "./api/composite";
@@ -118,28 +119,24 @@ export default function App() {
   const handleCompositeSubmit = useCallback(
     async (payload: CompositeBacktestPayload) => {
       setActiveTab("backtest");
-      try {
-        const { task_id } = await submitCompositeBacktest({
-          ...payload,
-          session_id: activeSessionId ?? undefined,
-        });
-        const { streamTask } = await import("./api/client");
-        const initial: Task = { task_id, status: "pending", task_type: "composite" as Task["task_type"] };
-        setActiveTask(initial);
-        streamTask(
-          task_id,
-          (task) => {
-            setActiveTask(task);
-            if (task.status === "completed" || task.status === "failed") {
-              onComplete(task);
-            }
-          },
-          () => {},
-          () => {},
-        );
-      } catch (err) {
-        alert(err instanceof Error ? err.message : "组合回测失败");
-      }
+      const { task_id } = await submitCompositeBacktest({
+        ...payload,
+        session_id: activeSessionId ?? undefined,
+      });
+      const { streamTask } = await import("./api/client");
+      const initial: Task = { task_id, status: "pending", task_type: "composite" as Task["task_type"] };
+      setActiveTask(initial);
+      streamTask(
+        task_id,
+        (task) => {
+          setActiveTask(task);
+          if (task.status === "completed" || task.status === "failed") {
+            onComplete(task);
+          }
+        },
+        () => {},
+        () => {},
+      );
     },
     [activeSessionId, setActiveTask, onComplete]
   );
@@ -205,7 +202,7 @@ export default function App() {
               <BacktestForm onSubmit={handleSubmit} isLoading={isLoading} />
 
               {showProgress && (
-                <ProgressTracker status={activeTask.status} expression={activeTask.expression} onCancel={cancel} />
+                <TaskProgressPanel task={activeTask} onCancel={cancel} />
               )}
 
               {showError && activeTask && (
@@ -252,6 +249,10 @@ export default function App() {
 
           {activeTab === "strategy" && (
             <StrategyWorkbench />
+          )}
+
+          {activeTab === "wq" && (
+            <WQBrainWorkspace />
           )}
 
         </main>

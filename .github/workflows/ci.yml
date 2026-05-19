@@ -26,7 +26,7 @@ jobs:
         run: ruff check quantgpt/ tests/
 
       - name: Type check
-        run: pyright quantgpt/ --level basic
+        run: pyright quantgpt/
 
       - name: Rust engine checks
         run: make engine-check
@@ -52,6 +52,7 @@ jobs:
                   for vuln in c['vulns']:
                       print(f\"::warning ::{c['name']} {c['version']}: {vuln['id']} (fix: {vuln.get('fix_versions',['?'])})\")
               print(f'{len(critical)} direct-dependency vulnerabilities found')
+              sys.exit(1)
           else:
               print('No direct-dependency vulnerabilities')
           "

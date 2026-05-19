@@ -71,9 +71,29 @@ def _oos_result() -> dict:
         "oos_result": {
             "direction_policy": "train_fixed",
             "report_scope": "oos_train_valid_test",
-            "train": {"metrics": {"long_short_sharpe": 1.0}},
-            "valid": {"metrics": {"long_short_sharpe": 0.7}},
-            "test": {"metrics": {"long_short_sharpe": 0.5}},
+            "train": {
+                "metrics": {
+                    "long_short_sharpe": 1.0,
+                    "direction_adjusted_rank_ic_mean": 0.04,
+                    "ic_ir": 0.5,
+                },
+            },
+            "valid": {
+                "metrics": {
+                    "long_short_sharpe": 0.7,
+                    "direction_adjusted_rank_ic_mean": 0.03,
+                    "ic_ir": 0.4,
+                },
+            },
+            "test": {
+                "metrics": {
+                    "long_short_sharpe": 0.5,
+                    "direction_adjusted_rank_ic_mean": 0.02,
+                    "ic_ir": 0.3,
+                    "turnover": 0.1,
+                },
+            },
+            "decay": {"test_sharpe_decay": 0.5, "test_ic_decay": 0.5},
             "_private": pd.Series([1.0]),
         },
         "direction_policy": "train_fixed",
@@ -172,3 +192,61 @@ async def test_mcp_accepts_rebalance_anchor(mcp_backtest_fakes):
     ))
 
     assert result["params"]["rebalance_anchor"] == "2024-01-02"
+
+
+@pytest.mark.asyncio
+async def test_legacy_score_factor_keeps_oos_and_data_quality_omitted(mcp_backtest_fakes):
+    result = json.loads(await mcp_server.score_factor("close", universe="small_scale"))
+
+    assert "oos_result" not in result
+    assert "data_quality" not in result
+    assert result["params"]["oos_enabled"] is False
+    assert result["params"]["data_quality"] is None
+    assert "score" in result
+    assert "component_scores" in result
+
+
+@pytest.mark.asyncio
+async def test_oos_score_factor_returns_oos_first_score_and_data_quality(mcp_backtest_fakes):
+    result = json.loads(await mcp_server.score_factor(
+        "close",
+        universe="small_scale",
+        oos_enabled=True,
+        rebalance_anchor="2024-01-02",
+    ))
+
+    assert result["direction_policy"] == "train_fixed"
+    assert result["oos_score"]["metrics_scope"] == "oos_train_valid_test"
+    assert result["data_quality"]["enabled"] is True
+    assert result["oos_result"]["data_quality"]["enabled"] is True
+    assert "_private" not in result["oos_result"]
+    assert result["component_scores"]["test"] == result["oos_score"]["test_score"]
+    assert result["params"]["oos_enabled"] is True
+    assert result["params"]["rebalance_anchor"] == "2024-01-02"
+
+
+@pytest.mark.asyncio
+async def test_oos_score_factor_respects_explicit_data_quality_false(mcp_backtest_fakes):
+    result = json.loads(await mcp_server.score_factor(
+        "close",
+        universe="small_scale",
+        oos_enabled=True,
+        data_quality=False,
+    ))
+
+    assert result["data_quality"]["enabled"] is False
+    assert result["oos_result"]["data_quality"]["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_score_factor_can_run_data_quality_without_oos(mcp_backtest_fakes):
+    result = json.loads(await mcp_server.score_factor(
+        "close",
+        universe="small_scale",
+        data_quality=True,
+        adjustment="qfq",
+    ))
+
+    assert "oos_result" not in result
+    assert result["data_quality"]["enabled"] is True
+    assert result["params"]["oos_enabled"] is False

@@ -104,6 +104,10 @@ Rank-based 分组回测引擎。
 - Fitness = Sharpe × √(|Returns| / max(Turnover, 0.125))
 - IS test compatibility scoring
 
+正式提交到 WQ BRAIN 前会经过 `wq_submission_guard.py` 本地 preflight：
+远程模拟不强制本地执行，但 `auto_submit`、手动 submit 和 by-id submit 都必须先通过
+本地 OOS/data-quality；WQ-only 或缺少表达式溯源的候选需要显式 `submission_override_reason`。
+
 ## 4. Data Pipeline (`market_data.py`)
 
 多数据源 + Parquet 缓存。

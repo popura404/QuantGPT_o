@@ -69,6 +69,7 @@ else:
 ALLOWED_TASKS = {
     "quantgpt.task_executor._run_backtest_in_process",
     "quantgpt.task_executor._run_backtest_precomputed_in_process",
+    "quantgpt.task_executor._run_oos_backtest_in_process",
     "quantgpt.task_executor._run_strategy_backtest_in_process",
 }
 

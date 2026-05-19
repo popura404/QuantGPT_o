@@ -9,6 +9,8 @@ import FactorInterpretationCard from "./FactorInterpretationCard";
 import ShareCardButton from "./ShareCardButton";
 import WQBrainCard from "./WQBrainCard";
 import { useColorMode } from "../contexts/ColorModeContext";
+import BacktestResultOOSCard from "./backtest/BacktestResultOOSCard";
+import DataQualitySummaryCard from "./backtest/DataQualitySummaryCard";
 
 interface Props {
   result: BacktestResult;
@@ -26,15 +28,9 @@ function num(n: number): string {
   return n.toFixed(4);
 }
 
-function metricNumber(metrics: Record<string, number | string | null> | undefined, key: string): number {
-  const value = metrics?.[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
 export default function ResultsDashboard({ result, iterationSlot, onSaveFactor, isSaving, isSaved }: Props) {
   const { isDark } = useColorMode();
   const { metrics, backtest_summary, report_url, params } = result;
-  const oos = result.oos_result;
 
   return (
     <div className="space-y-4">
@@ -71,46 +67,8 @@ export default function ResultsDashboard({ result, iterationSlot, onSaveFactor, 
         <FactorInterpretationCard interpretation={result.interpretation} />
       )}
 
-      {oos && (
-        <div className={`rounded-xl border ${isDark ? "border-emerald-800 bg-emerald-950/30" : "border-emerald-200 bg-emerald-50"} p-4`}>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <div className={`text-sm font-medium ${isDark ? "text-emerald-200" : "text-emerald-900"}`}>样本外验证</div>
-              <div className={`mt-1 text-xs ${isDark ? "text-emerald-300" : "text-emerald-700"}`}>
-                {oos.direction_policy ?? result.direction_policy ?? "train_fixed"} · fixed_direction={oos.fixed_direction ?? "-"} · risk={oos.oos_risk ?? result.scoring?.overfit_risk ?? "-"}
-              </div>
-            </div>
-            {result.scoring?.decision && (
-              <div className={`rounded-md px-2 py-1 text-xs font-medium ${isDark ? "bg-gray-900 text-emerald-200" : "bg-white text-emerald-800"}`}>
-                {result.scoring.decision} · {result.scoring.score?.toFixed(1) ?? "-"}
-              </div>
-            )}
-          </div>
-          <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
-            {(["train", "valid", "test"] as const).map((key) => {
-              const period = oos[key]?.period?.join(" ~ ") ?? "-";
-              const periodMetrics = oos[key]?.metrics;
-              return (
-                <div key={key} className={`rounded-md p-3 ${isDark ? "bg-gray-900" : "bg-white"}`}>
-                  <div className={`font-medium ${isDark ? "text-gray-200" : "text-gray-900"}`}>{key}</div>
-                  <div className={`mt-1 ${isDark ? "text-gray-400" : "text-gray-500"}`}>{period}</div>
-                  <div className="mt-2 grid grid-cols-2 gap-1 font-mono">
-                    <span>Sharpe {num(metricNumber(periodMetrics, "long_short_sharpe"))}</span>
-                    <span>IC {num(metricNumber(periodMetrics, "direction_adjusted_rank_ic_mean"))}</span>
-                    <span>Turn {pct(metricNumber(periodMetrics, "turnover"))}</span>
-                    <span>DD {pct(metricNumber(periodMetrics, "max_drawdown"))}</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          {oos.data_quality && (
-            <div className={`mt-3 text-xs ${isDark ? "text-emerald-200" : "text-emerald-800"}`}>
-              数据质量: dropped_rows={String(oos.data_quality.dropped_rows ?? 0)} · adjustment={String(oos.data_quality.adjustment ?? "unknown")}
-            </div>
-          )}
-        </div>
-      )}
+      <BacktestResultOOSCard result={result} />
+      <DataQualitySummaryCard result={result} />
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <MetricCard label="总收益" value={pct(metrics.total_return)} color={metrics.total_return >= 0 ? "green" : "red"} sub={metrics.benchmark_total_return != null ? pct(metrics.benchmark_total_return) : undefined} />

@@ -8,6 +8,30 @@ export interface StrategyTemplateSummary {
   parameter_bounds: Record<string, unknown>;
 }
 
+export interface StrategySpecRecord {
+  id: string;
+  name: string;
+  schema_version: string;
+  market: string;
+  universe: string;
+  spec: StrategySpec;
+  tags: string[];
+  status?: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface StrategyRunRecord {
+  id: string;
+  strategy_id?: string | null;
+  task_id?: string | null;
+  result: StrategyBacktestResultPayload;
+  report_url?: string | null;
+  summary_json?: string | null;
+  signal_export?: StrategyExportPayload | null;
+  created_at?: string | null;
+}
+
 export interface StrategyValidationIssue {
   code: string;
   message: string;

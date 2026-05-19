@@ -5,6 +5,7 @@ import pickle
 import pandas as pd
 import pytest
 
+import quantgpt.celery_app as celery_app
 import quantgpt.task_executor as task_executor
 from quantgpt.validation.split import OOSConfig
 
@@ -15,6 +16,7 @@ def test_run_oos_backtest_in_process_is_top_level_and_registered():
     assert fn.__module__ == "quantgpt.task_executor"
     assert pickle.loads(pickle.dumps(fn)) is fn
     assert task_executor.CeleryTaskExecutor._FN_PATHS[fn] == "quantgpt.task_executor._run_oos_backtest_in_process"
+    assert "quantgpt.task_executor._run_oos_backtest_in_process" in celery_app.ALLOWED_TASKS
 
 
 def test_run_oos_backtest_in_process_wraps_api_context(monkeypatch):

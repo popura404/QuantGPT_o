@@ -121,7 +121,7 @@ export function streamTask(
 
   function startPolling(context?: string) {
     if (closed || pollTimer) return;
-    if (context) onError?.(context);
+    if (context) lastStreamError = context;
     pollTimer = setInterval(async () => {
       if (closed) { cleanup(); return; }
       try {
@@ -227,6 +227,12 @@ export function streamTask(
 export function getReportUrl(reportUrl: string): string {
   const token = getAccessToken();
   const url = /^https?:\/\//i.test(reportUrl) ? reportUrl : `${BASE}${reportUrl}`;
+  try {
+    const resolved = new URL(url, window.location.origin);
+    if (resolved.origin !== window.location.origin) return url;
+  } catch {
+    return url;
+  }
   if (!token || /[?&]token=/.test(url)) return url;
 
   const hashIndex = url.indexOf("#");
@@ -236,12 +242,19 @@ export function getReportUrl(reportUrl: string): string {
   return `${baseUrl}${sep}token=${encodeURIComponent(token)}${hash}`;
 }
 
-export async function fetchTasks(page = 1, pageSize = 20, sessionId?: string, taskType?: string): Promise<{ tasks: Task[]; page: number; page_size: number }> {
+export async function fetchTasks(
+  page = 1,
+  pageSize = 20,
+  sessionId?: string,
+  taskType?: string,
+  status?: string,
+): Promise<{ tasks: Task[]; page: number; page_size: number; total?: number }> {
   let url = `${BASE}/api/v1/tasks?page=${page}&page_size=${pageSize}`;
   if (sessionId) url += `&session_id=${sessionId}`;
   if (taskType) url += `&task_type=${taskType}`;
+  if (status) url += `&status=${status}`;
   const res = await authFetch(url);
-  if (!res.ok) throw new Error(`Tasks fetch failed: ${res.status}`);
+  if (!res.ok) throw new Error(await parseError(res));
   return res.json();
 }
 

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Send, Loader2 } from "lucide-react";
 import type { BacktestRequest } from "../types/backtest";
 import { useColorMode } from "../contexts/ColorModeContext";
-import AdvancedSettings from "./AdvancedSettings";
+import AdvancedSettings, { type AdvancedSettingsValues } from "./AdvancedSettings";
 
 interface Props {
   onSubmit: (req: BacktestRequest) => void;
@@ -12,8 +12,9 @@ interface Props {
 export default function BacktestForm({ onSubmit, isLoading }: Props) {
   const { isDark } = useColorMode();
   const [prompt, setPrompt] = useState("");
-  const [settings, setSettings] = useState({
+  const [settings, setSettings] = useState<AdvancedSettingsValues>({
     universe: "hs300",
+    universe_date: null,
     start_date: "2023-01-01",
     end_date: "2025-12-31",
     n_groups: 5,
@@ -21,12 +22,51 @@ export default function BacktestForm({ onSubmit, isLoading }: Props) {
     benchmark: "hs300",
     neutralize_industry: true,
     neutralize_cap: true,
+    rebalance_anchor: null,
+    direction_mode: "auto_full",
+    fixed_direction: null,
+    oos_enabled: false,
+    oos: {
+      method: "date_ratio",
+      train_ratio: 0.6,
+      valid_ratio: 0.2,
+      test_ratio: 0.2,
+      min_train_days: 252,
+      min_valid_days: 126,
+      min_test_days: 126,
+      warmup_days: null,
+    },
+    data_quality: {
+      enabled: false,
+      mode: "filter",
+      min_price: 0.01,
+      max_abs_daily_ret: 0.25,
+      max_missing_ratio_per_stock: 0.2,
+      require_positive_volume: true,
+      require_positive_amount: true,
+      drop_st: false,
+      drop_new_listing_days: 60,
+      adjustment: "unknown",
+      fail_on_unknown_adjustment: false,
+    },
   });
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!prompt.trim() || isLoading) return;
-    onSubmit({ prompt: prompt.trim(), ...settings });
+    const directionMode = settings.oos_enabled ? "auto_full" : settings.direction_mode;
+    const fixedDirection = settings.oos_enabled || directionMode === "auto_full"
+      ? null
+      : settings.fixed_direction ?? 1;
+    const request: BacktestRequest = {
+      ...settings,
+      prompt: prompt.trim(),
+      oos: settings.oos_enabled ? settings.oos : null,
+      direction_mode: directionMode,
+      fixed_direction: fixedDirection,
+      data_quality: settings.data_quality.enabled || settings.oos_enabled ? settings.data_quality : null,
+    };
+    onSubmit(request);
   };
 
   return (

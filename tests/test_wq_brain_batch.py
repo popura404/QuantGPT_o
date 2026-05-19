@@ -123,6 +123,7 @@ class TestBatchRequestModel:
         assert req.decay == 0
         assert req.truncation == 0.08
         assert req.auto_submit is False
+        assert req.submission_override_reason is None
         assert req.tag == "test"
 
     def test_custom_values(self):
@@ -135,11 +136,24 @@ class TestBatchRequestModel:
             decay=5,
             truncation=0.1,
             auto_submit=True,
+            submission_override_reason="WQ-only expression",
         )
         assert req.regions == ["USA"]
         assert req.delays == [0, 1]
         assert req.decay == 5
         assert req.auto_submit is True
+        assert req.submission_override_reason == "WQ-only expression"
         assert req.tag == "test-sweep"
+
+    def test_submit_by_id_request_records_preflight_provenance(self):
+        from quantgpt.routes.wq_brain_batch import BatchSubmitByIdRequest
+        req = BatchSubmitByIdRequest(
+            alpha_ids=["alpha-1"],
+            expressions_by_alpha_id={"alpha-1": "rank(close)"},
+            submission_override_reason="remote-only expression",
+        )
+
+        assert req.expressions_by_alpha_id == {"alpha-1": "rank(close)"}
+        assert req.submission_override_reason == "remote-only expression"
 
 

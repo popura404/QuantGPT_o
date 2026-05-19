@@ -320,6 +320,7 @@ def _run_strategy_backtest_task(task_id: str, request_data: dict, user_id: str) 
             "strategy_result": result_payload,
             "strategy_score": result_payload.get("strategy_score"),
             "report_url": f"/api/v1/reports/{report_filename}",
+            "summary_json": report_payload.get("summary_json_path"),
         }
     except Exception as exc:
         logger.error(f"[{task_id}] strategy backtest failed: {traceback.format_exc()}")

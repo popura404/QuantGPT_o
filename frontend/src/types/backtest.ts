@@ -2,19 +2,37 @@ import type { StrategyBacktestTaskResult } from "./strategy";
 
 export type TaskStatus =
   | "pending"
+  | "queued"
+  | "running"
+  | "authenticating"
   | "generating_expression"
   | "validating"
   | "fetching_data"
   | "checking_data_quality"
   | "fetching_fundamentals"
   | "backtesting"
+  | "simulating"
+  | "submitted"
+  | "finalizing"
   | "analyzing"
   | "generating_report"
   | "completed"
   | "failed"
   | "cancelled"
   | "iterating"
-  | "iteration_completed";
+  | "iteration_completed"
+  | (string & {});
+
+export type TaskType =
+  | "backtest"
+  | "iteration"
+  | "composite"
+  | "strategy_backtest"
+  | "wq_brain_submit"
+  | "wq_brain_batch"
+  | "wq_brain_batch_submit_by_id"
+  | "wq_brain_finalize"
+  | (string & {});
 
 export type DirectionMode = "auto_full" | "fixed";
 
@@ -166,6 +184,34 @@ export interface WQBrain {
   wq_is_tests: Record<string, WQISTest>;
 }
 
+export interface SubmissionPreflight {
+  allowed?: boolean;
+  reasons?: string[];
+  warnings?: string[];
+  override_reason?: string | null;
+  [key: string]: unknown;
+}
+
+export interface WQBrainTaskResult extends Partial<BacktestResult> {
+  ok?: boolean;
+  alpha_id?: string;
+  expression?: string;
+  submitted?: boolean;
+  submit_state?: string;
+  status?: string;
+  final_status?: string;
+  platform_status?: string;
+  detail?: string;
+  error?: string;
+  is_metrics?: Record<string, number | string | null>;
+  oos_metrics?: Record<string, number | string | null>;
+  submission_preflight?: SubmissionPreflight;
+  alphas?: Record<string, unknown> | Record<string, unknown>[];
+  summary?: Record<string, unknown>;
+  sub_results?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 export interface BacktestResult {
   report_url: string;
   metrics: BacktestMetrics;
@@ -250,11 +296,19 @@ export interface Task {
   params?: BacktestRequest;
   expression?: string;
   error?: string;
-  result?: BacktestResult | (StrategyBacktestTaskResult & Partial<BacktestResult>);
-  task_type?: "backtest" | "iteration" | "composite" | "strategy_backtest";
+  result?: BacktestResult | (StrategyBacktestTaskResult & Partial<BacktestResult>) | WQBrainTaskResult;
+  task_type?: TaskType;
   parent_task_id?: string;
   candidates?: IterationCandidate[];
   candidates_done?: number;
   candidates_total?: number;
   selected_candidate_index?: number;
+  progress?: number;
+  progress_message?: string;
+  completed?: number;
+  completed_combinations?: number;
+  sub_results?: Record<string, unknown>;
+  created_at?: string;
+  completed_at?: string;
+  duration_seconds?: number;
 }

@@ -132,6 +132,26 @@ def test_strategy_backtest_returns_oos_result_and_json_safe_payload():
     json.dumps(payload)
 
 
+def test_strategy_oos_top_level_series_are_clipped_to_test_window():
+    spec = _oos_spec()
+    spec["validation"]["oos"]["warmup_days"] = 5
+    result = run_strategy_backtest(
+        StrategyBacktestRequest.model_validate({
+            "spec": spec,
+            "start_date": "2024-01-02",
+            "end_date": "2024-05-31",
+            "rebalance_anchor": "2024-01-02",
+        }),
+        market_df=_market_df(),
+    )
+
+    test_start, test_end = result.oos_result["test"]["period"]
+    assert result.strategy_returns.index.min() >= pd.Timestamp(test_start)
+    assert result.strategy_returns.index.max() <= pd.Timestamp(test_end)
+    assert pd.to_datetime(result.target_weights["trade_date"]).min() >= pd.Timestamp(test_start)
+    assert result.metrics == result.oos_result["test"]["metrics"]
+
+
 def test_oos_score_prioritizes_test_metrics_and_service_payload():
     oos = {
         "train": {"metrics": {"sharpe": 2.0, "ic_mean": 0.08, "max_drawdown": -0.02, "turnover": 0.2}},

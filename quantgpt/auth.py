@@ -204,6 +204,53 @@ def create_guest_token() -> str:
     return jwt.encode(payload, _get_secret(), algorithm=_JWT_ALGORITHM)
 
 
+async def get_current_user_or_guest(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    """Authenticate a real user or an explicit guest token.
+
+    Unlike get_optional_user, this dependency still rejects requests with no
+    token. It returns None only for a valid signed guest token.
+    """
+    if is_auth_disabled():
+        try:
+            token = _extract_token(request)
+        except HTTPException:
+            return _get_dev_user()
+    else:
+        token = _extract_token(request)
+
+    if token.startswith(_API_KEY_PREFIX):
+        user = await _authenticate_api_key(token, db)
+        if not user or not user.is_active:
+            raise HTTPException(status_code=401, detail="无效的 API Key")
+        return user
+
+    payload = decode_token(token)
+    token_type = payload.get("type")
+    if token_type == "guest":
+        if payload.get("sub") != GUEST_USER_ID:
+            raise HTTPException(status_code=401, detail="无效的 Guest Token")
+        return None
+    if token_type != "access":
+        raise HTTPException(status_code=401, detail="无效的 Token 类型")
+
+    user_id_str = payload.get("sub")
+    if not user_id_str:
+        raise HTTPException(status_code=401, detail="无效的 Token")
+    try:
+        user_id = UUID(user_id_str)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=401, detail="无效的 Token")
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="用户不存在或已禁用")
+    return user
+
+
 async def get_optional_user(
     request: Request,
     db: AsyncSession = Depends(get_db),

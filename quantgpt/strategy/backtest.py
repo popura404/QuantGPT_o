@@ -304,7 +304,16 @@ def _run_strategy_oos_backtest(
         "score": oos_score["score"],
         "decision": oos_score["decision"],
     }
+    test_window = split["eval_windows"]["test"]
     final = period_results["test"]
+    final.strategy_returns = _slice_series(final.strategy_returns, test_window)
+    final.target_weights = _slice_frame_by_trade_date(final.target_weights, test_window)
+    final.cash_weights = _slice_frame_by_trade_date(final.cash_weights, test_window)
+    final.turnover_by_rebalance = _slice_frame_by_trade_date(final.turnover_by_rebalance, test_window)
+    final.cost_by_rebalance = _slice_frame_by_trade_date(final.cost_by_rebalance, test_window)
+    if final.factor_frame is not None:
+        final.factor_frame = _slice_frame_by_trade_date(final.factor_frame, test_window)
+    final.metrics = period_payloads["test"]["metrics"]
     final.start_date = req.start_date
     final.end_date = req.end_date
     final.validation_mode = "train_valid_test"
@@ -342,6 +351,17 @@ def _slice_series(series: pd.Series, window: dict) -> pd.Series:
     output = series.copy()
     output.index = pd.to_datetime(output.index)
     return output[(output.index >= pd.Timestamp(window["start"])) & (output.index <= pd.Timestamp(window["end"]))]
+
+
+def _slice_frame_by_trade_date(frame: pd.DataFrame, window: dict) -> pd.DataFrame:
+    if frame is None or frame.empty or "trade_date" not in frame.columns:
+        return pd.DataFrame() if frame is None else frame.copy()
+    output = frame.copy()
+    output["trade_date"] = pd.to_datetime(output["trade_date"])
+    return output[
+        (output["trade_date"] >= pd.Timestamp(window["start"]))
+        & (output["trade_date"] <= pd.Timestamp(window["end"]))
+    ]
 
 
 def _safe_decay(train_value, sample_value, warnings: list[str], name: str) -> float | None:

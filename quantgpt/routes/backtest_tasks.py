@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth import GUEST_USER_ID, get_current_user, get_optional_user
+from ..auth import GUEST_USER_ID, get_current_user, get_current_user_or_guest, get_optional_user
 from ..data_quality import DataQualityConfig, run_data_quality_gate
 from ..db import get_db
 from ..expression_parser import parse_expression
@@ -81,6 +81,8 @@ def _ensure_utc(dt: datetime) -> datetime:
 
 
 router = APIRouter()
+
+TERMINAL_TASK_STATUSES = ("completed", "failed", "cancelled", "iteration_completed")
 
 
 class OOSRequest(BaseModel):
@@ -585,7 +587,7 @@ async def cancel_task(
     if task:
         if task.get("user_id") != user_id:
             raise HTTPException(status_code=403, detail="无权操作此任务")
-        if task["status"] in ("completed", "failed", "cancelled", "iteration_completed"):
+        if task["status"] in TERMINAL_TASK_STATUSES:
             raise HTTPException(status_code=400, detail="任务已结束，无法取消")
         with tasks_lock:
             task["cancelled"] = True
@@ -602,7 +604,7 @@ async def cancel_task(
     db_task = result.scalar_one_or_none()
     if not db_task:
         raise HTTPException(status_code=404, detail="任务不存在")
-    if db_task.status in ("completed", "failed", "cancelled", "iteration_completed"):
+    if db_task.status in TERMINAL_TASK_STATUSES:
         raise HTTPException(status_code=400, detail="任务已结束，无法取消")
     db_task.status = "cancelled"
     db_task.error = "用户手动取消"
@@ -726,7 +728,7 @@ async def list_tasks(
                 if status is not None:
                     t_status = t.get("status", "")
                     if status == "running":
-                        if t_status in ("completed", "failed"):
+                        if t_status in TERMINAL_TASK_STATUSES:
                             continue
                     elif t_status != status:
                         continue
@@ -748,7 +750,10 @@ async def list_tasks(
     if task_type is not None:
         query = query.where(TaskModel.task_type == task_type)
     if status is not None:
-        query = query.where(TaskModel.status == status)
+        if status == "running":
+            query = query.where(~TaskModel.status.in_(TERMINAL_TASK_STATUSES))
+        else:
+            query = query.where(TaskModel.status == status)
     query = query.order_by(desc(TaskModel.created_at))
     result = await db.execute(query)
     db_tasks = result.scalars().all()
@@ -758,7 +763,7 @@ async def list_tasks(
     for dt in db_tasks:
         if dt.id not in memory_ids:
             dur = None
-            if dt.status in ("completed", "failed", "cancelled", "iteration_completed") and dt.created_at and dt.updated_at:
+            if dt.status in TERMINAL_TASK_STATUSES and dt.created_at and dt.updated_at:
                 dur = round((dt.updated_at - dt.created_at).total_seconds(), 1)
             task_dict = {
                 "task_id": dt.id,
@@ -770,7 +775,7 @@ async def list_tasks(
                 "result": dt.result,
                 "error": dt.error,
                 "created_at": _ensure_utc(dt.created_at).isoformat() if dt.created_at else None,
-                "completed_at": _ensure_utc(dt.updated_at).isoformat() if dt.status in ("completed", "failed", "cancelled", "iteration_completed") and dt.updated_at else None,
+                "completed_at": _ensure_utc(dt.updated_at).isoformat() if dt.status in TERMINAL_TASK_STATUSES and dt.updated_at else None,
                 "duration_seconds": dur,
             }
             if rating is not None:
@@ -800,11 +805,11 @@ async def list_tasks(
 @router.get("/api/v1/tasks/{task_id}", summary="查询任务状态和结果")
 async def get_task(
     task_id: str,
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_current_user_or_guest),
     db: AsyncSession = Depends(get_db),
 ):
     """返回任务当前状态。status=completed 时 result 字段包含回测指标（Sharpe、IC、Fitness 等）。回测是异步的，提交后需轮询此端点直到 status 变为 completed 或 failed。"""
-    user_id = str(user.id)
+    user_id = str(user.id) if user else GUEST_USER_ID
 
     task = tasks.get(task_id)
     if task:
@@ -813,9 +818,10 @@ async def get_task(
         safe = {k: v for k, v in task.items() if k not in ("created_at", "user_id")}
         return sanitize_task_response(safe)
 
-    result = await db.execute(
-        select(TaskModel).where(TaskModel.id == task_id, TaskModel.user_id == user.id)
-    )
+    if user is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    result = await db.execute(select(TaskModel).where(TaskModel.id == task_id, TaskModel.user_id == user.id))
     db_task = result.scalar_one_or_none()
     if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -839,14 +845,15 @@ async def get_task(
 
 
 @router.post("/api/v1/tasks/{task_id}/sse-ticket")
-async def create_ticket(task_id: str, user: User = Depends(get_current_user)):
+async def create_ticket(task_id: str, user: User | None = Depends(get_current_user_or_guest)):
     """Create a short-lived, single-use ticket for SSE stream authentication."""
     task = tasks.get(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    if task.get("user_id") != str(user.id):
+    user_id = str(user.id) if user else GUEST_USER_ID
+    if task.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="Task not found")
-    ticket = create_sse_ticket(task_id, str(user.id))
+    ticket = create_sse_ticket(task_id, user_id)
     return {"ticket": ticket}
 
 
@@ -896,7 +903,7 @@ async def stream_task(task_id: str, request: Request):
                     payload = json.dumps(safe, ensure_ascii=False, default=str)
                     yield f"event: update\ndata: {payload}\n\n"
 
-                    if current_status in ("completed", "failed", "iteration_completed"):
+                    if current_status in TERMINAL_TASK_STATUSES:
                         yield f"event: done\ndata: {json.dumps({'status': current_status})}\n\n"
                         return
 

@@ -152,6 +152,26 @@ metrics 作为权威结论。
 | `neutralize_industry` | bool | `true` | 行业中性化 |
 | `neutralize_cap` | bool | `true` | 市值中性化 |
 
+`run_backtest` 与 `score_factor` 额外支持 OOS/data-quality 参数。省略 `oos_enabled` 时保持 legacy
+单窗口兼容；研究结论优先显式传 `oos_enabled=true`，此时方向策略固定为 train-fixed，评分以
+`oos_score` / `oos_result` 为准。
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `rebalance_anchor` | str \| null | `null` | 换仓网格锚定日期；为空时使用数据起始日 |
+| `oos_enabled` | bool | `false` | 是否启用 train/valid/test 样本外评估 |
+| `data_quality` | bool \| null | `null` | 是否运行基础行情数据质量门；`null` 表示 OOS 时默认启用、非 OOS 时默认关闭 |
+| `data_quality_mode` | str | `filter` | 数据质量模式：`report_only` / `filter` / `strict` |
+| `max_abs_daily_ret` | float | `0.25` | 单股最大绝对日收益阈值 |
+| `max_missing_ratio_per_stock` | float | `0.2` | 单股最大缺失交易日比例 |
+| `adjustment` | str | `unknown` | 复权模式：`qfq` / `hfq` / `none` / `unknown` |
+
+WQ BRAIN 远程模拟本身不强制本地 OOS/data-quality，因为 WQ-only 字段和算子可能无法在本地执行。
+但所有正式提交动作都会执行本地 preflight：`auto_submit=true`、`submit-alpha`、`submit-by-id`
+和 `batch-submit-by-id` 只有在本地 OOS/data-quality 通过时才会调用平台 submit。缺少表达式溯源
+或本地不可执行时返回 `LOCAL_PREFLIGHT_UNAVAILABLE`；确需提交 WQ-only 表达式时必须提供
+`submission_override_reason`，该豁免会写入返回结果。
+
 ---
 
 ### `compute_factor_values`

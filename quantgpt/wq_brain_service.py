@@ -16,6 +16,8 @@ import logging
 import time
 from typing import Any, Callable
 
+from .wq_submission_guard import PreflightRunner, require_submission_preflight
+
 logger = logging.getLogger(__name__)
 
 
@@ -90,6 +92,8 @@ def run_single_simulation(
     user_id: str | None = None,
     tag: str | None = None,
     progress_callback: Callable[[int, str], None] | None = None,
+    submission_override_reason: str | None = None,
+    submission_preflight_runner: PreflightRunner | None = None,
 ) -> dict:
     """Simulate one expression and optionally auto-submit. Returns result dict."""
     result = client.simulate(
@@ -107,9 +111,16 @@ def run_single_simulation(
     grade = fitness_to_grade(m["fitness"])
 
     submitted = False
+    submission_preflight = None
     if auto_submit and alpha_id and grade == "A":
-        submit_result = client.submit_alpha(alpha_id)
-        submitted = submit_result.get("ok", False)
+        submission_preflight = require_submission_preflight(
+            expression,
+            override_reason=submission_override_reason,
+            preflight_runner=submission_preflight_runner,
+        )
+        if submission_preflight.get("allowed"):
+            submit_result = client.submit_alpha(alpha_id)
+            submitted = submit_result.get("ok", False)
 
     if submitted and alpha_id and user_id:
         _track_alpha(
@@ -129,6 +140,9 @@ def run_single_simulation(
         "submitted": submitted,
         "simulation_id": result.get("simulation_id"),
     }
+    if submission_preflight is not None:
+        out["submission_preflight"] = submission_preflight
+        out["submission_blocked"] = bool(auto_submit and not submitted and not submission_preflight.get("allowed"))
     out.update(_build_wq_result_block(m["sharpe"], m["fitness"], m["returns"], m["turnover"], grade))
     return out
 
@@ -147,10 +161,13 @@ def run_batch_simulation(
     tag: str | None = None,
     on_progress: Callable[[int, int, str], None] | None = None,
     check_cancelled: Callable[[], bool] | None = None,
+    submission_override_reason: str | None = None,
+    submission_preflight_runner: PreflightRunner | None = None,
 ) -> dict:
     """Sweep expression over region×delay×universe×neutralization grid. Returns result dict."""
     combos = list(itertools.product(regions, delays, universes, neutralizations))
     sub_results: dict[str, dict] = {}
+    submission_preflight = None
 
     for i, (region, delay_val, universe, neut) in enumerate(combos):
         if check_cancelled and check_cancelled():
@@ -180,9 +197,19 @@ def run_batch_simulation(
         grade = fitness_to_grade(m["fitness"])
 
         submitted = False
+        submission_blocked = False
         if auto_submit and alpha_id and grade == "A":
-            submit_result = client.submit_alpha(alpha_id)
-            submitted = submit_result.get("ok", False)
+            if submission_preflight is None:
+                submission_preflight = require_submission_preflight(
+                    expression,
+                    override_reason=submission_override_reason,
+                    preflight_runner=submission_preflight_runner,
+                )
+            if submission_preflight.get("allowed"):
+                submit_result = client.submit_alpha(alpha_id)
+                submitted = submit_result.get("ok", False)
+            else:
+                submission_blocked = True
 
         if submitted and alpha_id and user_id:
             _track_alpha(
@@ -192,7 +219,7 @@ def run_batch_simulation(
                 tag=tag, metrics=m,
             )
 
-        sub_results[key] = {
+        sub_result = {
             "key": key, "region": region, "delay": delay_val,
             "universe": universe, "neutralization": neut,
             "status": "completed", "alpha_id": alpha_id,
@@ -200,6 +227,10 @@ def run_batch_simulation(
             "returns": m["returns"], "turnover": m["turnover"],
             "submitted": submitted, "rating": grade,
         }
+        if submission_preflight is not None and auto_submit and grade == "A":
+            sub_result["submission_preflight"] = submission_preflight
+            sub_result["submission_blocked"] = submission_blocked
+        sub_results[key] = sub_result
 
     return _aggregate_batch_result(expression, len(combos), sub_results)
 
@@ -210,10 +241,12 @@ def run_submit_by_ids(
     on_progress: Callable[[int, int, str], None] | None = None,
     check_cancelled: Callable[[], bool] | None = None,
     on_each_done: Callable[[str, dict], None] | None = None,
+    submission_preflight_lookup: Callable[[str], dict] | None = None,
 ) -> dict:
     """Submit a list of already-simulated alphas. Returns summary dict."""
     results: dict[str, dict] = {}
     active = sc_fail = timeout = 0
+    local_preflight_blocked = 0
 
     for i, alpha_id in enumerate(alpha_ids):
         if check_cancelled and check_cancelled():
@@ -225,12 +258,35 @@ def run_submit_by_ids(
         if on_progress:
             on_progress(i + 1, len(alpha_ids), alpha_id)
 
+        submission_preflight = (
+            submission_preflight_lookup(alpha_id)
+            if submission_preflight_lookup
+            else require_submission_preflight(
+                None,
+                unavailable_reason=f"Alpha {alpha_id} has no local expression provenance for submission preflight",
+            )
+        )
+        if not submission_preflight.get("allowed"):
+            local_preflight_blocked += 1
+            entry = {
+                "ok": False,
+                "detail": "blocked by local OOS/data_quality submission preflight",
+                "platform_status": "LOCAL_PREFLIGHT_BLOCKED",
+                "final_status": "LOCAL_PREFLIGHT_BLOCKED",
+                "submission_preflight": submission_preflight,
+            }
+            results[alpha_id] = entry
+            if on_each_done:
+                on_each_done(alpha_id, entry)
+            continue
+
         result = client.submit_alpha(alpha_id)
         entry: dict[str, Any] = {
             "ok": result.get("ok", False),
             "detail": result.get("detail", ""),
             "platform_status": result.get("platform_status", ""),
             "status_code": result.get("status_code"),
+            "submission_preflight": submission_preflight,
         }
         if result.get("sc_value") is not None:
             entry["sc_value"] = result["sc_value"]
@@ -258,6 +314,7 @@ def run_submit_by_ids(
         "active": active,
         "sc_fail": sc_fail,
         "timeout": timeout,
+        "local_preflight_blocked": local_preflight_blocked,
         "results": results,
     }
 

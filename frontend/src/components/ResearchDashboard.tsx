@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
-import { ChevronLeft, ChevronRight, ExternalLink } from "lucide-react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useColorMode } from "../contexts/ColorModeContext";
 import { authFetch } from "../api/client";
-import { getReportUrl } from "../api/client";
 import type { Task } from "../types/backtest";
+import TaskStatusBadge from "./tasks/TaskStatusBadge";
+import TaskDetailDrawer from "./tasks/TaskDetailDrawer";
 
 interface Stats {
   total: number;
@@ -47,17 +48,6 @@ const IconBrain = () => (
     <path d="M10 2C7.5 2 5 4 5 7c0 1.5.5 2.5 1 3.5S5 13 5 14c0 2 2 4 5 4s5-2 5-4c0-1-.5-2.5 0-3.5S15 8.5 15 7c0-3-2.5-5-5-5z" />
     <path d="M10 2v16M7 5c1 1 2 1 3 0M7 9c1 1 2 1 3 0M7 13c1 1 2 1 3 0M13 5c-1 1-2 1-3 0M13 9c-1 1-2 1-3 0M13 13c-1 1-2 1-3 0" />
   </svg>
-);
-const IconSpinner = () => (
-  <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
-    <circle cx="8" cy="8" r="6" strokeOpacity="0.25" /><path d="M14 8a6 6 0 00-6-6" />
-  </svg>
-);
-const IconSuccessDot = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" stroke="currentColor" strokeWidth="1.5" /><path d="M4.5 7l2 2 3.5-3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
-);
-const IconFailDot = () => (
-  <svg className="w-3.5 h-3.5" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" stroke="currentColor" strokeWidth="1.5" /><path d="M5 5l4 4M9 5l-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
 );
 
 export default function ResearchDashboard() {
@@ -126,23 +116,7 @@ export default function ResearchDashboard() {
     return "bg-gray-800 text-gray-500 border-gray-700";
   };
 
-  const statusBadge = (status: string) => {
-    if (status === "completed") return (
-      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-sm font-medium border ${isDark ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30" : "bg-emerald-50 text-emerald-700 border-emerald-200"}`}>
-        <IconSuccessDot />成功
-      </span>
-    );
-    if (status === "failed") return (
-      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-sm font-medium border ${isDark ? "bg-red-500/10 text-red-400 border-red-500/30" : "bg-red-50 text-red-600 border-red-200"}`}>
-        <IconFailDot />失败
-      </span>
-    );
-    return (
-      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-sm font-medium border ${isDark ? "bg-blue-500/10 text-blue-400 border-blue-500/30" : "bg-blue-50 text-blue-600 border-blue-200"}`}>
-        <IconSpinner />运行中
-      </span>
-    );
-  };
+  const statusBadge = (status: string) => <TaskStatusBadge status={status} />;
 
   const formatTime = (task: Task) => {
     const ca = (task as unknown as Record<string, unknown>).created_at as string | undefined;
@@ -352,142 +326,11 @@ export default function ResearchDashboard() {
         </button>
       </div>
 
-      {/* Detail modal */}
-      {selectedTask && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setSelectedTask(null)}>
-          <div
-            className={`w-full max-w-2xl max-h-[80vh] overflow-y-auto rounded-xl border shadow-2xl ${border} ${surface} p-6`}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between mb-5">
-              <div className="flex items-center gap-2.5">
-                <div className={`p-1.5 rounded-md ${isDark ? "bg-blue-500/10 text-blue-400" : "bg-blue-50 text-blue-600"}`}>
-                  <IconBrain />
-                </div>
-                <h3 className={`text-lg font-semibold ${textPrimary}`}>Task Detail</h3>
-                <span className={`font-mono text-xs ${textMuted}`}>{selectedTask.task_id}</span>
-              </div>
-              <button onClick={() => setSelectedTask(null)} className={`p-1.5 rounded-md transition-colors ${isDark ? "text-gray-400 hover:bg-[#1c2128]" : "text-gray-400 hover:bg-gray-100"}`}>
-                <svg className="w-4 h-4" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 4l8 8M12 4l-8 8" /></svg>
-              </button>
-            </div>
-
-            <div className="space-y-5">
-              <div>
-                <p className={`text-xs font-medium uppercase tracking-wider mb-1.5 ${textMuted}`}>Prompt</p>
-                <p className={`text-sm leading-relaxed ${textPrimary}`}>{getPrompt(selectedTask)}</p>
-              </div>
-
-              <div>
-                <p className={`text-xs font-medium uppercase tracking-wider mb-1.5 ${textMuted}`}>Expression</p>
-                <div className={`font-mono text-sm p-3 rounded-lg border ${border} ${surfaceAlt} ${textPrimary}`}>{getExpression(selectedTask)}</div>
-              </div>
-
-              {getTag(selectedTask) && (
-                <div>
-                  <p className={`text-xs font-medium uppercase tracking-wider mb-1.5 ${textMuted}`}>Tag</p>
-                  <span className={`inline-block px-2.5 py-1 rounded-md text-sm font-medium border ${isDark ? "bg-violet-500/10 text-violet-400 border-violet-500/30" : "bg-violet-50 text-violet-700 border-violet-200"}`}>{getTag(selectedTask)}</span>
-                </div>
-              )}
-
-              <div className="flex items-center gap-3">
-                {statusBadge(selectedTask.status)}
-                {getRating(selectedTask) && (
-                  <span className={`px-2.5 py-0.5 rounded-md text-xs font-bold border ${isDark ? ratingColorDark(getRating(selectedTask)) : ratingColor(getRating(selectedTask))}`}>{getRating(selectedTask)}</span>
-                )}
-              </div>
-              {selectedTask.error && (
-                <div className={`text-sm p-3 rounded-lg border ${isDark ? "bg-red-500/10 text-red-400 border-red-500/20" : "bg-red-50 text-red-600 border-red-200"}`}>
-                  {typeof selectedTask.error === "string" ? selectedTask.error : JSON.stringify(selectedTask.error)}
-                </div>
-              )}
-
-              {selectedTask.result?.backtest_summary && (
-                <div>
-                  <p className={`text-xs font-medium uppercase tracking-wider mb-2.5 ${textMuted}`}>Key Metrics</p>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
-                    {[
-                      { label: "L/S Sharpe", value: selectedTask.result.backtest_summary.long_short_sharpe?.toFixed(2) },
-                      { label: "L/S Annual", value: selectedTask.result.backtest_summary.long_short_annual != null ? `${(selectedTask.result.backtest_summary.long_short_annual * 100).toFixed(1)}%` : undefined },
-                      { label: "Rank IC", value: (selectedTask.result.backtest_summary.rank_ic_mean as number | undefined)?.toFixed(4) },
-                      { label: "IC IR", value: (selectedTask.result.backtest_summary.ic_ir as number | undefined)?.toFixed(2) },
-                      { label: "Turnover", value: (selectedTask.result.backtest_summary.turnover as number | undefined)?.toFixed(3) },
-                      { label: "Fitness", value: (selectedTask.result.backtest_summary.wq_fitness as number | undefined)?.toFixed(3) },
-                      { label: "Monotonicity", value: selectedTask.result.backtest_summary.monotonicity_score?.toFixed(2) },
-                      { label: "Spread", value: selectedTask.result.backtest_summary.spread?.toFixed(2) },
-                    ].map(({ label, value }) => value != null ? (
-                      <div key={label} className={`p-2.5 rounded-lg border ${border} ${surfaceAlt}`}>
-                        <p className={`text-xs ${textMuted}`}>{label}</p>
-                        <p className={`text-sm font-mono font-semibold tabular-nums mt-0.5 ${textPrimary}`}>{value}</p>
-                      </div>
-                    ) : null)}
-                  </div>
-                </div>
-              )}
-
-              {selectedTask.result?.wq_brain && (
-                <div>
-                  <p className={`text-xs font-medium uppercase tracking-wider mb-2.5 ${textMuted}`}>WQ BRAIN Simulation</p>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
-                    {[
-                      { label: "WQ Sharpe", value: selectedTask.result.wq_brain.wq_sharpe?.toFixed(2) ?? "—" },
-                      { label: "WQ Fitness", value: selectedTask.result.wq_brain.wq_fitness?.toFixed(3) ?? "—" },
-                      { label: "WQ Returns", value: selectedTask.result.wq_brain.wq_returns != null ? `${(selectedTask.result.wq_brain.wq_returns * 100).toFixed(1)}%` : "—" },
-                      { label: "WQ Rating", value: selectedTask.result.wq_brain.wq_rating ?? "—" },
-                    ].map(({ label, value }) => (
-                      <div key={label} className={`p-2.5 rounded-lg border ${border} ${surfaceAlt}`}>
-                        <p className={`text-xs ${textMuted}`}>{label}</p>
-                        <p className={`text-sm font-mono font-semibold tabular-nums mt-0.5 ${textPrimary}`}>{value}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {selectedTask.result?.interpretation && (
-                <div>
-                  <div className={`flex items-center gap-1.5 mb-2.5 ${textMuted}`}>
-                    <IconBrain />
-                    <p className="text-xs font-medium uppercase tracking-wider">AI Analysis</p>
-                  </div>
-                  <div className={`p-3.5 rounded-lg border space-y-2.5 text-sm ${border} ${surfaceAlt}`}>
-                    {selectedTask.result.interpretation.conclusion && (
-                      <p className={textPrimary}><span className={`font-semibold ${textSecondary}`}>Conclusion: </span>{selectedTask.result.interpretation.conclusion}</p>
-                    )}
-                    {selectedTask.result.interpretation.logic && (
-                      <p className={textPrimary}><span className={`font-semibold ${textSecondary}`}>Logic: </span>{selectedTask.result.interpretation.logic}</p>
-                    )}
-                    {selectedTask.result.interpretation.guidance && (
-                      <p className={textPrimary}><span className={`font-semibold ${textSecondary}`}>Guidance: </span>{selectedTask.result.interpretation.guidance}</p>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {selectedTask.result?.report_url && (
-                <a
-                  href={getReportUrl(selectedTask.result.report_url)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-500 transition-colors shadow-sm"
-                >
-                  <ExternalLink className="h-4 w-4" />
-                  View Full Report
-                </a>
-              )}
-
-              {selectedTask.result?.params && (
-                <div>
-                  <p className={`text-xs font-medium uppercase tracking-wider mb-1.5 ${textMuted}`}>Parameters</p>
-                  <p className={`text-xs font-mono tabular-nums ${textSecondary}`}>
-                    {selectedTask.result.params.universe} · {selectedTask.result.params.start_date} ~ {selectedTask.result.params.end_date} · {selectedTask.result.params.n_groups}G · {selectedTask.result.params.holding_period}D hold · {selectedTask.result.params.stock_count} stocks
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <TaskDetailDrawer
+        task={selectedTask}
+        open={Boolean(selectedTask)}
+        onClose={() => setSelectedTask(null)}
+      />
     </div>
   );
 }

@@ -1,6 +1,6 @@
-import { CheckCircle2, XCircle, Loader2 } from "lucide-react";
 import type { Task } from "../types/backtest";
 import { useColorMode } from "../contexts/ColorModeContext";
+import TaskStatusBadge from "./tasks/TaskStatusBadge";
 
 interface Props {
   task: Task;
@@ -23,17 +23,11 @@ export default function TaskHistoryItem({ task, isActive, onClick }: Props) {
       }`}
     >
       <div className="flex items-start gap-2">
-        <div className="mt-0.5">
-          {task.status === "completed" ? (
-            <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-          ) : task.status === "failed" ? (
-            <XCircle className="h-4 w-4 text-red-500" />
-          ) : (
-            <Loader2 className="h-4 w-4 text-blue-500 animate-spin" />
-          )}
-        </div>
         <div className="min-w-0 flex-1">
-          <p className={`text-sm ${isDark ? "text-gray-200" : "text-gray-800"} truncate`}>{prompt}</p>
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <p className={`truncate text-sm ${isDark ? "text-gray-200" : "text-gray-800"}`}>{prompt}</p>
+            <TaskStatusBadge status={task.status} compact />
+          </div>
           {expression && (
             <p className="text-xs text-gray-400 font-mono truncate mt-0.5">{expression}</p>
           )}

@@ -26,6 +26,7 @@ from ..wq_brain_service import (
     run_submit_by_ids,
     safe_float,
 )
+from ..wq_submission_guard import require_submission_preflight
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,11 @@ class WQBrainBatchRequest(BaseModel):
     decay: int = Field(0, ge=0, le=20, description="Alpha decay (shared)")
     truncation: float = Field(0.08, ge=0, le=0.5, description="Weight truncation (shared)")
     auto_submit: bool = Field(False, description="Auto-submit if all IS checks pass")
+    submission_override_reason: str | None = Field(
+        None,
+        max_length=500,
+        description="Explicit reason to waive local OOS/data_quality preflight for formal submission",
+    )
     account: str = Field("primary", description="WQ account: 'primary' or 'alt'")
     session_id: str | None = Field(None, description="Session ID")
 
@@ -57,6 +63,15 @@ class WQBrainBatchRequest(BaseModel):
 class BatchSubmitByIdRequest(BaseModel):
     alpha_ids: list[str] = Field(..., min_length=1, max_length=MAX_BATCH_SUBMIT, description="Alpha IDs to submit")
     account: str = Field("primary", description="WQ account (must be 'primary' for submission)")
+    expressions_by_alpha_id: dict[str, str] | None = Field(
+        None,
+        description="Optional alpha_id to expression provenance for local OOS/data_quality preflight",
+    )
+    submission_override_reason: str | None = Field(
+        None,
+        max_length=500,
+        description="Explicit reason to waive local OOS/data_quality preflight for formal submission",
+    )
 
 
 class BatchAlphaStatusRequest(BaseModel):
@@ -181,6 +196,7 @@ def _run_batch_task(task_id: str, req: WQBrainBatchRequest, user_id: str):
             decay=req.decay, truncation=req.truncation,
             auto_submit=req.auto_submit and account == "primary",
             user_id=user_id, tag=req.tag,
+            submission_override_reason=req.submission_override_reason,
             on_progress=on_progress,
             check_cancelled=lambda: task.get("cancelled", False),
         )
@@ -269,7 +285,14 @@ async def wq_brain_batch_submit(
 # ---- Batch submit by alpha_id ----
 
 
-def _run_batch_submit_by_id(task_id: str, alpha_ids: list[str], account: str, user_id: str):
+def _run_batch_submit_by_id(
+    task_id: str,
+    alpha_ids: list[str],
+    account: str,
+    user_id: str,
+    expressions_by_alpha_id: dict[str, str] | None = None,
+    submission_override_reason: str | None = None,
+):
     task = tasks.get(task_id)
     if not task:
         return
@@ -297,11 +320,26 @@ def _run_batch_submit_by_id(task_id: str, alpha_ids: list[str], account: str, us
             except Exception as e:
                 logger.warning(f"[{task_id}] incremental persist error: {e}")
 
+        expressions_by_alpha_id = expressions_by_alpha_id or {}
+        preflight_cache: dict[str, dict] = {}
+
+        def preflight_lookup(aid: str) -> dict:
+            expression = expressions_by_alpha_id.get(aid)
+            cache_key = expression or f"missing:{aid}"
+            if cache_key not in preflight_cache:
+                preflight_cache[cache_key] = require_submission_preflight(
+                    expression,
+                    override_reason=submission_override_reason,
+                    unavailable_reason=f"Alpha {aid} has no local expression provenance for submission preflight",
+                )
+            return preflight_cache[cache_key]
+
         result = run_submit_by_ids(
             client, alpha_ids,
             on_progress=on_progress,
             check_cancelled=lambda: task.get("cancelled", False),
             on_each_done=on_each_done,
+            submission_preflight_lookup=preflight_lookup,
         )
         client.close()
 
@@ -359,13 +397,25 @@ async def wq_brain_batch_submit_by_id(
             "status": "pending",
             "task_type": "wq_brain_batch_submit_by_id",
             "cancelled": False,
-            "params": {"alpha_ids": req.alpha_ids, "account": req.account},
+            "params": {
+                "alpha_ids": req.alpha_ids,
+                "account": req.account,
+                "has_expression_provenance": bool(req.expressions_by_alpha_id),
+                "submission_override_reason": req.submission_override_reason,
+            },
             "created_at": time.time(),
         }
 
     thread = threading.Thread(
         target=_run_batch_submit_by_id,
-        args=(task_id, req.alpha_ids, req.account, user_id),
+        args=(
+            task_id,
+            req.alpha_ids,
+            req.account,
+            user_id,
+            req.expressions_by_alpha_id,
+            req.submission_override_reason,
+        ),
         daemon=True,
     )
     thread.start()
