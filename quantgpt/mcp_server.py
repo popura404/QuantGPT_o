@@ -16,11 +16,13 @@ import json
 import logging
 import sys
 import traceback
+from typing import Literal
 
 import pandas as pd
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
+from .data_quality import DataQualityConfig, run_data_quality_gate
 from .expression_parser import __doc__ as _expr_module_doc
 from .expression_parser import parse_expression
 from .factor_values import compute_factor_values_payload as _compute_factor_values_payload
@@ -73,7 +75,9 @@ from .strategy.service import (
 from .strategy.service import (
     validate_strategy_payload as _validate_strategy_payload,
 )
-from .task_executor import _run_backtest_in_process, get_executor
+from .task_executor import _run_backtest_in_process, _run_oos_backtest_in_process, get_executor
+from .validation.oos_backtest import to_public_oos_result
+from .validation.split import OOSConfig
 from .wq_brain_service import (
     run_batch_simulation,
     run_check_alphas,
@@ -191,7 +195,7 @@ def instantiate_strategy_template(template_id: str, overrides: dict | None = Non
 
 @mcp.tool()
 def validate_strategy_spec(spec: dict) -> str:
-    """校验 StrategySpec v0，失败时返回 error_code 和 hint。"""
+    """校验 StrategySpec v0/v1，失败时返回 error_code 和 hint。"""
     return _strategy_dumps(_validate_strategy_payload(spec))
 
 
@@ -204,7 +208,7 @@ async def run_strategy_backtest(
     universe_date: str | None = None,
     rebalance_anchor: str | None = None,
 ) -> str:
-    """运行 StrategySpec v0 策略回测，返回策略级收益、目标权重和风控日志。"""
+    """运行 StrategySpec v0/v1 策略回测；v1 OOS 返回 train/valid/test、data_quality 和 oos_score。"""
     request_data = {
         "spec": spec,
         "start_date": start_date,
@@ -325,6 +329,15 @@ async def run_backtest(
     benchmark: str = "hs300",
     neutralize_industry: bool = True,
     neutralize_cap: bool = True,
+    rebalance_anchor: str | None = None,
+    oos_enabled: bool = False,
+    direction_mode: str = "auto_full",
+    fixed_direction: int | None = None,
+    data_quality: bool | None = None,
+    data_quality_mode: Literal["report_only", "filter", "strict"] = "filter",
+    max_abs_daily_ret: float = 0.25,
+    max_missing_ratio_per_stock: float = 0.2,
+    adjustment: Literal["qfq", "hfq", "none", "unknown"] = "unknown",
 ) -> str:
     """执行因子回测,生成 QuantStats HTML 报告。
 
@@ -338,6 +351,11 @@ async def run_backtest(
         benchmark: 基准 (hs300/zz500/sz50/csi1000)
         neutralize_industry: 行业中性化(默认开启)
         neutralize_cap: 市值中性化(默认开启)
+        rebalance_anchor: 换仓网格锚定日期
+        oos_enabled: 启用训练/验证/测试样本外评估
+        direction_mode: 非 OOS 回测方向模式，auto_full 或 fixed
+        fixed_direction: fixed 模式方向，1=高值做多，-1=低值做多
+        data_quality: 是否运行基础行情数据质量门；None 表示兼容默认
 
     Returns:
         JSON string with report_path, metrics, group_returns, anti_overfit.
@@ -346,31 +364,83 @@ async def run_backtest(
         "universe": universe, "start_date": start_date, "end_date": end_date,
         "n_groups": n_groups, "holding_period": holding_period, "benchmark": benchmark,
         "neutralize_industry": neutralize_industry, "neutralize_cap": neutralize_cap,
+        "rebalance_anchor": rebalance_anchor, "oos_enabled": oos_enabled,
+        "direction_mode": direction_mode, "fixed_direction": fixed_direction,
+        "data_quality": data_quality,
     })
     _error_msg = None
     _result = None
     try:
+        if direction_mode not in {"auto_full", "fixed"}:
+            return json.dumps({"error_code": "INVALID_DIRECTION_POLICY", "hint": "direction_mode must be auto_full or fixed"})
+        if oos_enabled and (direction_mode != "auto_full" or fixed_direction is not None):
+            return json.dumps({
+                "error_code": "INVALID_OOS_DIRECTION_OVERRIDE",
+                "hint": "oos_enabled=true always uses train_fixed direction; fixed_direction is not allowed",
+            })
+        if not oos_enabled and direction_mode == "auto_full" and fixed_direction is not None:
+            return json.dumps({
+                "error_code": "INVALID_DIRECTION_POLICY",
+                "hint": "fixed_direction must be null when direction_mode=auto_full",
+            })
+        if not oos_enabled and direction_mode == "fixed" and fixed_direction not in (1, -1):
+            return json.dumps({
+                "error_code": "INVALID_DIRECTION_POLICY",
+                "hint": "direction_mode=fixed requires fixed_direction to be 1 or -1",
+            })
+
         logger.info(f"Getting universe: {universe}")
         market_df, stock_codes = await asyncio.to_thread(_fetch_data_for_market, universe, start_date, end_date)
         if market_df is None or len(market_df) == 0:
             return json.dumps({"error": "No market data available. Check date range and stock codes."})
 
+        data_quality_report = None
+        dq_enabled = oos_enabled if data_quality is None else data_quality
+        if dq_enabled:
+            dq_config = DataQualityConfig(
+                enabled=True,
+                mode=data_quality_mode,
+                max_abs_daily_ret=max_abs_daily_ret,
+                max_missing_ratio_per_stock=max_missing_ratio_per_stock,
+                adjustment=adjustment,
+            )
+            market_df, data_quality_report = await asyncio.to_thread(run_data_quality_gate, market_df, dq_config)
+        elif oos_enabled:
+            data_quality_report = {
+                "enabled": False,
+                "data_quality_scope": "full_requested_sample",
+                "issues": [],
+                "warnings": ["OOS validation was run without the data-quality gate because data_quality=false"],
+            }
+
         market_df = await asyncio.to_thread(_enrich_with_fundamentals, expression, market_df, stock_codes, start_date, end_date)
 
         logger.info(f"Running backtest: {expression}")
         executor = get_executor()
-        future = executor.submit_cpu_work(
-            _run_backtest_in_process, market_df, expression, n_groups, holding_period,
-            neutralize_industry=neutralize_industry, neutralize_cap=neutralize_cap,
-        )
+        if oos_enabled:
+            oos_config = OOSConfig(rebalance_anchor=rebalance_anchor)
+            future = executor.submit_cpu_work(
+                _run_oos_backtest_in_process, market_df, expression, n_groups, holding_period,
+                neutralize_industry=neutralize_industry, neutralize_cap=neutralize_cap,
+                rebalance_anchor=rebalance_anchor, oos_config=oos_config,
+            )
+        else:
+            future = executor.submit_cpu_work(
+                _run_backtest_in_process, market_df, expression, n_groups, holding_period,
+                neutralize_industry=neutralize_industry, neutralize_cap=neutralize_cap,
+                rebalance_anchor=rebalance_anchor,
+                direction_mode=direction_mode, fixed_direction=fixed_direction,
+            )
         result = await asyncio.to_thread(future.result, 600)
 
         anti_overfit_result = None
-        factor_df = result.get("_factor_df")
+        factor_df = result.get("_direction_adjusted_factor_df") if oos_enabled else result.get("_factor_df")
         if factor_df is not None and len(factor_df) > 100:
             try:
                 from .anti_overfit import run_anti_overfit as _run_ao
                 anti_overfit_result = await asyncio.to_thread(_run_ao, factor_df, holding_period)
+                if oos_enabled and isinstance(anti_overfit_result, dict):
+                    anti_overfit_result["diagnostic_scope"] = "direction_adjusted_oos_compat"
             except Exception as e:
                 logger.warning(f"Anti-overfit analysis failed: {e}")
 
@@ -387,26 +457,42 @@ async def run_backtest(
             title=f"Factor: {expression}",
         )
 
+        backtest_summary = {
+            "long_short_sharpe": result["long_short_sharpe"],
+            "long_short_annual": result.get("long_short_annual", 0),
+            "top_group_sharpe": result.get("top_group_sharpe", 0),
+            "monotonicity_score": result["monotonicity_score"],
+            "spread": result["spread"],
+            "group_returns": result["group_returns"],
+            "ic_mean": result.get("ic_mean", 0),
+            "rank_ic_mean": result.get("rank_ic_mean", 0),
+            "raw_ic_mean": result.get("raw_ic_mean", result.get("ic_mean", 0)),
+            "raw_rank_ic_mean": result.get("raw_rank_ic_mean", result.get("rank_ic_mean", 0)),
+            "direction_adjusted_ic_mean": result.get("direction_adjusted_ic_mean", result.get("ic_mean", 0)),
+            "direction_adjusted_rank_ic_mean": result.get(
+                "direction_adjusted_rank_ic_mean", result.get("rank_ic_mean", 0)
+            ),
+            "direction_mode": result.get("direction_mode", direction_mode),
+            "direction_source": result.get("direction_source"),
+            "direction_basis": result.get("direction_basis"),
+            "fixed_direction": result.get("fixed_direction"),
+            "direction_warning": result.get("direction_warning"),
+            "flipped": result.get("flipped", False),
+            "ic_ir": result.get("ic_ir", 0),
+            "ic_win_rate": result.get("ic_win_rate", 0),
+            "turnover": result.get("turnover", 0),
+            "wq_fitness": result.get("wq_fitness", 0),
+            "cost_adjusted": result.get("cost_adjusted", False),
+            "cost_rate": result.get("cost_rate", 0),
+            "total_cost_drag": result.get("total_cost_drag", 0),
+        }
+        if oos_enabled:
+            backtest_summary["metrics_scope"] = "legacy_compat_single_run"
+
         _result = {
             "report_path": report_result["report_path"],
             "metrics": report_result["metrics"],
-            "backtest_summary": {
-                "long_short_sharpe": result["long_short_sharpe"],
-                "long_short_annual": result.get("long_short_annual", 0),
-                "top_group_sharpe": result.get("top_group_sharpe", 0),
-                "monotonicity_score": result["monotonicity_score"],
-                "spread": result["spread"],
-                "group_returns": result["group_returns"],
-                "ic_mean": result.get("ic_mean", 0),
-                "rank_ic_mean": result.get("rank_ic_mean", 0),
-                "ic_ir": result.get("ic_ir", 0),
-                "ic_win_rate": result.get("ic_win_rate", 0),
-                "turnover": result.get("turnover", 0),
-                "wq_fitness": result.get("wq_fitness", 0),
-                "cost_adjusted": result.get("cost_adjusted", False),
-                "cost_rate": result.get("cost_rate", 0),
-                "total_cost_drag": result.get("total_cost_drag", 0),
-            },
+            "backtest_summary": backtest_summary,
             "wq_brain": result.get("wq_brain", {}),
             "anti_overfit": anti_overfit_result,
             "params": {
@@ -419,9 +505,24 @@ async def run_backtest(
                 "benchmark": benchmark,
                 "neutralize_industry": neutralize_industry,
                 "neutralize_cap": neutralize_cap,
+                "rebalance_anchor": rebalance_anchor,
+                "oos_enabled": oos_enabled,
+                "direction_mode": direction_mode,
+                "fixed_direction": fixed_direction,
+                "data_quality": data_quality,
                 "stock_count": len(stock_codes),
             },
         }
+        if data_quality_report is not None:
+            _result["data_quality"] = data_quality_report
+        if oos_enabled:
+            public_oos = to_public_oos_result(result.get("oos_result", {}))
+            if data_quality_report is not None:
+                public_oos["data_quality"] = data_quality_report
+            _result["oos_result"] = public_oos
+            _result["direction_policy"] = "train_fixed"
+            _result["report_scope"] = result.get("report_scope", "legacy_compat_single_run")
+            _result["compatibility_warning"] = result.get("compatibility_warning")
         return json.dumps(_result, ensure_ascii=False, indent=2, default=str)
 
     except Exception as e:

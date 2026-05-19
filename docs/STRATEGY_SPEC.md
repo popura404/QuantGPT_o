@@ -151,7 +151,22 @@ strategy-level validation support.
   "validation": {
     "min_history_days": 252,
     "run_strategy_anti_overfit": true,
-    "run_strategy_rolling_validation": true
+    "run_strategy_rolling_validation": true,
+    "oos": {
+      "enabled": true,
+      "method": "date_ratio",
+      "train_ratio": 0.6,
+      "valid_ratio": 0.2,
+      "test_ratio": 0.2,
+      "direction_policy": "train_fixed"
+    },
+    "data_quality": {
+      "enabled": true,
+      "max_abs_daily_ret": 0.25,
+      "max_missing_ratio_per_stock": 0.2,
+      "adjustment": "qfq",
+      "fail_on_unknown_adjustment": false
+    }
   },
   "outputs": {
     "report": true,
@@ -170,6 +185,12 @@ Post-MVP strategy capabilities:
 
 - `StrategySpecV1` supports multi-factor specs, `top_n`, and `score_weighted`
   portfolios while keeping v0 compatibility.
+- `StrategySpecV1.validation.oos` supports train/valid/test OOS evaluation with
+  `direction_policy="train_fixed"` and optional base market-data quality gates.
+  OOS strategy results expose `validation_mode="train_valid_test"`,
+  `direction_policy`, `data_quality`, `oos_result`, `oos_summary`, and
+  `oos_score`; OOS scoring uses train/valid/test metrics rather than the legacy
+  single-period factor score.
 - REST and MCP both expose strategy validation, async backtest, scoring,
   report generation, diagnosis, strategy-level validation summaries, candidate
   SignalExport, templates, optimization, and persistence endpoints.

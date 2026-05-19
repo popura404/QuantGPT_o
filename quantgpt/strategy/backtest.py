@@ -10,8 +10,11 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from ..backtest import _calc_ic_series, _calc_max_drawdown, build_rebalance_dates, compute_factor_values
+from ..data_quality import DataQualityConfig, run_data_quality_gate
 from ..fundamental_data import detect_fundamental_vars, enrich_market_data
 from ..neutralize import neutralize_factor
+from ..validation.oos_score import compute_oos_score
+from ..validation.split import OOSConfig, split_by_dates
 from .adapters import get_adapter
 from .diagnosis import diagnose_strategy_result
 from .errors import StrategyValidationError
@@ -74,12 +77,27 @@ def run_strategy_backtest(
     market_frame = cast(pd.DataFrame, market_df)
     stock_codes = stock_codes or sorted(market_frame["stock_code"].dropna().astype(str).unique().tolist())
 
+    data_quality_report = None
+    dq_config = _data_quality_config_from_spec(req.spec)
+    if dq_config is not None and dq_config.enabled:
+        market_frame, data_quality_report = run_data_quality_gate(market_frame, dq_config)
+
     expressions = [factor.expression for factor in req.spec.factors]
     fund_vars = set()
     for expression in expressions:
         fund_vars.update(detect_fundamental_vars(expression))
     if fund_vars:
         market_frame = enrich_market_data(market_frame, fund_vars, stock_codes, req.start_date, req.end_date)
+        if data_quality_report is not None:
+            missing_fundamentals = [
+                name for name in fund_vars
+                if name in market_frame.columns and bool(market_frame[name].isna().any())
+            ]
+            if missing_fundamentals:
+                data_quality_report.setdefault("warnings", []).append(
+                    "fundamental data contains missing values after enrichment; "
+                    "Cycle 1 data_quality only gates base OHLCV market data"
+                )
 
     market_frame = market_frame.copy()
     market_frame["trade_date"] = pd.to_datetime(market_frame["trade_date"])
@@ -87,6 +105,19 @@ def run_strategy_backtest(
     if "daily_ret" not in market_frame.columns:
         market_frame["daily_ret"] = market_frame.groupby("stock_code")["close"].pct_change()
 
+    if _strategy_oos_enabled(req.spec):
+        return _run_strategy_oos_backtest(req, market_frame, stock_codes, data_quality_report)
+
+    result = _run_strategy_single_pass(req, market_frame)
+    if data_quality_report is not None:
+        result.data_quality = data_quality_report
+    return result
+
+
+def _run_strategy_single_pass(
+    req: StrategyBacktestRequest,
+    market_frame: pd.DataFrame,
+) -> StrategyBacktestResult:
     market_frame, raw_factor_for_ic = _compute_strategy_factor_values(
         market_frame,
         req.spec,
@@ -143,7 +174,7 @@ def run_strategy_backtest(
         metrics=metrics,
         validation_issues=[],
         diagnostics=diagnostics,
-        factor_frame=factor_frame[["trade_date", "stock_code", "factor_value", "daily_ret"]].copy(),
+        factor_frame=factor_frame[["trade_date", "stock_code", "factor_value", "daily_ret", "close"]].copy(),
     )
     if req.spec.validation.run_strategy_anti_overfit:
         diagnostics["strategy_anti_overfit"] = run_strategy_anti_overfit(result)
@@ -151,6 +182,182 @@ def run_strategy_backtest(
         diagnostics["strategy_rolling_validation"] = run_strategy_rolling_validation(result)
     diagnostics["strategy_diagnosis"] = diagnose_strategy_result(result)
     return result
+
+
+def _strategy_oos_enabled(spec: StrategySpecV0 | StrategySpecV1) -> bool:
+    return bool(
+        spec.schema_version == "strategy_spec/v1"
+        and spec.validation.oos is not None
+        and spec.validation.oos.enabled
+    )
+
+
+def _data_quality_config_from_spec(spec: StrategySpecV0 | StrategySpecV1) -> DataQualityConfig | None:
+    if spec.schema_version != "strategy_spec/v1":
+        return None
+    dq = spec.validation.data_quality
+    if dq is None:
+        if _strategy_oos_enabled(spec):
+            return DataQualityConfig()
+        return None
+    return DataQualityConfig(**dq.model_dump())
+
+
+def _oos_config_from_spec(spec: StrategySpecV0 | StrategySpecV1, rebalance_anchor: str | None) -> OOSConfig:
+    if spec.schema_version != "strategy_spec/v1" or spec.validation.oos is None:
+        raise ValueError("StrategySpec v1 validation.oos is required for OOS strategy backtest")
+    oos = spec.validation.oos
+    return OOSConfig(
+        enabled=oos.enabled,
+        method=oos.method,
+        train_ratio=oos.train_ratio,
+        valid_ratio=oos.valid_ratio,
+        test_ratio=oos.test_ratio,
+        train_end=oos.train_end,
+        valid_end=oos.valid_end,
+        min_train_days=oos.min_train_days,
+        min_valid_days=oos.min_valid_days,
+        min_test_days=oos.min_test_days,
+        rebalance_anchor=rebalance_anchor,
+        warmup_days=oos.warmup_days,
+    )
+
+
+def _run_strategy_oos_backtest(
+    req: StrategyBacktestRequest,
+    market_frame: pd.DataFrame,
+    stock_codes: list[str],
+    data_quality_report: dict | None,
+) -> StrategyBacktestResult:
+    del stock_codes
+    config = _oos_config_from_spec(req.spec, req.rebalance_anchor)
+    expression_hint = " + ".join(factor.expression for factor in req.spec.factors)
+    split = split_by_dates(
+        market_frame,
+        config,
+        expression=expression_hint,
+        holding_period=req.spec.portfolio_rule.rebalance_period,
+    )
+    resolved_anchor = split["rebalance_anchor"]
+    sub_req = req.model_copy(update={"rebalance_anchor": resolved_anchor})
+    period_results = {
+        name: _run_strategy_single_pass(sub_req, frame)
+        for name, frame in split["frames"].items()
+    }
+    warnings = list(split.get("warnings") or [])
+    period_payloads = {}
+    for name, result in period_results.items():
+        window = split["eval_windows"][name]
+        metrics = _strategy_metrics_for_window(result, window)
+        period_payloads[name] = {
+            "period": [window["start"], window["end"]],
+            "metrics": metrics,
+        }
+
+    decay = {
+        "valid_sharpe_decay": _safe_decay(
+            period_payloads["train"]["metrics"].get("sharpe"),
+            period_payloads["valid"]["metrics"].get("sharpe"),
+            warnings,
+            "valid sharpe",
+        ),
+        "test_sharpe_decay": _safe_decay(
+            period_payloads["train"]["metrics"].get("sharpe"),
+            period_payloads["test"]["metrics"].get("sharpe"),
+            warnings,
+            "test sharpe",
+        ),
+        "valid_ic_decay": _safe_decay(
+            period_payloads["train"]["metrics"].get("ic_mean"),
+            period_payloads["valid"]["metrics"].get("ic_mean"),
+            warnings,
+            "valid IC",
+        ),
+        "test_ic_decay": _safe_decay(
+            period_payloads["train"]["metrics"].get("ic_mean"),
+            period_payloads["test"]["metrics"].get("ic_mean"),
+            warnings,
+            "test IC",
+        ),
+    }
+    oos_result = {
+        "validation_mode": "train_valid_test",
+        "direction_policy": "train_fixed",
+        "direction_source": "strategy_spec_factor_directions",
+        "rebalance_anchor": resolved_anchor,
+        "resolved_warmup_days": split["resolved_warmup_days"],
+        "train": period_payloads["train"],
+        "valid": period_payloads["valid"],
+        "test": period_payloads["test"],
+        "decay": decay,
+        "warnings": warnings,
+    }
+    if data_quality_report is not None:
+        oos_result["data_quality"] = data_quality_report
+
+    oos_score = compute_oos_score(oos_result, data_quality=data_quality_report)
+    oos_summary = {
+        "pass": oos_score["decision"] != "reject",
+        "overfit_risk": oos_score["overfit_risk"],
+        "test_sharpe_decay": decay["test_sharpe_decay"],
+        "test_ic_decay": decay["test_ic_decay"],
+        "score": oos_score["score"],
+        "decision": oos_score["decision"],
+    }
+    final = period_results["test"]
+    final.start_date = req.start_date
+    final.end_date = req.end_date
+    final.validation_mode = "train_valid_test"
+    final.direction_policy = "train_fixed"
+    final.data_quality = data_quality_report
+    final.oos_result = oos_result
+    final.oos_summary = oos_summary
+    final.oos_score = oos_score
+    final.diagnostics["oos_authoritative"] = True
+    final.diagnostics["legacy_single_period_metrics_scope"] = "test_period_compat"
+    return final
+
+
+def _strategy_metrics_for_window(result: StrategyBacktestResult, window: dict) -> dict:
+    returns = _slice_series(result.strategy_returns, window)
+    turnover_frame = result.turnover_by_rebalance.copy()
+    if not turnover_frame.empty and "trade_date" in turnover_frame.columns:
+        turnover_frame["trade_date"] = pd.to_datetime(turnover_frame["trade_date"])
+        turnover_frame = turnover_frame[
+            (turnover_frame["trade_date"] >= pd.Timestamp(window["start"]))
+            & (turnover_frame["trade_date"] <= pd.Timestamp(window["end"]))
+        ]
+    rank_ic = pd.Series(dtype=float)
+    if result.factor_frame is not None and not result.factor_frame.empty:
+        _, rank_ic = _calc_ic_series(result.factor_frame, result.spec.portfolio_rule.rebalance_period)
+        rank_ic = _slice_series(rank_ic, window)
+    metrics = _strategy_metrics(returns, turnover_frame, rank_ic)
+    metrics["turnover_source"] = "turnover_by_rebalance_eval_window"
+    return metrics
+
+
+def _slice_series(series: pd.Series, window: dict) -> pd.Series:
+    if series is None or series.empty:
+        return pd.Series(dtype=float)
+    output = series.copy()
+    output.index = pd.to_datetime(output.index)
+    return output[(output.index >= pd.Timestamp(window["start"])) & (output.index <= pd.Timestamp(window["end"]))]
+
+
+def _safe_decay(train_value, sample_value, warnings: list[str], name: str) -> float | None:
+    try:
+        train = float(train_value)
+        sample = float(sample_value)
+    except (TypeError, ValueError):
+        warnings.append(f"{name} decay is unavailable because a metric is missing")
+        return None
+    if not np.isfinite(train) or not np.isfinite(sample):
+        warnings.append(f"{name} decay is unavailable because a metric is not finite")
+        return None
+    if train <= 0:
+        warnings.append(f"{name} decay is unavailable because the training metric is not positive")
+        return None
+    return float(1 - sample / train)
 
 
 def _compute_strategy_factor_values(

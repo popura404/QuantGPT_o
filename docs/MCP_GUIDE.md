@@ -108,7 +108,7 @@ MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先�
 | `wq_brain_submit` | 提交因子到 WorldQuant BRAIN |
 | `ask_deepseek` | 调用 DeepSeek LLM 进行研究评审（独立 MCP） |
 
-### StrategySpec v0 策略工具
+### StrategySpec 策略工具
 
 这些工具保持非实盘边界。`export_strategy_candidate` 只输出候选调仓信号，
 不是订单协议，也不包含 broker/account/order/api_key/execution 字段。
@@ -117,7 +117,7 @@ MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先�
 |------|------|
 | `list_markets` | 返回策略框架支持的市场；MVP 仅 `a_share` |
 | `list_data_fields` | 返回指定市场可用于策略因子表达式的数据字段 |
-| `validate_strategy_spec` | 校验 `StrategySpecV0`，失败时返回 `error_code` 和 `hint` |
+| `validate_strategy_spec` | 校验 `StrategySpecV0` / `StrategySpecV1`，失败时返回 `error_code` 和 `hint` |
 | `run_strategy_backtest` | 运行单因子 top quantile 等权策略回测 |
 | `score_strategy` | 根据策略回测结果计算策略级评分 |
 | `generate_strategy_report` | 根据策略回测结果生成 HTML 报告和 summary JSON |
@@ -129,6 +129,12 @@ MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先�
 | `get_strategy_template` | 返回指定模板的 spec 和治理元数据 |
 | `instantiate_strategy_template` | 从模板生成可校验 StrategySpec |
 | `optimize_strategy_candidate` | 在风控约束下优化候选权重 |
+
+`StrategySpecV1.validation.oos.enabled=true` 时，策略回测返回
+`validation_mode="train_valid_test"`、`direction_policy="train_fixed"`、
+`data_quality`、`oos_result`、`oos_summary` 和 `oos_score`。OOS 评分以
+train/valid/test 指标、样本外衰减、换手和数据质量惩罚为主，不再让单一全周期
+metrics 作为权威结论。
 
 ### 通用参数
 

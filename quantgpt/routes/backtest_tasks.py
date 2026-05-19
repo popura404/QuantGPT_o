@@ -10,15 +10,17 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import GUEST_USER_ID, get_current_user, get_optional_user
+from ..data_quality import DataQualityConfig, run_data_quality_gate
 from ..db import get_db
 from ..expression_parser import parse_expression
 from ..iteration import compute_factor_score
@@ -44,7 +46,7 @@ from ..report import generate_report
 from ..schemas import validate_benchmark_value as _validate_bench_fn
 from ..schemas import validate_date_format as _validate_date_fn
 from ..schemas import validate_universe_value as _validate_univ_fn
-from ..task_executor import _run_backtest_in_process, get_executor
+from ..task_executor import _run_backtest_in_process, _run_oos_backtest_in_process, get_executor
 from ..task_store import (
     MAX_ACTIVE_TASKS,
     MAX_DATE_RANGE_YEARS,
@@ -64,6 +66,9 @@ from ..task_store import (
     tasks_lock,
     validate_sse_ticket,
 )
+from ..validation.oos_backtest import to_public_oos_result
+from ..validation.oos_score import compute_oos_score
+from ..validation.split import OOSConfig
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +81,61 @@ def _ensure_utc(dt: datetime) -> datetime:
 
 
 router = APIRouter()
+
+
+class OOSRequest(BaseModel):
+    method: Literal["date_ratio", "date_cut"] = "date_ratio"
+    train_ratio: float = Field(0.6, ge=0.0, le=1.0)
+    valid_ratio: float = Field(0.2, ge=0.0, le=1.0)
+    test_ratio: float = Field(0.2, ge=0.0, le=1.0)
+    train_end: str | None = None
+    valid_end: str | None = None
+    min_train_days: int = Field(252, ge=1)
+    min_valid_days: int = Field(126, ge=1)
+    min_test_days: int = Field(126, ge=1)
+    warmup_days: int | None = Field(None, ge=0)
+
+    _validate_oos_dates = field_validator("train_end", "valid_end")(_validate_date_fn)
+
+    @model_validator(mode="after")
+    def validate_ratios(self):
+        if abs((self.train_ratio + self.valid_ratio + self.test_ratio) - 1.0) > 1e-6:
+            raise ValueError("train_ratio + valid_ratio + test_ratio must equal 1.0")
+        if self.method == "date_cut" and (self.train_end is None or self.valid_end is None):
+            raise ValueError("date_cut requires train_end and valid_end")
+        return self
+
+    def to_config(self, rebalance_anchor: str | None = None) -> OOSConfig:
+        return OOSConfig(
+            method=self.method,
+            train_ratio=self.train_ratio,
+            valid_ratio=self.valid_ratio,
+            test_ratio=self.test_ratio,
+            train_end=self.train_end,
+            valid_end=self.valid_end,
+            min_train_days=self.min_train_days,
+            min_valid_days=self.min_valid_days,
+            min_test_days=self.min_test_days,
+            rebalance_anchor=rebalance_anchor,
+            warmup_days=self.warmup_days,
+        )
+
+
+class DataQualityRequest(BaseModel):
+    enabled: bool = True
+    mode: Literal["report_only", "filter", "strict"] = "filter"
+    min_price: float = Field(0.01, gt=0)
+    max_abs_daily_ret: float = Field(0.25, gt=0, le=1.0)
+    max_missing_ratio_per_stock: float = Field(0.2, ge=0.0, le=1.0)
+    require_positive_volume: bool = True
+    require_positive_amount: bool = True
+    drop_st: bool = False
+    drop_new_listing_days: int = Field(60, ge=0)
+    adjustment: Literal["qfq", "hfq", "none", "unknown"] = "unknown"
+    fail_on_unknown_adjustment: bool = False
+
+    def to_config(self) -> DataQualityConfig:
+        return DataQualityConfig(**self.model_dump())
 
 
 class AutoBacktestRequest(BaseModel):
@@ -91,6 +151,11 @@ class AutoBacktestRequest(BaseModel):
     neutralize_cap: bool = Field(True, description="市值中性化")
     universe_date: str | None = Field(None, description="股票池基准日期，用于子区间验证时固定股票池。为空时使用 start_date")
     rebalance_anchor: str | None = Field(None, description="换仓网格锚定日期，用于跨期比较时对齐换仓时间。为空时从数据起始日开始")
+    oos_enabled: bool = Field(False, description="是否启用训练/验证/测试样本外评估")
+    oos: OOSRequest | None = Field(None, description="样本外切分配置")
+    direction_mode: str = Field("auto_full", description="方向策略: auto_full 或 fixed")
+    fixed_direction: int | None = Field(None, description="fixed 模式方向: 1=高值做多, -1=低值做多")
+    data_quality: DataQualityRequest | None = Field(None, description="数据质量门配置；为空时保持兼容默认")
 
     @field_validator("prompt")
     @classmethod
@@ -105,6 +170,36 @@ class AutoBacktestRequest(BaseModel):
     _validate_universe = field_validator("universe")(_validate_univ_fn)
     _validate_benchmark = field_validator("benchmark")(_validate_bench_fn)
     _validate_dates = field_validator("start_date", "end_date", "universe_date", "rebalance_anchor")(_validate_date_fn)
+
+    @model_validator(mode="after")
+    def validate_direction_policy(self):
+        if self.direction_mode not in {"auto_full", "fixed"}:
+            raise ValueError("direction_mode must be 'auto_full' or 'fixed'")
+        if self.oos_enabled:
+            if self.direction_mode != "auto_full" or self.fixed_direction is not None:
+                raise ValueError("oos_enabled=true always uses train_fixed direction; fixed_direction is not allowed")
+            return self
+        if self.direction_mode == "auto_full" and self.fixed_direction is not None:
+            raise ValueError("fixed_direction must be null when direction_mode='auto_full'")
+        if self.direction_mode == "fixed" and self.fixed_direction not in (1, -1):
+            raise ValueError("fixed_direction must be exactly 1 or -1 when direction_mode='fixed'")
+        return self
+
+
+def _disabled_data_quality_report(reason: str) -> dict:
+    return {
+        "enabled": False,
+        "before_rows": 0,
+        "after_rows": 0,
+        "dropped_rows": 0,
+        "before_stocks": 0,
+        "after_stocks": 0,
+        "dropped_stocks": 0,
+        "adjustment": "unknown",
+        "data_quality_scope": "full_requested_sample",
+        "issues": [],
+        "warnings": [reason],
+    }
 
 
 def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
@@ -213,6 +308,23 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
             task["error"] = "未获取到行情数据，请检查日期范围"
             return
 
+        data_quality_report = None
+        if req.data_quality is None:
+            data_quality_enabled = req.oos_enabled
+            data_quality_config = DataQualityConfig()
+        else:
+            data_quality_enabled = req.data_quality.enabled
+            data_quality_config = req.data_quality.to_config()
+
+        if data_quality_enabled:
+            check_cancelled(task_id)
+            task["status"] = "checking_data_quality"
+            market_df, data_quality_report = run_data_quality_gate(market_df, data_quality_config)
+        elif req.oos_enabled:
+            data_quality_report = _disabled_data_quality_report(
+                "OOS validation was run without the data-quality gate because data_quality.enabled=false"
+            )
+
         from ..fundamental_data import detect_fundamental_vars, enrich_market_data
         fund_vars = detect_fundamental_vars(expression)
         if fund_vars:
@@ -220,18 +332,42 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
             task["status"] = "fetching_fundamentals"
             logger.info(f"[{task_id}] fetching fundamentals for vars: {fund_vars}")
             market_df = enrich_market_data(market_df, fund_vars, stock_codes, req.start_date, req.end_date)
+            if data_quality_report is not None:
+                missing_fundamentals = [
+                    name for name in fund_vars
+                    if name in market_df.columns and bool(market_df[name].isna().any())
+                ]
+                if missing_fundamentals:
+                    data_quality_report.setdefault("warnings", []).append(
+                        "fundamental data contains missing values after enrichment; "
+                        "Cycle 1 data_quality only gates base OHLCV market data"
+                    )
 
         check_cancelled(task_id)
         task["status"] = "backtesting"
         executor = get_executor()
-        future = executor.submit_cpu_work(
-            _run_backtest_in_process,
-            market_df, expression, req.n_groups, req.holding_period,
-            neutralize_industry=req.neutralize_industry,
-            neutralize_cap=req.neutralize_cap,
-            trading_days_per_year=252,
-            rebalance_anchor=req.rebalance_anchor,
-        )
+        if req.oos_enabled:
+            oos_config = (req.oos or OOSRequest()).to_config(req.rebalance_anchor)
+            future = executor.submit_cpu_work(
+                _run_oos_backtest_in_process,
+                market_df, expression, req.n_groups, req.holding_period,
+                neutralize_industry=req.neutralize_industry,
+                neutralize_cap=req.neutralize_cap,
+                trading_days_per_year=252,
+                rebalance_anchor=req.rebalance_anchor,
+                oos_config=oos_config,
+            )
+        else:
+            future = executor.submit_cpu_work(
+                _run_backtest_in_process,
+                market_df, expression, req.n_groups, req.holding_period,
+                neutralize_industry=req.neutralize_industry,
+                neutralize_cap=req.neutralize_cap,
+                trading_days_per_year=252,
+                rebalance_anchor=req.rebalance_anchor,
+                direction_mode=req.direction_mode,
+                fixed_direction=req.fixed_direction,
+            )
         while True:
             try:
                 result = future.result(timeout=2)
@@ -241,12 +377,14 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
 
         check_cancelled(task_id)
         anti_overfit_result = None
-        factor_df = result.get("_factor_df")
+        factor_df = result.get("_direction_adjusted_factor_df") if req.oos_enabled else result.get("_factor_df")
         if factor_df is not None and len(factor_df) > 100:
             task["status"] = "analyzing"
             try:
                 from ..anti_overfit import run_anti_overfit
                 anti_overfit_result = run_anti_overfit(factor_df, req.holding_period)
+                if req.oos_enabled and isinstance(anti_overfit_result, dict):
+                    anti_overfit_result["diagnostic_scope"] = "direction_adjusted_oos_compat"
             except Exception as e:
                 logger.warning(f"[{task_id}] anti-overfit analysis failed: {e}")
 
@@ -322,26 +460,42 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
         except Exception:
             pass
 
-        task["result"] = {
+        backtest_summary = {
+            "long_short_sharpe": result["long_short_sharpe"],
+            "long_short_annual": result.get("long_short_annual", 0),
+            "top_group_sharpe": result.get("top_group_sharpe", 0),
+            "monotonicity_score": result["monotonicity_score"],
+            "spread": result["spread"],
+            "group_returns": result["group_returns"],
+            "ic_mean": result.get("ic_mean", 0),
+            "rank_ic_mean": result.get("rank_ic_mean", 0),
+            "raw_ic_mean": result.get("raw_ic_mean", result.get("ic_mean", 0)),
+            "raw_rank_ic_mean": result.get("raw_rank_ic_mean", result.get("rank_ic_mean", 0)),
+            "direction_adjusted_ic_mean": result.get("direction_adjusted_ic_mean", result.get("ic_mean", 0)),
+            "direction_adjusted_rank_ic_mean": result.get(
+                "direction_adjusted_rank_ic_mean", result.get("rank_ic_mean", 0)
+            ),
+            "direction_mode": result.get("direction_mode", req.direction_mode),
+            "direction_source": result.get("direction_source"),
+            "direction_basis": result.get("direction_basis"),
+            "fixed_direction": result.get("fixed_direction"),
+            "direction_warning": result.get("direction_warning"),
+            "flipped": result.get("flipped", False),
+            "ic_ir": result.get("ic_ir", 0),
+            "ic_win_rate": result.get("ic_win_rate", 0),
+            "turnover": result.get("turnover", 0),
+            "wq_fitness": result.get("wq_fitness", 0),
+            "cost_adjusted": result.get("cost_adjusted", False),
+            "cost_rate": result.get("cost_rate", 0),
+            "total_cost_drag": result.get("total_cost_drag", 0),
+        }
+        if req.oos_enabled:
+            backtest_summary["metrics_scope"] = "legacy_compat_single_run"
+
+        task_result = {
             "report_url": f"/api/v1/reports/{report_filename}",
             "metrics": report_result["metrics"],
-            "backtest_summary": {
-                "long_short_sharpe": result["long_short_sharpe"],
-                "long_short_annual": result.get("long_short_annual", 0),
-                "top_group_sharpe": result.get("top_group_sharpe", 0),
-                "monotonicity_score": result["monotonicity_score"],
-                "spread": result["spread"],
-                "group_returns": result["group_returns"],
-                "ic_mean": result.get("ic_mean", 0),
-                "rank_ic_mean": result.get("rank_ic_mean", 0),
-                "ic_ir": result.get("ic_ir", 0),
-                "ic_win_rate": result.get("ic_win_rate", 0),
-                "turnover": result.get("turnover", 0),
-                "wq_fitness": result.get("wq_fitness", 0),
-                "cost_adjusted": result.get("cost_adjusted", False),
-                "cost_rate": result.get("cost_rate", 0),
-                "total_cost_drag": result.get("total_cost_drag", 0),
-            },
+            "backtest_summary": backtest_summary,
             "wq_brain": result.get("wq_brain", {}),
             "anti_overfit": anti_overfit_result,
             "scoring": scoring,
@@ -359,12 +513,34 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
                 "holding_period": req.holding_period,
                 "benchmark": req.benchmark,
                 "stock_count": len(stock_codes),
+                "oos_enabled": req.oos_enabled,
+                "oos": req.oos.model_dump() if req.oos else None,
+                "direction_mode": req.direction_mode,
+                "fixed_direction": req.fixed_direction,
+                "data_quality": req.data_quality.model_dump() if req.data_quality else None,
             },
             "llm": {
                 "prompt": req.prompt,
                 "generated_expression": expression,
             },
         }
+        if data_quality_report is not None:
+            task_result["data_quality"] = data_quality_report
+        if req.oos_enabled:
+            public_oos = to_public_oos_result(result.get("oos_result", {}))
+            if data_quality_report is not None:
+                public_oos["data_quality"] = data_quality_report
+            oos_scoring = compute_oos_score(public_oos, data_quality=data_quality_report)
+            task_result["oos_result"] = public_oos
+            task_result["direction_policy"] = "train_fixed"
+            task_result["report_scope"] = result.get("report_scope", "legacy_compat_single_run")
+            task_result["compatibility_warning"] = result.get("compatibility_warning")
+            task_result["legacy_scoring"] = task_result["scoring"]
+            task_result["scoring"] = oos_scoring
+            task_result["interpretation"]["metrics_scope"] = "legacy_compat_single_run"
+            task_result["interpretation"]["oos_decision"] = oos_scoring["decision"]
+            task_result["interpretation"]["oos_risk"] = oos_scoring["overfit_risk"]
+        task["result"] = task_result
         logger.info(f"[{task_id}] completed")
         cleanup_reports(user_id)
 

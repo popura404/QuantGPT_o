@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 FORBIDDEN_EXECUTION_FIELDS = {
     "execution",
@@ -105,6 +105,54 @@ class ValidationConfigV1(StrictBaseModel):
     min_history_days: int = Field(..., ge=30, le=5000)
     run_strategy_anti_overfit: bool = False
     run_strategy_rolling_validation: bool = False
+    oos: OOSValidationConfigV1 | None = None
+    data_quality: DataQualityValidationConfigV1 | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_forbidden_validation_fields(cls, data):
+        if isinstance(data, dict):
+            forbidden = _find_forbidden_keys(data)
+            if forbidden:
+                raise ValueError(f"Forbidden execution fields in validation: {sorted(forbidden)}")
+        return data
+
+
+class OOSValidationConfigV1(StrictBaseModel):
+    enabled: StrictBool = False
+    method: Literal["date_ratio", "date_cut"] = "date_ratio"
+    train_ratio: float = Field(0.6, ge=0, le=1)
+    valid_ratio: float = Field(0.2, ge=0, le=1)
+    test_ratio: float = Field(0.2, ge=0, le=1)
+    train_end: str | None = None
+    valid_end: str | None = None
+    min_train_days: int = Field(252, ge=1)
+    min_valid_days: int = Field(126, ge=1)
+    min_test_days: int = Field(126, ge=1)
+    warmup_days: int | None = Field(None, ge=0)
+    direction_policy: Literal["train_fixed"] = "train_fixed"
+
+    @model_validator(mode="after")
+    def validate_split(self):
+        if abs((self.train_ratio + self.valid_ratio + self.test_ratio) - 1.0) > 1e-6:
+            raise ValueError("validation.oos train_ratio + valid_ratio + test_ratio must equal 1.0")
+        if self.method == "date_cut" and (self.train_end is None or self.valid_end is None):
+            raise ValueError("validation.oos date_cut requires train_end and valid_end")
+        return self
+
+
+class DataQualityValidationConfigV1(StrictBaseModel):
+    enabled: StrictBool = True
+    mode: Literal["report_only", "filter", "strict"] = "filter"
+    min_price: float = Field(0.01, gt=0)
+    max_abs_daily_ret: float = Field(0.25, ge=0.05, le=1.0)
+    max_missing_ratio_per_stock: float = Field(0.2, ge=0, le=1)
+    require_positive_volume: bool = True
+    require_positive_amount: bool = True
+    drop_st: bool = False
+    drop_new_listing_days: int = Field(60, ge=0)
+    adjustment: Literal["qfq", "hfq", "none", "unknown"] = "unknown"
+    fail_on_unknown_adjustment: bool = False
 
 
 class OutputConfig(StrictBaseModel):
@@ -188,6 +236,21 @@ def parse_strategy_spec(data: StrategySpecV0 | StrategySpecV1 | dict) -> Strateg
     if schema_version == "strategy_spec/v1":
         return StrategySpecV1.model_validate(data)
     return StrategySpecV0.model_validate(data)
+
+
+def _find_forbidden_keys(data: object, prefix: str = "") -> set[str]:
+    found: set[str] = set()
+    if isinstance(data, dict):
+        for key, value in data.items():
+            key_text = str(key)
+            path = f"{prefix}.{key_text}" if prefix else key_text
+            if key_text in FORBIDDEN_EXECUTION_FIELDS:
+                found.add(path)
+            found.update(_find_forbidden_keys(value, path))
+    elif isinstance(data, list):
+        for index, value in enumerate(data):
+            found.update(_find_forbidden_keys(value, f"{prefix}.{index}" if prefix else str(index)))
+    return found
 
 
 def example_strategy_spec() -> dict:
@@ -278,6 +341,21 @@ def example_strategy_spec_v1() -> dict:
             "min_history_days": 252,
             "run_strategy_anti_overfit": True,
             "run_strategy_rolling_validation": True,
+            "oos": {
+                "enabled": False,
+                "method": "date_ratio",
+                "train_ratio": 0.6,
+                "valid_ratio": 0.2,
+                "test_ratio": 0.2,
+                "direction_policy": "train_fixed",
+            },
+            "data_quality": {
+                "enabled": False,
+                "max_abs_daily_ret": 0.25,
+                "max_missing_ratio_per_stock": 0.2,
+                "adjustment": "unknown",
+                "fail_on_unknown_adjustment": False,
+            },
         },
         "outputs": {
             "report": True,

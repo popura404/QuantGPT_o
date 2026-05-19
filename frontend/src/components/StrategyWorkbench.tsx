@@ -76,6 +76,12 @@ export default function StrategyWorkbench() {
   const taskResult = isStrategyTaskResult(strategyTask?.result) ? strategyTask.result : null;
   const metrics = taskResult?.strategy_result?.metrics ?? {};
   const metricEntries = Object.entries(metrics).slice(0, 8);
+  const strategyOos = taskResult?.strategy_result?.oos_result;
+  const strategyScore = taskResult?.strategy_score ?? taskResult?.strategy_result?.oos_score;
+  const strategyDataQuality = strategyOos?.data_quality ?? taskResult?.strategy_result?.data_quality;
+  const dataQualityWarnings = Array.isArray(strategyDataQuality?.["warnings"])
+    ? strategyDataQuality["warnings"]
+    : [];
   const latestHoldings = taskResult?.strategy_result?.latest_holdings ?? [];
   const selected = templates.find((template) => template.id === selectedTemplate);
   const submitDisabled = busy || isGuest;
@@ -289,13 +295,63 @@ export default function StrategyWorkbench() {
             </div>
           )}
 
-          {taskResult?.strategy_score && (
+          {strategyScore && (
             <div className="rounded-lg border border-gray-200 bg-white p-4">
               <div className="text-sm font-medium text-gray-900">评分</div>
               <div className="mt-3 flex items-end gap-3">
-                <div className="text-3xl font-semibold text-gray-900">{formatValue(taskResult.strategy_score.score)}</div>
-                <div className="pb-1 text-sm font-medium text-blue-700">{taskResult.strategy_score.grade}</div>
+                <div className="text-3xl font-semibold text-gray-900">{formatValue(strategyScore.score)}</div>
+                <div className="pb-1 text-sm font-medium text-blue-700">{strategyScore.grade}</div>
               </div>
+              {strategyScore.decision && (
+                <div className="mt-2 text-xs text-gray-600">
+                  {strategyScore.decision} · risk={strategyScore.overfit_risk ?? "-"}
+                </div>
+              )}
+            </div>
+          )}
+
+          {strategyOos && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+              <div className="text-sm font-medium text-emerald-900">样本外验证</div>
+              <div className="mt-1 text-xs text-emerald-700">
+                {strategyOos.direction_policy ?? "train_fixed"} · {strategyOos.direction_source ?? "strategy"}
+              </div>
+              <div className="mt-2 text-xs text-emerald-800">
+                {strategyOos.direction_source === "strategy_spec_factor_directions"
+                  ? "StrategySpec 声明方向固定执行，验证/测试不做事后翻转。"
+                  : "训练期确定方向，验证/测试使用固定方向。"}
+              </div>
+              <dl className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                {(["train", "valid", "test"] as const).map((key) => {
+                  const block = strategyOos[key];
+                  const blockMetrics = block?.metrics ?? {};
+                  return (
+                    <div key={key} className="rounded-md bg-white p-2">
+                      <dt className="font-medium text-gray-900">{key}</dt>
+                      <dd className="mt-1 text-gray-500">{block?.period?.join(" ~ ") ?? "-"}</dd>
+                      <dd className="mt-2 font-mono text-gray-900">S {formatValue(blockMetrics.sharpe)}</dd>
+                      <dd className="font-mono text-gray-900">IC {formatValue(blockMetrics.ic_mean)}</dd>
+                    </div>
+                  );
+                })}
+              </dl>
+              {strategyOos.decay && (
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs font-mono text-emerald-900">
+                  <span>test Sharpe decay {formatValue(strategyOos.decay.test_sharpe_decay)}</span>
+                  <span>test IC decay {formatValue(strategyOos.decay.test_ic_decay)}</span>
+                </div>
+              )}
+              {strategyDataQuality && (
+                <div className="mt-3 rounded-md bg-white p-2 text-xs">
+                  <div className="font-medium text-gray-900">数据质量</div>
+                  <div className="mt-2 grid grid-cols-2 gap-2 font-mono text-gray-800">
+                    <span>dropped {formatValue(strategyDataQuality["dropped_rows"])}</span>
+                    <span>adjustment {formatValue(strategyDataQuality["adjustment"])}</span>
+                    <span>scope {formatValue(strategyDataQuality["data_quality_scope"])}</span>
+                    <span>warnings {dataQualityWarnings.length}</span>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

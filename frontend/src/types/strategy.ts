@@ -31,6 +31,16 @@ export interface StrategyBacktestPayload {
 export interface StrategyScore {
   score: number;
   grade: "A" | "B" | "C" | "D" | string;
+  decision?: "candidate" | "watchlist" | "reject" | string;
+  overfit_risk?: string;
+  train_score?: number;
+  valid_score?: number;
+  test_score?: number;
+  stability_score?: number;
+  decay_penalty?: number;
+  data_quality_penalty?: number;
+  reasons?: string[];
+  metrics_scope?: string;
   components?: Record<string, number>;
   failure_reasons?: string[];
   risk_logs?: Record<string, unknown>[];
@@ -64,6 +74,24 @@ export interface StrategyBacktestResultPayload {
   risk_logs?: Record<string, unknown>[];
   validation_issues?: StrategyValidationIssue[];
   diagnostics?: Record<string, unknown>;
+  validation_mode?: string;
+  direction_policy?: string;
+  data_quality?: Record<string, unknown>;
+  oos_summary?: Record<string, unknown>;
+  oos_score?: StrategyScore;
+  oos_result?: {
+    validation_mode?: string;
+    direction_policy?: string;
+    direction_source?: string;
+    rebalance_anchor?: string;
+    resolved_warmup_days?: number;
+    train?: { period?: string[]; metrics?: Record<string, number | string | null> };
+    valid?: { period?: string[]; metrics?: Record<string, number | string | null> };
+    test?: { period?: string[]; metrics?: Record<string, number | string | null> };
+    decay?: Record<string, number | null>;
+    warnings?: string[];
+    data_quality?: Record<string, unknown>;
+  };
   strategy_returns?: Record<string, unknown>[];
   target_weights?: Record<string, unknown>[];
   cash_weights?: Record<string, unknown>[];

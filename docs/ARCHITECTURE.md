@@ -89,7 +89,15 @@ Rank-based 分组回测引擎。
 - 每个窗口独立计算 IC/IR
 - 评估样本外衰减程度
 
-### 3.3 WQ BRAIN Simulation (`wq_simulate.py`)
+### 3.3 OOS Validation and Data Quality (`validation/`, `data_quality.py`)
+
+因子和 `StrategySpecV1` 都可以走更严格的 train/valid/test 样本外闭环：
+- 基础行情先经过 data-quality gate，记录缺列、OHLC、极端收益和缺失率问题
+- 训练期确定方向，验证期和测试期使用固定方向或 StrategySpec 声明方向
+- OOS payload 暴露 `data_quality`、`oos_result`、`oos_summary` 和 `oos_score`
+- OOS scoring 优先使用验证/测试表现、样本外衰减、换手和数据质量惩罚
+
+### 3.4 WQ BRAIN Simulation (`wq_simulate.py`)
 
 对齐 WorldQuant BRAIN 的回测逻辑：
 - Dollar-neutral 多空组合

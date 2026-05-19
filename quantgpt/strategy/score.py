@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from ..validation.oos_score import compute_oos_score
 from .diagnosis import diagnose_strategy_metrics
 from .result import StrategyBacktestResult
 
 
 def compute_strategy_score(result: StrategyBacktestResult) -> dict:
     """Compute a strategy score from strategy-level returns, weights, and risk logs."""
+    if result.oos_result is not None:
+        return compute_oos_score(result.oos_result, data_quality=result.data_quality)
     return compute_strategy_score_from_metrics(
         result.metrics,
         result.risk_logs,
@@ -22,6 +25,8 @@ def compute_strategy_score_from_metrics(
     validation_issues: list[dict] | None = None,
     diagnostics: dict | None = None,
 ) -> dict:
+    if diagnostics and isinstance(diagnostics.get("oos_result"), dict):
+        return compute_oos_score(diagnostics["oos_result"], data_quality=diagnostics.get("data_quality"))
     risk_logs = risk_logs or []
     validation_issues = validation_issues or []
     score = 50.0

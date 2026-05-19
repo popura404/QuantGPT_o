@@ -26,9 +26,15 @@ class StrategyBacktestResult:
     validation_issues: list[dict] = field(default_factory=list)
     diagnostics: dict = field(default_factory=dict)
     factor_frame: pd.DataFrame | None = None
+    validation_mode: str = "single_period"
+    direction_policy: str | None = None
+    data_quality: dict | None = None
+    oos_result: dict | None = None
+    oos_summary: dict | None = None
+    oos_score: dict | None = None
 
     def to_summary(self) -> dict:
-        return {
+        payload = {
             "spec_version": self.spec.schema_version,
             "strategy_name": self.spec.name,
             "market": self.spec.market,
@@ -43,7 +49,19 @@ class StrategyBacktestResult:
             "validation_issues": _json_safe(self.validation_issues),
             "diagnostics": _json_safe(self.diagnostics),
             "non_live_trading_notice": "Candidate strategy only; not an automated trading instruction.",
+            "validation_mode": self.validation_mode,
         }
+        if self.direction_policy is not None:
+            payload["direction_policy"] = self.direction_policy
+        if self.data_quality is not None:
+            payload["data_quality"] = _json_safe(self.data_quality)
+        if self.oos_result is not None:
+            payload["oos_result"] = _json_safe(self.oos_result)
+        if self.oos_summary is not None:
+            payload["oos_summary"] = _json_safe(self.oos_summary)
+        if self.oos_score is not None:
+            payload["oos_score"] = _json_safe(self.oos_score)
+        return payload
 
 
 def _json_safe(value):
@@ -51,7 +69,7 @@ def _json_safe(value):
         return value.strftime("%Y-%m-%d")
     if isinstance(value, dict):
         return {str(k): _json_safe(v) for k, v in value.items()}
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [_json_safe(v) for v in value]
     if hasattr(value, "item"):
         try:

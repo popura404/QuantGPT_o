@@ -46,6 +46,16 @@ def _run_backtest_precomputed_in_process(market_df, n_groups, holding_period, co
         disable_api_context()
 
 
+def _run_oos_backtest_in_process(market_df, expression, n_groups, holding_period, **kwargs):
+    from quantgpt.backtest import disable_api_context, enable_api_context
+    from quantgpt.validation.oos_backtest import run_factor_oos_backtest
+    enable_api_context()
+    try:
+        return run_factor_oos_backtest(market_df, expression, n_groups, holding_period, **kwargs)
+    finally:
+        disable_api_context()
+
+
 def _run_strategy_backtest_in_process(request_data, market_df=None, stock_codes=None):
     from quantgpt.strategy.backtest import StrategyBacktestRequest, run_strategy_backtest
 
@@ -119,6 +129,7 @@ class CeleryTaskExecutor(TaskExecutor):
     _FN_PATHS = {
         _run_backtest_in_process: "quantgpt.task_executor._run_backtest_in_process",
         _run_backtest_precomputed_in_process: "quantgpt.task_executor._run_backtest_precomputed_in_process",
+        _run_oos_backtest_in_process: "quantgpt.task_executor._run_oos_backtest_in_process",
         _run_strategy_backtest_in_process: "quantgpt.task_executor._run_strategy_backtest_in_process",
     }
 

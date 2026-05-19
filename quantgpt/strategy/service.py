@@ -6,6 +6,7 @@ import json
 
 import pandas as pd
 
+from ..validation.oos_score import compute_oos_score
 from .adapters import list_data_fields as _list_data_fields
 from .adapters import list_markets as _list_markets
 from .backtest import StrategyBacktestRequest, run_strategy_backtest
@@ -54,16 +55,21 @@ def validate_strategy_payload(spec: dict) -> dict:
 def run_strategy_backtest_payload(request_data: dict) -> dict:
     result = run_strategy_backtest(StrategyBacktestRequest.model_validate(request_data))
     payload = strategy_result_to_payload(result)
-    payload["strategy_score"] = compute_strategy_score_from_metrics(
-        payload["metrics"],
-        payload["risk_logs"],
-        payload["validation_issues"],
-        payload["diagnostics"],
-    )
+    if payload.get("oos_result"):
+        payload["strategy_score"] = compute_oos_score(payload["oos_result"], payload.get("data_quality"))
+    else:
+        payload["strategy_score"] = compute_strategy_score_from_metrics(
+            payload["metrics"],
+            payload["risk_logs"],
+            payload["validation_issues"],
+            payload["diagnostics"],
+        )
     return payload
 
 
 def score_strategy_payload(result_payload: dict) -> dict:
+    if result_payload.get("oos_result"):
+        return compute_oos_score(result_payload["oos_result"], result_payload.get("data_quality"))
     return compute_strategy_score_from_metrics(
         result_payload.get("metrics", {}),
         result_payload.get("risk_logs", []),
@@ -140,6 +146,12 @@ def strategy_result_from_payload(payload: dict) -> StrategyBacktestResult:
         metrics=payload.get("metrics", {}),
         validation_issues=payload.get("validation_issues", []),
         diagnostics=payload.get("diagnostics", {}),
+        validation_mode=payload.get("validation_mode", "single_period"),
+        direction_policy=payload.get("direction_policy"),
+        data_quality=payload.get("data_quality"),
+        oos_result=payload.get("oos_result"),
+        oos_summary=payload.get("oos_summary"),
+        oos_score=payload.get("oos_score") or payload.get("strategy_score"),
     )
 
 

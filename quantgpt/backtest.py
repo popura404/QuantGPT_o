@@ -203,6 +203,8 @@ def run_factor_backtest(
     precomputed_factor: pd.Series | None = None,
     trading_days_per_year: int = 252,
     rebalance_anchor: str | None = None,
+    direction_mode: str = "auto_full",
+    fixed_direction: int | None = None,
 ) -> dict:
     """Run quantile group backtest on a factor expression (long-only).
 
@@ -229,6 +231,13 @@ def run_factor_backtest(
         top_group_sharpe, monotonicity_score, spread, cost_adjusted, etc.
     """
     _require_api_context()
+    direction_mode = direction_mode or "auto_full"
+    if direction_mode not in {"auto_full", "fixed"}:
+        raise ValueError("direction_mode must be 'auto_full' or 'fixed'")
+    if direction_mode == "auto_full" and fixed_direction is not None:
+        raise ValueError("fixed_direction must be null when direction_mode='auto_full'")
+    if direction_mode == "fixed" and fixed_direction not in (1, -1):
+        raise ValueError("fixed_direction must be exactly 1 or -1 when direction_mode='fixed'")
 
     # 1. Compute factor values
     market_df = market_df.copy()
@@ -301,15 +310,30 @@ def run_factor_backtest(
     top_g = actual_groups[-1]
     bot_g = actual_groups[0]
 
-    # Auto-detect factor direction: if bottom group outperforms top group,
-    # flip the labeling so "top" always means the best-performing group.
+    # Direction policy.
+    # auto_full preserves the legacy full-period return-based flip.
+    # fixed is used by OOS validation so valid/test never choose their own direction.
     top_mean = daily_group_ret[top_g].mean()
     bot_mean = daily_group_ret[bot_g].mean()
     flipped = False
-    if bot_mean > top_mean:
+    direction_source = "auto_full_deprecated"
+    direction_warning = (
+        "auto_full uses full-period realized returns to choose factor direction; "
+        "use OOS train-fixed direction for unbiased evaluation."
+    )
+    effective_direction = 1
+    if direction_mode == "auto_full" and bot_mean > top_mean:
         flipped = True
         top_g, bot_g = bot_g, top_g
+        effective_direction = -1
         logger.info("Factor direction flipped: low factor values outperform high values")
+    elif direction_mode == "fixed":
+        direction_source = "fixed"
+        direction_warning = None
+        effective_direction = fixed_direction or 1
+        if effective_direction == -1:
+            flipped = True
+            top_g, bot_g = bot_g, top_g
 
     # 7. Strategy = best-performing group (long-only, A-share)
     strategy_series = daily_group_ret[top_g].copy()
@@ -344,15 +368,27 @@ def run_factor_backtest(
     work_ic = work.copy()
     work_ic["factor_value"] = raw_factor_for_ic.reindex(work_ic.index)
     pearson_ic_series, rank_ic_series = _calc_ic_series(work_ic, holding_period)
+    direction_adjusted_ic_series = pearson_ic_series * effective_direction
+    direction_adjusted_rank_ic_series = rank_ic_series * effective_direction
     # Main IC metrics use Rank IC (Spearman)
     ic_mean = float(rank_ic_series.mean()) if len(rank_ic_series) > 0 else 0.0
     ic_std = float(rank_ic_series.std()) if len(rank_ic_series) > 0 else 0.0
     ic_ir = float(ic_mean / ic_std) if ic_std > 0 else 0.0
     ic_win_rate = float((rank_ic_series > 0).sum() / len(rank_ic_series)) if len(rank_ic_series) > 0 else 0.0
     rank_ic_mean = ic_mean  # same as ic_mean now (both Spearman)
+    raw_ic_mean = float(pearson_ic_series.mean()) if len(pearson_ic_series) > 0 else 0.0
+    raw_rank_ic_mean = rank_ic_mean
+    direction_adjusted_ic_mean = (
+        float(direction_adjusted_ic_series.mean()) if len(direction_adjusted_ic_series) > 0 else 0.0
+    )
+    direction_adjusted_rank_ic_mean = (
+        float(direction_adjusted_rank_ic_series.mean()) if len(direction_adjusted_rank_ic_series) > 0 else 0.0
+    )
 
     # 10. Turnover rate (daily, WQ BRAIN-aligned)
     turnover = _calc_turnover(work, top_g, rebalance_dates_set, holding_period)
+    selected_group_holdings = _calc_group_holdings(work, top_g, rebalance_dates_set)
+    turnover_by_rebalance = _calc_turnover_by_rebalance(selected_group_holdings, holding_period)
 
     group_ret_summary = {}
     for g in actual_groups:
@@ -388,6 +424,7 @@ def run_factor_backtest(
                 stocks_list.append({
                     "stock_code": sc,
                     "factor_value": round(float(row["factor_value"]), 6),
+                    "direction_adjusted_factor_value": round(float(row["factor_value"] * effective_direction), 6),
                     "factor_rank": round(float(row["factor_rank"]), 4),
                     "group": g_idx,
                     "group_label": f"G{g_idx + 1}",
@@ -396,6 +433,8 @@ def run_factor_backtest(
             stock_factor_data = {
                 "rebalance_date": str(last_rebal.date()) if hasattr(last_rebal, 'date') else str(last_rebal)[:10],
                 "flipped": flipped,
+                "fixed_direction": effective_direction,
+                "direction_source": direction_source,
                 "total_stock_count": len(last_rebal_data),
                 "stocks": stocks_list,
             }
@@ -408,9 +447,13 @@ def run_factor_backtest(
 
     # 13. WQ BRAIN dollar-neutral simulation (continuous weights, WQ-aligned metrics)
     wq_work = work[["trade_date", "stock_code", "factor_value", "daily_ret"]].copy()
-    if flipped:
+    if effective_direction == -1:
         wq_work["factor_value"] = -wq_work["factor_value"]
     wq_brain = wq_simulate(wq_work, rebalance_dates_set, trading_days_per_year)
+
+    factor_df = work[["trade_date", "stock_code", "factor_value", "daily_ret"]].copy()
+    direction_adjusted_factor_df = factor_df.copy()
+    direction_adjusted_factor_df["factor_value"] = direction_adjusted_factor_df["factor_value"] * effective_direction
 
     return {
         "strategy_returns": strategy_series,
@@ -422,8 +465,17 @@ def run_factor_backtest(
         "monotonicity_score": float(mono),
         "spread": spread,
         "flipped": flipped,
+        "direction_mode": direction_mode,
+        "direction_source": direction_source,
+        "direction_basis": "cost_adjusted_group_mean",
+        "fixed_direction": effective_direction,
+        "direction_warning": direction_warning,
         "ic_mean": ic_mean,
         "rank_ic_mean": rank_ic_mean,
+        "raw_ic_mean": raw_ic_mean,
+        "raw_rank_ic_mean": raw_rank_ic_mean,
+        "direction_adjusted_ic_mean": direction_adjusted_ic_mean,
+        "direction_adjusted_rank_ic_mean": direction_adjusted_rank_ic_mean,
         "ic_ir": ic_ir,
         "ic_win_rate": ic_win_rate,
         "turnover": turnover,
@@ -431,8 +483,16 @@ def run_factor_backtest(
         "wq_brain": wq_brain,
         "cost_adjusted": cost_adjusted,
         "cost_rate": cost_rate,
+        "holding_period": holding_period,
         "total_cost_drag": round(total_cost_drag, 6),
-        "_factor_df": work[["trade_date", "stock_code", "factor_value", "daily_ret"]].copy(),
+        "_factor_df": factor_df,
+        "_direction_adjusted_factor_df": direction_adjusted_factor_df,
+        "_raw_ic_series": pearson_ic_series,
+        "_raw_rank_ic_series": rank_ic_series,
+        "_direction_adjusted_ic_series": direction_adjusted_ic_series,
+        "_direction_adjusted_rank_ic_series": direction_adjusted_rank_ic_series,
+        "_selected_group_holdings": selected_group_holdings,
+        "_turnover_by_rebalance": turnover_by_rebalance,
         "_stock_factor_data": stock_factor_data,
     }
 
@@ -550,6 +610,42 @@ def _calc_turnover(
 
     per_rebal = float(np.mean(turnovers)) if turnovers else 0.0
     return per_rebal / holding_period
+
+
+def _calc_group_holdings(
+    work: pd.DataFrame,
+    selected_group: int,
+    rebalance_dates: list,
+) -> dict:
+    """Return selected-group holdings by rebalance date for masked OOS turnover."""
+    holdings = {}
+    for d in rebalance_dates:
+        day_data = work[(work["_rebal_date"] == d) & (work["_group"] == selected_group)]
+        holdings[pd.Timestamp(d)] = set(day_data["stock_code"].unique())
+    return holdings
+
+
+def _calc_turnover_by_rebalance(
+    holdings: dict,
+    holding_period: int = 1,
+) -> pd.Series:
+    """Calculate selected-group daily turnover for each rebalance transition."""
+    if len(holdings) < 2:
+        return pd.Series(dtype=float)
+
+    sorted_dates = sorted(holdings.keys())
+    turnovers = {}
+    for i in range(1, len(sorted_dates)):
+        prev = holdings.get(sorted_dates[i - 1], set())
+        curr = holdings.get(sorted_dates[i], set())
+        avg_size = (len(prev) + len(curr)) / 2
+        if avg_size == 0:
+            turnovers[sorted_dates[i]] = 0.0
+            continue
+        entering = len(curr - prev)
+        exiting = len(prev - curr)
+        turnovers[sorted_dates[i]] = ((entering + exiting) / avg_size) / holding_period
+    return pd.Series(turnovers, dtype=float)
 
 
 def _calc_monotonicity(group_means: list[float]) -> float:
