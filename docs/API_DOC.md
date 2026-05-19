@@ -1,6 +1,6 @@
 # QuantGPT API 完整文档
 
-> 版本: v1 | 基础路径: `/api/v1` | 认证: Bearer Token (JWT)
+> 版本: v1 | 基础路径: `/api/v1` | REST 认证: Bearer Token (JWT/API Key)
 
 ---
 
@@ -44,14 +44,16 @@ python -m quantgpt --prefetch hs300 csi500
 
 | 变量 | 必填 | 默认值 | 说明 |
 |------|------|--------|------|
-| `DATABASE_URL` | 是 | — | PostgreSQL 连接串 |
-| `DEEPSEEK_API_KEY` | 是 | — | DeepSeek API Key |
+| `DATABASE_URL` | 否 | SQLite `./quantgpt.db` | 数据库连接串；留空使用本地 SQLite |
+| `DEEPSEEK_API_KEY` | 否 | — | DeepSeek API Key；留空进入表达式模式 |
 | `DEEPSEEK_BASE_URL` | 否 | `https://api.deepseek.com/v1` | LLM API 地址 |
 | `DEEPSEEK_MODEL` | 否 | `deepseek-chat` | 模型名称 |
-| `JWT_SECRET` | 是 | — | JWT 签名密钥 |
+| `AUTH_DISABLED` | 否 | `false` | 仅本地开发可设为 `true`；生产必须保持 `false` |
+| `JWT_SECRET_KEY` | 是 | — | JWT 签名密钥；生产使用 `openssl rand -hex 32` 生成 |
+| `QUANTGPT_MCP_HTTP_TOKEN` | 条件必填 | — | `AUTH_DISABLED=false` 且暴露 `/mcp` 或 `/mcp-sse` 时必填 |
 | `QUANTGPT_CORS_ORIGINS` | 否 | `*` | CORS 允许源,逗号分隔 |
-| `QUANTGPT_ADMIN_PASSWORD` | 否 | — | 管理后台密码 |
-| `QUANTGPT_MAX_ACTIVE_TASKS` | 否 | `5` | 最大并发任务数 |
+| `QUANTGPT_ADMIN_PASSWORD` | 是 | — | 管理后台密码；生产必须使用强随机密码 |
+| `QUANTGPT_MAX_ACTIVE_TASKS` | 否 | `100` | 最大并发任务数 |
 | `QUANTGPT_TASK_TTL` | 否 | `3600` | 内存任务 TTL (秒) |
 | `QUANTGPT_RATE_LIMIT` | 否 | `10` | 每分钟请求限制 |
 | `QUANTGPT_MAX_PROMPT_LEN` | 否 | `500` | Prompt 最大长度 |
@@ -62,11 +64,13 @@ python -m quantgpt --prefetch hs300 csi500
 
 ## 认证
 
-所有 API (除健康检查、管理后台) 需要 Bearer Token。
+REST API 默认需要 Bearer Token（JWT access token 或 `qgpt_` API Key）。健康检查、认证入口和只读公开页面除外。`AUTH_DISABLED=true` 只允许本地开发使用；生产必须保持 `AUTH_DISABLED=false`，并配置强 `JWT_SECRET_KEY` 与强 `QUANTGPT_ADMIN_PASSWORD`。
 
 ```
 Authorization: Bearer <access_token>
 ```
+
+HTTP MCP 端点不复用用户 JWT。认证开启时，`/mcp` 和 `/mcp-sse` 需要独立的 `Authorization: Bearer <QUANTGPT_MCP_HTTP_TOKEN>`；未配置该变量时 HTTP MCP 返回 503。stdio MCP 不经过 HTTP 暴露面，按本机进程权限控制。
 
 ### POST /api/v1/auth/send-code
 
@@ -659,12 +663,11 @@ anonymous 和 guest token 返回 401，且不会创建不可追踪策略任务�
     "risk_logs": []
   },
   "strategy_score": { "score": 70, "grade": "B" },
-  "summary_json": "/path/to/backtest_report_strategy.summary.json",
   "report_url": "/api/v1/reports/backtest_report_strategy.html"
 }
 ```
 
-`summary_json` 是服务端内部产物路径，不作为浏览器下载 URL 暴露。前端应读取
+`summary_json` 是服务端内部产物路径，不会出现在任务结果中。客户端应读取
 `strategy_result` 摘要字段，并通过 `report_url` 访问 HTML 报告。
 
 ### Post-MVP Strategy Endpoints
@@ -719,7 +722,9 @@ non-live-trading notice. They do not contain `broker`, `account`, `order`,
 
 Server-Sent Events 实时推送任务状态变化。
 
-**认证:** 通过 query param `?token=<access_token>` (EventSource 不支持 Header)
+**认证流程:** EventSource 不支持自定义 Header。认证开启时先用 Bearer Token 调用
+`POST /api/v1/tasks/{task_id}/sse-ticket`，再把返回的一次性短期 ticket 放到
+`/stream?ticket=<ticket>`。ticket 只能用于对应 task，验证后即消费。
 
 **事件类型:**
 
@@ -732,7 +737,12 @@ Server-Sent Events 实时推送任务状态变化。
 **示例:**
 
 ```javascript
-const es = new EventSource(`/api/v1/tasks/${taskId}/stream?token=${token}`);
+const ticketRes = await fetch(`/api/v1/tasks/${taskId}/sse-ticket`, {
+  method: "POST",
+  headers: { Authorization: `Bearer ${token}` },
+});
+const { ticket } = await ticketRes.json();
+const es = new EventSource(`/api/v1/tasks/${taskId}/stream?ticket=${ticket}`);
 es.addEventListener("update", (e) => {
   const task = JSON.parse(e.data);
   console.log(task.status);
@@ -982,7 +992,7 @@ curl -H "Authorization: Bearer <token>" \
 
 ## MCP Tools
 
-QuantGPT 提供 MCP (Model Context Protocol) 服务,支持因子研究工具和 StrategySpec v0 策略工具:
+QuantGPT 提供 MCP (Model Context Protocol) 服务,支持因子研究工具和 StrategySpec v0 策略工具。推荐本机 stdio 模式；如果暴露 HTTP MCP (`/mcp`, `/mcp-sse`)，认证开启时必须设置 `QUANTGPT_MCP_HTTP_TOKEN` 并由客户端发送 `Authorization: Bearer <token>`。
 
 | Tool | 说明 |
 |------|------|

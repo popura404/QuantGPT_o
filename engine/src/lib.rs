@@ -16,6 +16,21 @@ use expression::eval::{evaluate, EvalContext};
 use backtest::engine::run_backtest;
 use backtest::metrics;
 
+fn value_error(message: impl Into<String>) -> PyErr {
+    pyo3::exceptions::PyValueError::new_err(message.into())
+}
+
+fn validate_offsets(name: &str, offsets: &[(usize, usize)], n_rows: usize) -> PyResult<()> {
+    for (idx, &(start, end)) in offsets.iter().enumerate() {
+        if start > end || end > n_rows {
+            return Err(value_error(format!(
+                "{name}[{idx}] must satisfy start <= end <= n_rows; got ({start}, {end}) for n_rows={n_rows}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Parse and evaluate a factor expression on columnar data.
 ///
 /// Args:
@@ -38,14 +53,26 @@ fn eval_expression<'py>(
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
 
     let mut col_map: HashMap<String, Vec<f64>> = HashMap::new();
-    let mut n_rows = 0usize;
+    let mut n_rows: Option<usize> = None;
     for (key, val) in columns.iter() {
         let name: String = key.extract()?;
         let arr: PyReadonlyArray1<f64> = val.extract()?;
         let slice = arr.as_slice()?;
-        n_rows = slice.len();
+        match n_rows {
+            Some(expected) if slice.len() != expected => {
+                return Err(value_error(format!(
+                    "column '{name}' length {} does not match previous column length {expected}",
+                    slice.len()
+                )));
+            }
+            None => n_rows = Some(slice.len()),
+            _ => {}
+        }
         col_map.insert(name, slice.to_vec());
     }
+    let n_rows = n_rows.ok_or_else(|| value_error("columns must contain at least one numeric array"))?;
+    validate_offsets("stock_offsets", &stock_offsets, n_rows)?;
+    validate_offsets("date_offsets", &date_offsets, n_rows)?;
 
     let ctx = EvalContext {
         n_rows,
@@ -97,6 +124,21 @@ fn run_factor_backtest<'py>(
     let d = dates.as_slice()?;
     let fv = factor_values.as_slice()?;
     let dr = daily_returns.as_slice()?;
+    if d.len() != stock_codes.len() || d.len() != fv.len() || d.len() != dr.len() {
+        return Err(value_error(format!(
+            "dates, stock_codes, factor_values, and daily_returns must have equal length; got {}, {}, {}, {}",
+            d.len(),
+            stock_codes.len(),
+            fv.len(),
+            dr.len()
+        )));
+    }
+    if n_groups == 0 {
+        return Err(value_error("n_groups must be >= 1"));
+    }
+    if holding_period == 0 {
+        return Err(value_error("holding_period must be >= 1"));
+    }
 
     let result = run_backtest(d, &stock_codes, fv, dr, n_groups, holding_period, cost_rate, trading_days_per_year);
 

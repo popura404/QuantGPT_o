@@ -81,11 +81,17 @@ DEEPSEEK_MODEL=deepseek-chat
 ### 3.3 认证
 
 ```bash
-# 本地使用建议保持 true，免登录
-AUTH_DISABLED=true
+# 生产必须保持 false；只有本地单用户开发才可临时设为 true
+AUTH_DISABLED=false
 
-# 如需多用户登录，设为 false 并配置以下项：
-# JWT_SECRET_KEY=（openssl rand -hex 32 生成）
+# 生产必须配置强随机 JWT 密钥和强管理密码
+JWT_SECRET_KEY=（openssl rand -hex 32 生成）
+QUANTGPT_ADMIN_PASSWORD=（使用密码管理器生成的长随机密码）
+
+# 如需暴露 HTTP MCP (/mcp 或 /mcp-sse)，还必须配置独立 Bearer Token：
+QUANTGPT_MCP_HTTP_TOKEN=（openssl rand -hex 32 生成）
+
+# 邮箱登录需要配置 SMTP：
 # SMTP_HOST=smtp.example.com
 # SMTP_PORT=465
 # SMTP_USER=your_email
@@ -112,6 +118,8 @@ AUTH_DISABLED=true
   }
 }
 ```
+
+推荐使用上面的 stdio MCP，只暴露给本机进程。HTTP 服务也挂载了 `/mcp` 和 `/mcp-sse`，但生产环境不要直接公网暴露；如需反向代理访问，必须保持 `AUTH_DISABLED=false`，配置 `QUANTGPT_MCP_HTTP_TOKEN`，并让客户端发送 `Authorization: Bearer <QUANTGPT_MCP_HTTP_TOKEN>`。
 
 配置文件位置：
 - Claude Code：项目根目录 `.mcp.json`

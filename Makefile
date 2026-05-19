@@ -1,4 +1,4 @@
-.PHONY: setup run dev test lint clean frontend
+.PHONY: setup run dev test lint engine-check clean frontend
 
 PYTHON := $(shell command -v python3 2>/dev/null || command -v python 2>/dev/null)
 VENV := .venv
@@ -25,6 +25,14 @@ test:
 lint:
 	$(BIN)/ruff check quantgpt/ tests/
 	$(BIN)/pyright quantgpt/
+
+engine-check:
+	@if ! command -v cargo >/dev/null 2>&1; then \
+		echo "cargo not found; unable to run Rust engine checks"; \
+		exit 0; \
+	fi; \
+	cd engine && cargo check --all-targets && \
+	cargo test
 
 frontend:
 	cd frontend && npm ci && npm run build

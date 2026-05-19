@@ -18,6 +18,10 @@ import os
 import tempfile
 import uuid
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias, TypedDict, TypeGuard, overload
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +79,41 @@ CELERY_DATA_DIR = Path(
 _PARQUET_MARKER = "__quantgpt_parquet__"
 
 
-def to_json_transport(obj):
+class ParquetMarker(TypedDict):
+    __quantgpt_parquet__: str
+    __type__: Literal["dataframe", "series"]
+
+
+JSONScalar: TypeAlias = str | int | float | bool | None
+JSONTransport: TypeAlias = JSONScalar | ParquetMarker | list["JSONTransport"] | dict[str, "JSONTransport"]
+RestoredTransport: TypeAlias = Any
+
+
+@overload
+def to_json_transport(obj: pd.DataFrame) -> ParquetMarker: ...
+
+
+@overload
+def to_json_transport(obj: pd.Series) -> ParquetMarker: ...
+
+
+@overload
+def to_json_transport(obj: dict[Any, Any]) -> dict[str, JSONTransport]: ...
+
+
+@overload
+def to_json_transport(obj: list[Any] | tuple[Any, ...] | set[Any]) -> list[JSONTransport]: ...
+
+
+@overload
+def to_json_transport(obj: JSONScalar) -> JSONScalar: ...
+
+
+@overload
+def to_json_transport(obj: Any) -> JSONTransport: ...
+
+
+def to_json_transport(obj: Any) -> JSONTransport:
     """Recursively convert obj to JSON-safe form, writing DataFrames to temp Parquet."""
     import numpy as np
     import pandas as pd
@@ -104,10 +142,30 @@ def to_json_transport(obj):
     return obj
 
 
-def from_json_transport(obj):
+@overload
+def from_json_transport(obj: ParquetMarker) -> pd.DataFrame | pd.Series: ...
+
+
+@overload
+def from_json_transport(obj: dict[str, Any]) -> dict[str, RestoredTransport]: ...
+
+
+@overload
+def from_json_transport(obj: list[Any]) -> list[RestoredTransport]: ...
+
+
+@overload
+def from_json_transport(obj: JSONScalar) -> JSONScalar: ...
+
+
+@overload
+def from_json_transport(obj: Any) -> RestoredTransport: ...
+
+
+def from_json_transport(obj: Any) -> RestoredTransport:
     """Recursively restore DataFrames/Series from temp Parquet files."""
     if isinstance(obj, dict):
-        if _PARQUET_MARKER in obj:
+        if _is_parquet_marker(obj):
             return _load_df(obj)
         return {k: from_json_transport(v) for k, v in obj.items()}
     if isinstance(obj, list):
@@ -115,14 +173,18 @@ def from_json_transport(obj):
     return obj
 
 
-def _save_df(df, type_tag: str) -> dict:
+def _is_parquet_marker(obj: dict[Any, Any]) -> TypeGuard[ParquetMarker]:
+    return isinstance(obj.get(_PARQUET_MARKER), str) and obj.get("__type__") in ("dataframe", "series")
+
+
+def _save_df(df: pd.DataFrame, type_tag: Literal["dataframe", "series"]) -> ParquetMarker:
     CELERY_DATA_DIR.mkdir(parents=True, exist_ok=True)
     path = CELERY_DATA_DIR / f"{uuid.uuid4().hex}.parquet"
     df.to_parquet(path)
     return {_PARQUET_MARKER: str(path), "__type__": type_tag}
 
 
-def _load_df(marker: dict):
+def _load_df(marker: ParquetMarker) -> pd.DataFrame | pd.Series:
     import pandas as pd
 
     path = Path(marker[_PARQUET_MARKER]).resolve()

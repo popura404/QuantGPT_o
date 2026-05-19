@@ -315,6 +315,11 @@ results = batch_evaluate(
 | WQ Simulation | `wq_simulate.py` | Dollar-neutral 多空模拟，对齐 BRAIN 的 Sharpe/Turnover/Fitness 计算 |
 | **WQ BRAIN API** | `wq_brain_client.py` | **直连 BRAIN 平台 — 真实模拟 + IS 检测 + 一键正式提交** |
 
+`StrategySpecV1` 还支持 OOS 验证配置：`validation.oos.enabled=true`
+时返回 train/valid/test 指标、`direction_policy="train_fixed"`、
+`data_quality`、`oos_result`、`oos_summary` 和 OOS-first `oos_score`。该评分
+优先使用验证/测试表现、样本外衰减、换手和数据质量惩罚，而不是只看全周期指标。
+
 ### 3. Evolutionary Factor Iteration
 
 受 QuantaAlpha 启发的三阶段自动搜索：
@@ -378,6 +383,8 @@ git clone https://github.com/Miasyster/QuantGPT.git && cd QuantGPT
 make setup   # creates venv, installs deps, generates .env
 make run     # starts server at http://localhost:8003
 ```
+
+`.env.example` defaults to `AUTH_DISABLED=false`. Only set `AUTH_DISABLED=true` for local single-user development; production must keep authentication enabled, use a strong `JWT_SECRET_KEY`, set a strong `QUANTGPT_ADMIN_PASSWORD`, and protect any HTTP MCP exposure with `QUANTGPT_MCP_HTTP_TOKEN`.
 
 Add MCP configuration to Claude Code or Claude Desktop:
 

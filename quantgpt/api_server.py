@@ -21,12 +21,13 @@ Endpoints:
 import asyncio
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, update
 
@@ -256,6 +257,29 @@ app.mount("/mcp-sse", _mcp_sse_app)
 _CHARTS_DIR = Path(__file__).resolve().parent.parent / "reports" / "charts"
 _CHARTS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/charts", StaticFiles(directory=str(_CHARTS_DIR)), name="charts")
+
+
+def _is_http_mcp_path(path: str) -> bool:
+    return path in ("/mcp", "/mcp-sse") or path.startswith("/mcp/") or path.startswith("/mcp-sse/")
+
+
+@app.middleware("http")
+async def _protect_http_mcp(request: Request, call_next):
+    if _is_http_mcp_path(request.url.path) and request.method != "OPTIONS":
+        from .auth import is_auth_disabled
+
+        if not is_auth_disabled():
+            expected = os.environ.get("QUANTGPT_MCP_HTTP_TOKEN", "")
+            auth = request.headers.get("Authorization", "")
+            token = auth[7:] if auth.startswith("Bearer ") else ""
+            if not expected:
+                return JSONResponse(
+                    {"detail": "HTTP MCP is disabled until QUANTGPT_MCP_HTTP_TOKEN is set"},
+                    status_code=503,
+                )
+            if not token or not secrets.compare_digest(token, expected):
+                return JSONResponse({"detail": "Invalid HTTP MCP token"}, status_code=401)
+    return await call_next(request)
 
 
 @app.middleware("http")

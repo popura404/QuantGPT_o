@@ -112,7 +112,10 @@ async def wq_brain_status():
 
 
 @router.get("/user-info")
-async def wq_brain_user_info(account: str = "primary"):
+async def wq_brain_user_info(
+    account: str = "primary",
+    user: User = Depends(get_current_user),
+):
     if not is_configured(account):
         raise HTTPException(status_code=503, detail=f"WQ BRAIN 未配置 (account={account})")
     client = get_client(account)

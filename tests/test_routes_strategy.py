@@ -94,7 +94,7 @@ async def test_strategy_backtest_task_result_contains_score_report(client, monke
     assert task["task_type"] == "strategy_backtest"
     assert task["user_id"] == str(test_user.id)
     assert task["result"]["strategy_score"]["score"] == 70
-    assert task["result"]["summary_json"].endswith(".summary.json")
+    assert "summary_json" not in task["result"]
 
     detail = await client.get(f"/api/v1/tasks/{response.json()['task_id']}", headers=auth_headers)
     assert detail.status_code == 200

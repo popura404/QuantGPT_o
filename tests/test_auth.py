@@ -144,10 +144,10 @@ class TestExtractToken:
 
 
 class TestIsAuthDisabled:
-    def test_default_is_disabled(self):
+    def test_default_is_enabled(self):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("AUTH_DISABLED", None)
-            assert is_auth_disabled()
+            assert not is_auth_disabled()
 
     def test_enabled_when_false(self):
         with patch.dict(os.environ, {"AUTH_DISABLED": "false"}):

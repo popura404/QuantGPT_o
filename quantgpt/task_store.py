@@ -11,6 +11,7 @@ import uuid as uuid_mod
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, TypeVar, overload
 
 from sqlalchemy import select
 
@@ -19,6 +20,7 @@ from .models import Session as SessionModel
 from .models import Task as TaskModel
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 # ---- Configuration ----
 
@@ -105,7 +107,15 @@ def cleanup_reports(user_id: str | None = None):
                 pass
 
 
-def sanitize_task_response(task_dict: dict) -> dict:
+@overload
+def sanitize_task_response(task_dict: dict[str, Any]) -> dict[str, Any]: ...
+
+
+@overload
+def sanitize_task_response(task_dict: _T) -> _T: ...
+
+
+def sanitize_task_response(task_dict: Any) -> Any:
     if not isinstance(task_dict, dict):
         return task_dict
     ca = task_dict.get("created_at")

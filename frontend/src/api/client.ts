@@ -226,8 +226,14 @@ export function streamTask(
 
 export function getReportUrl(reportUrl: string): string {
   const token = getAccessToken();
-  const sep = reportUrl.includes("?") ? "&" : "?";
-  return `${BASE}${reportUrl}${token ? `${sep}token=${token}` : ""}`;
+  const url = /^https?:\/\//i.test(reportUrl) ? reportUrl : `${BASE}${reportUrl}`;
+  if (!token || /[?&]token=/.test(url)) return url;
+
+  const hashIndex = url.indexOf("#");
+  const baseUrl = hashIndex >= 0 ? url.slice(0, hashIndex) : url;
+  const hash = hashIndex >= 0 ? url.slice(hashIndex) : "";
+  const sep = baseUrl.includes("?") ? "&" : "?";
+  return `${baseUrl}${sep}token=${encodeURIComponent(token)}${hash}`;
 }
 
 export async function fetchTasks(page = 1, pageSize = 20, sessionId?: string, taskType?: string): Promise<{ tasks: Task[]; page: number; page_size: number }> {

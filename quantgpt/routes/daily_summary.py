@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..auth import require_admin
 from ..db import get_db
 from ..models import DailySummary
 
@@ -71,6 +72,7 @@ async def get_summary(
 @router.post("/generate", status_code=201)
 async def trigger_generate(
     date: str = Query(None, description="Target date YYYY-MM-DD, defaults to today"),
+    _: bool = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     """手动触发生成盘后总结（可指定日期）。"""

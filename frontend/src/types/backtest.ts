@@ -5,6 +5,7 @@ export type TaskStatus =
   | "generating_expression"
   | "validating"
   | "fetching_data"
+  | "checking_data_quality"
   | "fetching_fundamentals"
   | "backtesting"
   | "analyzing"
@@ -15,9 +16,39 @@ export type TaskStatus =
   | "iterating"
   | "iteration_completed";
 
+export type DirectionMode = "auto_full" | "fixed";
+
+export interface OOSRequest {
+  method?: "date_ratio" | "date_cut";
+  train_ratio?: number;
+  valid_ratio?: number;
+  test_ratio?: number;
+  train_end?: string | null;
+  valid_end?: string | null;
+  min_train_days?: number;
+  min_valid_days?: number;
+  min_test_days?: number;
+  warmup_days?: number | null;
+}
+
+export interface DataQualityRequest {
+  enabled?: boolean;
+  mode?: "report_only" | "filter" | "strict";
+  min_price?: number;
+  max_abs_daily_ret?: number;
+  max_missing_ratio_per_stock?: number;
+  require_positive_volume?: boolean;
+  require_positive_amount?: boolean;
+  drop_st?: boolean;
+  drop_new_listing_days?: number;
+  adjustment?: "qfq" | "hfq" | "none" | "unknown";
+  fail_on_unknown_adjustment?: boolean;
+}
+
 export interface BacktestRequest {
   prompt: string;
   universe?: string;
+  universe_date?: string | null;
   start_date?: string;
   end_date?: string;
   n_groups?: number;
@@ -25,6 +56,12 @@ export interface BacktestRequest {
   benchmark?: string;
   neutralize_industry?: boolean;
   neutralize_cap?: boolean;
+  rebalance_anchor?: string | null;
+  oos_enabled?: boolean;
+  oos?: OOSRequest | null;
+  direction_mode?: DirectionMode;
+  fixed_direction?: 1 | -1 | null;
+  data_quality?: DataQualityRequest | null;
 }
 
 export interface BacktestMetrics {
@@ -150,12 +187,19 @@ export interface BacktestResult {
   params: {
     expression: string;
     universe: string;
+    universe_date?: string | null;
+    rebalance_anchor?: string | null;
     start_date: string;
     end_date: string;
     n_groups: number;
     holding_period: number;
     benchmark: string;
     stock_count: number;
+    oos_enabled?: boolean;
+    oos?: OOSRequest | null;
+    direction_mode?: DirectionMode;
+    fixed_direction?: 1 | -1 | null;
+    data_quality?: DataQualityRequest | null;
   };
   llm: {
     prompt: string;
@@ -164,6 +208,32 @@ export interface BacktestResult {
   interpretation?: FactorInterpretation;
   stock_factor_data?: StockFactorData | null;
   nav_series?: { date: string; value: number }[];
+  data_quality?: Record<string, unknown>;
+  direction_policy?: string;
+  report_scope?: string;
+  oos_result?: {
+    direction_policy?: string;
+    fixed_direction?: number;
+    report_scope?: string;
+    train?: { period?: string[]; metrics?: Record<string, number | string | null> };
+    valid?: { period?: string[]; metrics?: Record<string, number | string | null> };
+    test?: { period?: string[]; metrics?: Record<string, number | string | null> };
+    decay?: Record<string, number | null>;
+    oos_risk?: string;
+    data_quality?: Record<string, unknown>;
+    warnings?: string[];
+  };
+  scoring?: {
+    score?: number;
+    grade?: string;
+    decision?: string;
+    overfit_risk?: string;
+    train_score?: number;
+    valid_score?: number;
+    test_score?: number;
+    reasons?: string[];
+    metrics_scope?: string;
+  };
 }
 
 export interface Session {

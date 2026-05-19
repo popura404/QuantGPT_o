@@ -319,7 +319,6 @@ def _run_strategy_backtest_task(task_id: str, request_data: dict, user_id: str) 
         task["result"] = {
             "strategy_result": result_payload,
             "strategy_score": result_payload.get("strategy_score"),
-            "summary_json": report_payload.get("summary_json_path"),
             "report_url": f"/api/v1/reports/{report_filename}",
         }
     except Exception as exc:

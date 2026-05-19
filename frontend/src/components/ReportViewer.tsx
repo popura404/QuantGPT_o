@@ -7,16 +7,8 @@ interface Props {
   reportUrl: string;
 }
 
-function getAuthReportUrl(reportUrl: string): string {
-  const url = getReportUrl(reportUrl);
-  const token = localStorage.getItem("quantgpt_access_token");
-  if (!token) return url;
-  const sep = url.includes("?") ? "&" : "?";
-  return `${url}${sep}token=${encodeURIComponent(token)}`;
-}
-
 export default function ReportViewer({ reportUrl }: Props) {
-  const url = getAuthReportUrl(reportUrl);
+  const url = getReportUrl(reportUrl);
   const { isDark } = useColorMode();
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
