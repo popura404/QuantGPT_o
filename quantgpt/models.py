@@ -177,6 +177,49 @@ class SubmittedAlpha(Base):
     )
 
 
+class FactorSearchAttempt(Base):
+    __tablename__ = "factor_search_attempts"
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    user_id = Column(Uuid, ForeignKey("users.id"), nullable=False, index=True)
+    task_id = Column(String(12), ForeignKey("tasks.id"), nullable=True, index=True)
+    parent_task_id = Column(String(12), nullable=True, index=True)
+    generation_index = Column(Integer, nullable=False, default=0)
+    expression = Column(Text, nullable=False)
+    expression_key = Column(Text, nullable=False)
+    family_key = Column(Text, nullable=False)
+    scope_key = Column(String(255), nullable=False, default="")
+    params = Column(JSON, nullable=True)
+    start_date = Column(String(10), nullable=True)
+    end_date = Column(String(10), nullable=True)
+    universe = Column(String(80), nullable=True)
+    source_strategy = Column(String(30), nullable=True)
+    from_mutation = Column(Boolean, default=False, nullable=False)
+    from_crossover = Column(Boolean, default=False, nullable=False)
+    status = Column(String(30), nullable=False, default="generated")
+    failed = Column(Boolean, default=False, nullable=False)
+    failure_stage = Column(String(50), nullable=True)
+    failure_reason = Column(Text, nullable=True)
+    entered_next_round = Column(Boolean, default=False, nullable=False)
+    raw_score = Column(Float, nullable=True)
+    selection_score = Column(Float, nullable=True)
+    search_penalty = Column(Float, default=0.0, nullable=False)
+    prior_expression_attempts = Column(Integer, default=0, nullable=False)
+    prior_family_attempts = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    user = relationship("User")
+    task = relationship("Task")
+
+    __table_args__ = (
+        Index("ix_factor_search_attempts_user_task_gen", "user_id", "task_id", "generation_index"),
+        Index("ix_factor_search_attempts_user_expr", "user_id", "expression_key"),
+        Index("ix_factor_search_attempts_user_family", "user_id", "family_key"),
+        Index("ix_factor_search_attempts_user_scope", "user_id", "scope_key"),
+        Index("ix_factor_search_attempts_scope_dates", "user_id", "universe", "start_date", "end_date"),
+    )
+
+
 class DailySummary(Base):
     __tablename__ = "daily_summaries"
 

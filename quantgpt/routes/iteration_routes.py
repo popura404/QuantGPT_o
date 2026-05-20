@@ -19,6 +19,7 @@ from ..iteration import compute_factor_score, generate_iteration_candidates
 from ..market_data import MarketDataFetcher, get_universe
 from ..models import Task as TaskModel
 from ..models import User
+from ..search_ledger import summarize_attempts
 from ..task_store import (
     MAX_ACTIVE_TASKS,
     REPORT_DIR,
@@ -134,6 +135,16 @@ def _run_iteration_task(task_id: str, parent_task_id: str, user_id: str, n_candi
             "report_metrics": parent_report_metrics,
         }
 
+        def on_attempt(attempt):
+            existing = task.setdefault("search_attempts", [])
+            for idx, item in enumerate(existing):
+                if item.get("id") == attempt.get("id"):
+                    existing[idx] = attempt
+                    break
+            else:
+                existing.append(attempt)
+            task["search_summary"] = summarize_attempts(existing)
+
         def on_progress(done_count, candidate_result):
             task["candidates_done"] = done_count
             if candidate_result.get("status") == "success":
@@ -158,12 +169,15 @@ def _run_iteration_task(task_id: str, parent_task_id: str, user_id: str, n_candi
             n_candidates=n_candidates,
             max_concurrent=50,
             on_progress=on_progress,
+            on_attempt=on_attempt,
             task_id=task_id,
+            parent_task_id=parent_task_id,
             direction=direction,
         )
 
         task["candidates"] = candidates
         task["candidates_done"] = len(candidates)
+        task["search_summary"] = summarize_attempts(task.get("search_attempts", []))
         task["status"] = "iteration_completed"
         task["result"] = {
             "parent_task_id": parent_task_id,
@@ -171,6 +185,8 @@ def _run_iteration_task(task_id: str, parent_task_id: str, user_id: str, n_candi
             "parent_score": parent_scoring["score"],
             "parent_grade": parent_scoring["grade"],
             "candidates": candidates,
+            "search_attempts": task.get("search_attempts", []),
+            "search_summary": task.get("search_summary", {}),
         }
         logger.info(f"[{task_id}] iteration completed: {len(candidates)} candidates")
 
@@ -245,6 +261,8 @@ async def iterate_task(
             "candidates": [],
             "candidates_done": 0,
             "candidates_total": req.n_candidates,
+            "search_attempts": [],
+            "search_summary": {},
             "created_at": time.time(),
         }
     logger.info(f"iteration task {iter_task_id} created for parent {task_id}")

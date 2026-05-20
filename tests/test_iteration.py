@@ -2,6 +2,13 @@
 
 
 from quantgpt.iteration import compute_factor_score, is_duplicate_expression
+from quantgpt.search_ledger import (
+    apply_selection_penalty,
+    attempt_payload,
+    compute_search_penalty,
+    count_local_attempts,
+    family_key,
+)
 
 
 class TestComputeFactorScore:
@@ -113,3 +120,63 @@ class TestIsDuplicateExpression:
 
     def test_empty_existing(self):
         assert not is_duplicate_expression("rank(close)", [])
+
+
+class TestSearchLedger:
+    def test_family_key_ignores_standalone_numeric_parameters(self):
+        assert family_key("Rank(ts_mean(close, 20))") == family_key("rank(ts_mean(close, 30))")
+        assert family_key("rank(volume / adv20)") != family_key("rank(volume / adv30)")
+
+    def test_penalty_is_zero_for_first_attempt_and_grows(self):
+        assert compute_search_penalty(0, 0) == 0.0
+        exact_penalty = compute_search_penalty(2, 0)
+        family_penalty = compute_search_penalty(0, 2)
+        assert exact_penalty > family_penalty > 0
+
+    def test_selection_score_never_goes_below_zero(self):
+        assert apply_selection_penalty(5, 10) == 0.0
+        assert apply_selection_penalty(80, 2.5) == 77.5
+
+    def test_local_counts_respect_scope(self):
+        params = {"universe": "hs300", "start_date": "2023-01-01", "end_date": "2023-12-31", "holding_period": 5, "n_groups": 5}
+        other_scope = {**params, "universe": "csi500"}
+        attempts = [
+            attempt_payload(
+                user_id="00000000-0000-0000-0000-000000000001",
+                task_id="task",
+                parent_task_id="parent",
+                generation_index=0,
+                expression="rank(ts_mean(close, 20))",
+                params=params,
+                source_strategy="exploit",
+                from_mutation=True,
+                from_crossover=False,
+            ),
+            attempt_payload(
+                user_id="00000000-0000-0000-0000-000000000001",
+                task_id="task",
+                parent_task_id="parent",
+                generation_index=1,
+                expression="rank(ts_mean(close, 30))",
+                params=params,
+                source_strategy="exploit",
+                from_mutation=True,
+                from_crossover=False,
+            ),
+            attempt_payload(
+                user_id="00000000-0000-0000-0000-000000000001",
+                task_id="task",
+                parent_task_id="parent",
+                generation_index=2,
+                expression="rank(ts_mean(close, 20))",
+                params=other_scope,
+                source_strategy="exploit",
+                from_mutation=True,
+                from_crossover=False,
+            ),
+        ]
+
+        counts = count_local_attempts(attempts, "rank(ts_mean(close, 20))", params)
+
+        assert counts.expression_attempts == 1
+        assert counts.family_attempts == 2

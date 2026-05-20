@@ -45,6 +45,10 @@ function CandidateRow({
   const [expanded, setExpanded] = useState(false);
   const { isDark } = useColorMode();
   const GRADE_COLORS = getGradeColors(isDark);
+  const rawScore = candidate.raw_score ?? candidate.score ?? 0;
+  const selectionScore = candidate.selection_score ?? rawScore;
+  const penalty = candidate.search_penalty ?? 0;
+  const failureText = candidate.error;
 
   if (candidate.status === "failed") {
     return (
@@ -57,7 +61,10 @@ function CandidateRow({
         <td className="px-3 py-2 text-center">-</td>
         <td className="px-3 py-2 text-center">-</td>
         <td className="px-3 py-2 text-center">-</td>
-        <td className="px-3 py-2 text-center text-red-400 text-xs">{candidate.error}</td>
+        <td className="px-3 py-2 text-center">-</td>
+        <td className="px-3 py-2 text-center text-red-400 text-xs">
+          {candidate.failure_stage ? `${candidate.failure_stage}: ` : ""}{failureText ?? candidate.error}
+        </td>
       </tr>
     );
   }
@@ -75,7 +82,13 @@ function CandidateRow({
         <td className="px-3 py-2 font-mono text-xs max-w-[200px]">
           <div className="truncate" title={candidate.expression}>{candidate.expression}</div>
         </td>
-        <td className="px-3 py-2 text-center text-sm font-medium">{candidate.score.toFixed(1)}</td>
+        <td className="px-3 py-2 text-center text-sm font-medium">{selectionScore.toFixed(1)}</td>
+        <td className="px-3 py-2 text-center text-xs">
+          <div>{rawScore.toFixed(1)}</div>
+          <div className={penalty > 0 ? (isDark ? "text-amber-400" : "text-amber-600") : (isDark ? "text-gray-500" : "text-gray-400")}>
+            -{penalty.toFixed(1)}
+          </div>
+        </td>
         <td className="px-3 py-2 text-center">
           <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${GRADE_COLORS[candidate.grade] || ""}`}>
             {candidate.grade}
@@ -100,8 +113,24 @@ function CandidateRow({
       </tr>
       {expanded && (
         <tr className={isDark ? "bg-gray-800" : "bg-gray-50"}>
-          <td colSpan={7} className="px-4 py-3">
+          <td colSpan={8} className="px-4 py-3">
             <div className="grid grid-cols-4 gap-3 text-xs">
+              <div>
+                <span className={isDark ? "text-gray-400" : "text-gray-500"}>选择分:</span>{" "}
+                <span className="font-medium">{selectionScore.toFixed(1)}</span>
+              </div>
+              <div>
+                <span className={isDark ? "text-gray-400" : "text-gray-500"}>原始分:</span>{" "}
+                <span className="font-medium">{rawScore.toFixed(1)}</span>
+              </div>
+              <div>
+                <span className={isDark ? "text-gray-400" : "text-gray-500"}>搜索惩罚:</span>{" "}
+                <span className="font-medium">{penalty.toFixed(1)}</span>
+              </div>
+              <div>
+                <span className={isDark ? "text-gray-400" : "text-gray-500"}>来源:</span>{" "}
+                <span className="font-medium">{candidate.strategy_used ?? (candidate.search_attempt?.id ? "search" : "-")}</span>
+              </div>
               <div>
                 <span className={isDark ? "text-gray-400" : "text-gray-500"}>Sharpe:</span>{" "}
                 <span className="font-medium">{num(candidate.report_metrics.sharpe)}</span>
@@ -279,7 +308,7 @@ export default function IterationPanel({
                     {c.grade}
                   </span>
                   <span className="font-mono truncate">{c.expression}</span>
-                  <span className="ml-auto font-medium">{c.score.toFixed(1)}分</span>
+                  <span className="ml-auto font-medium">{(c.selection_score ?? c.score).toFixed(1)}分</span>
                 </div>
               ))}
           </div>
@@ -295,6 +324,7 @@ export default function IterationPanel({
     );
     const selectedIndex = iterationTask.selected_candidate_index;
     const bestIndex = candidates.findIndex((c) => c.status === "success");
+    const summary = iterationTask.search_summary ?? {};
 
     if (candidates.length === 0) {
       return (
@@ -313,7 +343,14 @@ export default function IterationPanel({
     return (
       <div className={`rounded-xl border ${isDark ? "border-gray-700 bg-gray-900" : "border-gray-200 bg-white"} overflow-hidden`}>
         <div className={`flex items-center justify-between px-4 py-3 border-b ${isDark ? "border-gray-700" : "border-gray-100"}`}>
-          <h3 className={`text-sm font-medium ${isDark ? "text-gray-300" : "text-gray-700"}`}>迭代优化结果</h3>
+          <div>
+            <h3 className={`text-sm font-medium ${isDark ? "text-gray-300" : "text-gray-700"}`}>迭代优化结果</h3>
+            {summary.total_attempts !== undefined && (
+              <p className={`mt-0.5 text-xs ${isDark ? "text-gray-500" : "text-gray-400"}`}>
+                尝试 {summary.total_attempts ?? 0} 次，失败 {summary.failed_attempts ?? 0} 次，进入下一轮 {summary.advanced_attempts ?? 0} 次
+              </p>
+            )}
+          </div>
           <button
             onClick={() => onIterate(parentTaskId)}
             className={`text-xs ${isDark ? "text-amber-400 hover:text-amber-300" : "text-blue-600 hover:text-blue-800"}`}
@@ -327,7 +364,8 @@ export default function IterationPanel({
               <tr className={`border-b ${isDark ? "border-gray-700 text-gray-400" : "border-gray-100 text-gray-500"}`}>
                 <th className="px-3 py-2 text-center w-12">#</th>
                 <th className="px-3 py-2 text-left">表达式</th>
-                <th className="px-3 py-2 text-center w-16">评分</th>
+                <th className="px-3 py-2 text-center w-20">选择分</th>
+                <th className="px-3 py-2 text-center w-20">原始/惩罚</th>
                 <th className="px-3 py-2 text-center w-16">等级</th>
                 <th className="px-3 py-2 text-center w-20">Sharpe</th>
                 <th className="px-3 py-2 text-center w-20">单调性</th>

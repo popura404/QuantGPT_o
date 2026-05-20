@@ -884,6 +884,8 @@ async def get_task(
         resp["candidates"] = db_task.result.get("candidates", [])
         resp["candidates_done"] = len(resp["candidates"])
         resp["candidates_total"] = len(resp["candidates"])
+        resp["search_attempts"] = db_task.result.get("search_attempts", [])
+        resp["search_summary"] = db_task.result.get("search_summary", {})
         resp["task_type"] = "iteration"
         resp["parent_task_id"] = db_task.result.get("parent_task_id")
     return sanitize_task_response(resp)

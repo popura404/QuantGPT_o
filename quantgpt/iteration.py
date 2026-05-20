@@ -25,6 +25,14 @@ from .expression_parser import parse_expression
 from .meta_evolution import EvolutionStrategy, select_strategy
 from .mutation_engine import MutationEngine
 from .report import generate_report
+from .search_ledger import (
+    apply_selection_penalty,
+    attempt_payload,
+    compute_search_penalty,
+    count_local_attempts,
+    count_persisted_attempts,
+    persist_attempt,
+)
 from .task_executor import _run_backtest_in_process, get_executor
 from .trajectory_analyzer import analyze_trajectory
 from .validation.promotion import AUTO_FULL_NOT_PROMOTABLE, research_only_provenance
@@ -350,6 +358,32 @@ def _validate_expression(expr: str) -> str | None:
         return f"表达式验证失败: {e}"
 
 
+def _source_flags(strategy: EvolutionStrategy | str) -> tuple[bool, bool]:
+    value = strategy.value if isinstance(strategy, EvolutionStrategy) else str(strategy)
+    return value in {EvolutionStrategy.EXPLOIT.value, EvolutionStrategy.SIMPLIFY.value}, value == EvolutionStrategy.RECOMBINE.value
+
+
+def _with_attempt_metadata(result: dict, attempt: dict, *, failed: bool | None = None) -> dict:
+    status_failed = result.get("status") == "failed" if failed is None else failed
+    raw_score = result.get("score", 0)
+    result["raw_score"] = raw_score
+    result["search_penalty"] = attempt.get("search_penalty", 0.0)
+    result["selection_score"] = apply_selection_penalty(raw_score, result["search_penalty"])
+    result["search_attempt"] = {
+        "id": attempt.get("id"),
+        "expression_key": attempt.get("expression_key"),
+        "family_key": attempt.get("family_key"),
+        "prior_expression_attempts": attempt.get("prior_expression_attempts", 0),
+        "prior_family_attempts": attempt.get("prior_family_attempts", 0),
+        "failed": status_failed,
+        "entered_next_round": not status_failed,
+    }
+    if status_failed:
+        result["failure_stage"] = attempt.get("failure_stage")
+        result["failure_reason"] = attempt.get("failure_reason")
+    return result
+
+
 def generate_iteration_candidates(
     parent_expression: str,
     parent_metrics: dict,
@@ -361,7 +395,9 @@ def generate_iteration_candidates(
     n_candidates: int = 5,
     max_concurrent: int = 50,
     on_progress: Callable[[int, dict], None] | None = None,
+    on_attempt: Callable[[dict], None] | None = None,
     task_id: str = "",
+    parent_task_id: str | None = None,
     direction: str | None = None,
 ) -> list[dict]:
     """Generate N candidate factor improvements using adaptive evolution.
@@ -380,6 +416,57 @@ def generate_iteration_candidates(
         "strategy": "parent",
     }]
     candidates: list[dict] = []
+    search_attempts: list[dict] = []
+
+    def _record_attempt(
+        *,
+        expression: str,
+        generation_index: int,
+        strategy_value: str,
+        from_mutation: bool,
+        from_crossover: bool,
+        status: str = "generated",
+        failed: bool = False,
+        failure_stage: str | None = None,
+        failure_reason: str | None = None,
+        entered_next_round: bool = False,
+        raw_score: float | None = None,
+    ) -> dict:
+        counts = count_local_attempts(search_attempts, expression, params)
+        persisted_counts = count_persisted_attempts(
+            user_id=user_id,
+            expression=expression,
+            params=params,
+            exclude_task_id=task_id or None,
+        )
+        counts.expression_attempts += persisted_counts.expression_attempts
+        counts.family_attempts += persisted_counts.family_attempts
+        penalty = compute_search_penalty(counts.expression_attempts, counts.family_attempts)
+        attempt = attempt_payload(
+            user_id=user_id,
+            task_id=task_id or None,
+            parent_task_id=parent_task_id,
+            generation_index=generation_index,
+            expression=expression,
+            params=params,
+            source_strategy=strategy_value,
+            from_mutation=from_mutation,
+            from_crossover=from_crossover,
+            prior_expression_attempts=counts.expression_attempts,
+            prior_family_attempts=counts.family_attempts,
+            search_penalty=penalty,
+            status=status,
+            failed=failed,
+            failure_stage=failure_stage,
+            failure_reason=failure_reason,
+            entered_next_round=entered_next_round,
+            raw_score=raw_score,
+        )
+        search_attempts.append(attempt)
+        if on_attempt:
+            on_attempt(attempt)
+        persist_attempt(attempt)
+        return attempt
 
     for i in range(n_candidates):
         try:
@@ -401,6 +488,8 @@ def generate_iteration_candidates(
                         segments, parent_expression, current_score, _FACTOR_OPERATORS)
                 else:
                     strategy = EvolutionStrategy.EXPLORE
+
+            from_mutation, from_crossover = _source_flags(strategy)
 
             if strategy == EvolutionStrategy.EXPLORE:
                 user_prompt = _build_explore_prompt(
@@ -431,26 +520,61 @@ def generate_iteration_candidates(
             # Generate expression via LLM (with dedup retries)
             temp = 0.9 if strategy != EvolutionStrategy.EXPLORE else 1.2
             raw_expression = None
+            last_expr = "unknown"
+            last_attempt: dict | None = None
             for dedup_attempt in range(4):
                 expr = _call_llm(system_prompt, user_prompt, temperature=min(temp + dedup_attempt * 0.2, 1.8))
+                last_expr = expr
                 err = _validate_expression(expr)
+                is_duplicate = not err and is_duplicate_expression(expr, all_expressions)
+                last_attempt = _record_attempt(
+                    expression=expr,
+                    generation_index=i,
+                    strategy_value=strategy.value,
+                    from_mutation=from_mutation,
+                    from_crossover=from_crossover,
+                    status="failed" if err or is_duplicate else "generated",
+                    failed=bool(err or is_duplicate),
+                    failure_stage="validation" if err else "duplicate" if is_duplicate else None,
+                    failure_reason=err if err else "duplicate expression" if is_duplicate else None,
+                )
                 if err:
                     logger.warning(f"[{task_id}] candidate {i} validation failed: {err}")
                     raw_expression = expr
                     break
-                if not is_duplicate_expression(expr, all_expressions):
+                if not is_duplicate:
                     raw_expression = expr
                     break
                 logger.info(f"[{task_id}] candidate {i} duplicate, retry {dedup_attempt+1}")
             if raw_expression is None:
-                raw_expression = expr  # last attempt even if duplicate
+                raw_expression = last_expr  # last attempt even if duplicate
+
+            if last_attempt and last_attempt.get("expression") == raw_expression and last_attempt.get("failure_stage") == "duplicate":
+                result = {"expression": raw_expression, "status": "failed", "error": "duplicate expression", "score": 0}
+                result = _with_attempt_metadata(result, last_attempt, failed=True)
+                candidates.append(result)
+                if on_progress:
+                    on_progress(len(candidates), result)
+                continue
 
             # Validate
             err = _validate_expression(raw_expression)
             if err:
                 result = {"expression": raw_expression, "status": "failed", "error": err, "score": 0}
+                if last_attempt is None or last_attempt.get("expression") != raw_expression:
+                    last_attempt = _record_attempt(
+                        expression=raw_expression,
+                        generation_index=i,
+                        strategy_value=strategy.value,
+                        from_mutation=from_mutation,
+                        from_crossover=from_crossover,
+                        status="failed",
+                        failed=True,
+                        failure_stage="validation",
+                        failure_reason=err,
+                    )
+                result = _with_attempt_metadata(result, last_attempt, failed=True)
                 candidates.append(result)
-                trajectory.append({"expression": raw_expression, "score": 0, "strategy": strategy.value})
                 if on_progress:
                     on_progress(len(candidates), result)
                 continue
@@ -458,17 +582,69 @@ def generate_iteration_candidates(
             all_expressions.append(raw_expression)
 
             # Evaluate
-            result = _evaluate_candidate(raw_expression, params, market_df, user_id)
-            result["strategy_used"] = strategy.value
+            try:
+                result = _evaluate_candidate(raw_expression, params, market_df, user_id)
+                result["strategy_used"] = strategy.value
+                if last_attempt is None or last_attempt.get("expression") != raw_expression or last_attempt.get("failed"):
+                    last_attempt = _record_attempt(
+                        expression=raw_expression,
+                        generation_index=i,
+                        strategy_value=strategy.value,
+                        from_mutation=from_mutation,
+                        from_crossover=from_crossover,
+                    )
+                last_attempt.update({
+                    "status": "success",
+                    "failed": False,
+                    "failure_stage": None,
+                    "failure_reason": None,
+                    "entered_next_round": True,
+                    "raw_score": result.get("score", 0),
+                    "selection_score": apply_selection_penalty(result.get("score", 0), last_attempt.get("search_penalty", 0.0)),
+                })
+                if on_attempt:
+                    on_attempt(last_attempt)
+                persist_attempt(last_attempt)
+                result = _with_attempt_metadata(result, last_attempt, failed=False)
+            except Exception as e:
+                if last_attempt is None or last_attempt.get("expression") != raw_expression or last_attempt.get("failed"):
+                    last_attempt = _record_attempt(
+                        expression=raw_expression,
+                        generation_index=i,
+                        strategy_value=strategy.value,
+                        from_mutation=from_mutation,
+                        from_crossover=from_crossover,
+                    )
+                last_attempt.update({
+                    "status": "failed",
+                    "failed": True,
+                    "failure_stage": "backtest",
+                    "failure_reason": str(e),
+                    "entered_next_round": False,
+                    "raw_score": 0,
+                    "selection_score": 0,
+                })
+                if on_attempt:
+                    on_attempt(last_attempt)
+                persist_attempt(last_attempt)
+                result = {
+                    "expression": raw_expression,
+                    "status": "failed",
+                    "error": str(e),
+                    "score": 0,
+                    "strategy_used": strategy.value,
+                }
+                result = _with_attempt_metadata(result, last_attempt, failed=True)
             candidates.append(result)
 
             # Record in trajectory
-            trajectory.append({
-                "expression": raw_expression,
-                "score": result.get("score", 0),
-                "metrics": result.get("metrics", {}),
-                "strategy": strategy.value,
-            })
+            if result.get("status") == "success":
+                trajectory.append({
+                    "expression": raw_expression,
+                    "score": result.get("score", 0),
+                    "metrics": result.get("metrics", {}),
+                    "strategy": strategy.value,
+                })
 
             if on_progress:
                 on_progress(len(candidates), result)
@@ -476,12 +652,23 @@ def generate_iteration_candidates(
         except Exception as e:
             logger.error(f"[{task_id}] candidate {i} failed: {traceback.format_exc()}")
             result = {"expression": "unknown", "status": "failed", "error": str(e), "score": 0}
+            attempt = _record_attempt(
+                expression="unknown",
+                generation_index=i,
+                strategy_value="error",
+                from_mutation=False,
+                from_crossover=False,
+                status="failed",
+                failed=True,
+                failure_stage="generation",
+                failure_reason=str(e),
+            )
+            result = _with_attempt_metadata(result, attempt, failed=True)
             candidates.append(result)
-            trajectory.append({"expression": "unknown", "score": 0, "strategy": "error"})
             if on_progress:
                 on_progress(len(candidates), result)
 
-    candidates.sort(key=lambda c: (c.get("status") == "success", c.get("score", 0)), reverse=True)
+    candidates.sort(key=lambda c: (c.get("status") == "success", c.get("selection_score", c.get("score", 0))), reverse=True)
     return candidates
 
 

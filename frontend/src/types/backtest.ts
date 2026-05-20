@@ -107,6 +107,19 @@ export interface GroupReturn {
 export interface IterationCandidate {
   expression: string;
   score: number;
+  raw_score?: number;
+  selection_score?: number;
+  search_penalty?: number;
+  search_attempt?: {
+    id?: string;
+    expression_key?: string;
+    family_key?: string;
+    prior_expression_attempts?: number;
+    prior_family_attempts?: number;
+    failed?: boolean;
+    entered_next_round?: boolean;
+  };
+  strategy_used?: string;
   grade: "A" | "B" | "C" | "D";
   component_scores: Record<string, number>;
   backtest_summary: {
@@ -127,6 +140,44 @@ export interface IterationCandidate {
   report_url: string;
   status: "success" | "failed";
   error?: string;
+  failure_stage?: string;
+}
+
+export interface FactorSearchAttempt {
+  id: string;
+  task_id?: string | null;
+  parent_task_id?: string | null;
+  generation_index: number;
+  expression: string;
+  expression_key: string;
+  family_key: string;
+  scope_key?: string;
+  params?: Record<string, unknown>;
+  start_date?: string | null;
+  end_date?: string | null;
+  universe?: string | null;
+  source_strategy?: string | null;
+  from_mutation: boolean;
+  from_crossover: boolean;
+  status: string;
+  failed: boolean;
+  failure_stage?: string | null;
+  failure_reason?: string | null;
+  entered_next_round: boolean;
+  raw_score?: number | null;
+  selection_score?: number | null;
+  search_penalty: number;
+  prior_expression_attempts: number;
+  prior_family_attempts: number;
+  created_at?: string;
+}
+
+export interface FactorSearchSummary {
+  total_attempts?: number;
+  failed_attempts?: number;
+  mutation_attempts?: number;
+  crossover_attempts?: number;
+  advanced_attempts?: number;
 }
 
 export interface StockFactorInfo {
@@ -305,6 +356,8 @@ export interface Task {
   candidates?: IterationCandidate[];
   candidates_done?: number;
   candidates_total?: number;
+  search_attempts?: FactorSearchAttempt[];
+  search_summary?: FactorSearchSummary;
   selected_candidate_index?: number;
   progress?: number;
   progress_message?: string;
