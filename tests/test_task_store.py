@@ -11,9 +11,11 @@ from quantgpt.task_store import (
     check_cancelled,
     check_rate_limit,
     cleanup_tasks,
+    create_report_ticket,
     create_sse_ticket,
     sanitize_task_response,
     tasks,
+    validate_report_ticket,
     validate_sse_ticket,
 )
 
@@ -112,6 +114,36 @@ class TestSSETickets:
         ticket = create_sse_ticket("task-1", "user-1")
         validate_sse_ticket(ticket, "task-1")
         assert validate_sse_ticket(ticket, "task-1") is None
+
+
+class TestReportTickets:
+    def test_create_and_validate(self):
+        ticket = create_report_ticket("backtest_report_a.html", "user-1")
+
+        user_id = validate_report_ticket(ticket, "backtest_report_a.html")
+
+        assert user_id == "user-1"
+
+    def test_ticket_consumed_on_validation(self):
+        ticket = create_report_ticket("backtest_report_a.html", "user-1")
+
+        validate_report_ticket(ticket, "backtest_report_a.html")
+
+        assert validate_report_ticket(ticket, "backtest_report_a.html") is None
+
+    def test_wrong_filename_rejected(self):
+        ticket = create_report_ticket("backtest_report_a.html", "user-1")
+
+        assert validate_report_ticket(ticket, "backtest_report_b.html") is None
+
+    def test_expired_report_ticket_rejected(self):
+        from quantgpt.task_store import _report_tickets, _report_tickets_lock
+
+        ticket = create_report_ticket("backtest_report_a.html", "user-1")
+        with _report_tickets_lock:
+            _report_tickets[ticket]["expires"] = time.monotonic() - 1
+
+        assert validate_report_ticket(ticket, "backtest_report_a.html") is None
 
     def test_wrong_task_id_rejected(self):
         ticket = create_sse_ticket("task-1", "user-1")

@@ -2,7 +2,6 @@
 
 import hmac
 import logging
-import os
 import uuid as uuid_mod
 from datetime import datetime, timedelta, timezone
 
@@ -11,7 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth import create_admin_token, create_api_key_for_user, require_admin
+from ..auth import create_admin_token, create_api_key_for_user, get_admin_password, require_admin
 from ..db import get_db
 from ..models import ApiKey, Feedback, Task, User
 
@@ -27,9 +26,10 @@ class AdminLoginRequest(BaseModel):
 @router.post("/login")
 async def admin_login(req: AdminLoginRequest):
     """Authenticate admin with password, return JWT."""
-    expected = os.environ.get("QUANTGPT_ADMIN_PASSWORD", "")
-    if not expected:
-        raise HTTPException(status_code=503, detail="管理员密码未配置")
+    try:
+        expected = get_admin_password()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
     if not hmac.compare_digest(req.password, expected):
         raise HTTPException(status_code=401, detail="密码错误")
     token = create_admin_token()

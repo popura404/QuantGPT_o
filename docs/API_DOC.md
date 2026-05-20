@@ -49,9 +49,10 @@ python -m quantgpt --prefetch hs300 csi500
 | `DEEPSEEK_BASE_URL` | 否 | `https://api.deepseek.com/v1` | LLM API 地址 |
 | `DEEPSEEK_MODEL` | 否 | `deepseek-chat` | 模型名称 |
 | `AUTH_DISABLED` | 否 | `false` | 仅本地开发可设为 `true`；生产必须保持 `false` |
+| `QUANTGPT_ALLOW_GUEST_BACKTEST` | 否 | `false` | 是否允许未登录/guest 提交回测任务；公网或共享环境保持 `false` |
 | `JWT_SECRET_KEY` | 是 | — | JWT 签名密钥；生产使用 `openssl rand -hex 32` 生成 |
 | `QUANTGPT_MCP_HTTP_TOKEN` | 条件必填 | — | `AUTH_DISABLED=false` 且暴露 `/mcp` 或 `/mcp-sse` 时必填 |
-| `QUANTGPT_CORS_ORIGINS` | 否 | `*` | CORS 允许源,逗号分隔 |
+| `QUANTGPT_CORS_ORIGINS` | 否 | 本机开发源 | CORS 允许源,逗号分隔；建议只配置内网或可信前端域名 |
 | `QUANTGPT_ADMIN_PASSWORD` | 是 | — | 管理后台密码；生产必须使用强随机密码 |
 | `QUANTGPT_MAX_ACTIVE_TASKS` | 否 | `100` | 最大并发任务数 |
 | `QUANTGPT_TASK_TTL` | 否 | `3600` | 内存任务 TTL (秒) |
@@ -64,7 +65,9 @@ python -m quantgpt --prefetch hs300 csi500
 
 ## 认证
 
-REST API 默认需要 Bearer Token（JWT access token 或 `qgpt_` API Key）。健康检查、认证入口和只读公开页面除外。`AUTH_DISABLED=true` 只允许本地开发使用；生产必须保持 `AUTH_DISABLED=false`，并配置强 `JWT_SECRET_KEY` 与强 `QUANTGPT_ADMIN_PASSWORD`。
+REST API 默认需要 Bearer Token（JWT access token 或 `qgpt_` API Key）。健康检查、认证入口和只读公开页面除外。`AUTH_DISABLED=true` 只允许本地开发使用；生产必须保持 `AUTH_DISABLED=false`，并配置强 `JWT_SECRET_KEY` 与强 `QUANTGPT_ADMIN_PASSWORD`。未登录/guest 回测默认关闭；仅在本地演示环境可显式设置 `QUANTGPT_ALLOW_GUEST_BACKTEST=true`。
+
+部署边界：QuantGPT 建议运行在本机、VPN 或可信内网环境中，不建议直接暴露到公网。服务包含任务执行、报告读取、管理后台和 WQ BRAIN 提交能力；如必须远程访问，应使用私有网络或带认证的反向代理，并将 `QUANTGPT_CORS_ORIGINS` 限定为可信域名。
 
 ```
 Authorization: Bearer <access_token>

@@ -3,7 +3,7 @@ import { Star, Trash2, ExternalLink } from "lucide-react";
 import { useColorMode } from "../contexts/ColorModeContext";
 import type { SavedFactor } from "../api/factorLibrary";
 import { fetchFactors, deleteFactor } from "../api/factorLibrary";
-import { getReportUrl } from "../api/client";
+import ReportLink from "./ReportLink";
 
 function pct(n: number): string {
   return (n * 100).toFixed(1) + "%";
@@ -29,15 +29,13 @@ function FactorItem({
         </code>
         <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
           {factor.report_url && (
-            <a
-              href={getReportUrl(factor.report_url)}
-              target="_blank"
-              rel="noreferrer"
+            <ReportLink
+              reportUrl={factor.report_url}
               className="p-1 rounded text-gray-400 hover:text-blue-600"
               title="查看报告"
             >
               <ExternalLink className="h-3 w-3" />
-            </a>
+            </ReportLink>
           )}
           <button
             onClick={(e) => { e.stopPropagation(); if (confirm("确定删除？")) onDelete(factor.id); }}

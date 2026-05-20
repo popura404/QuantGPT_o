@@ -1,6 +1,6 @@
 import { Download, ExternalLink, Save } from "lucide-react";
-import { getReportUrl } from "../../api/client";
 import type { StrategyBacktestTaskResult, StrategyExportPayload } from "../../types/strategy";
+import ReportLink from "../ReportLink";
 
 function formatValue(value: unknown): string {
   if (typeof value === "number") return Number.isFinite(value) ? value.toFixed(4) : "-";
@@ -31,10 +31,10 @@ export default function StrategyResultPanel({ result, exportPayload, exporting, 
         <h3 className="text-sm font-semibold text-gray-900">策略结果</h3>
         <div className="flex gap-2">
           {result?.report_url && (
-            <a href={getReportUrl(result.report_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs">
+            <ReportLink reportUrl={result.report_url} className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs">
               <ExternalLink className="h-3.5 w-3.5" />
               报告
-            </a>
+            </ReportLink>
           )}
           <button type="button" onClick={onSaveRun} disabled={savingRun || !strategy} className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs disabled:opacity-50">
             <Save className="h-3.5 w-3.5" />

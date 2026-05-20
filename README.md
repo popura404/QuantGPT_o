@@ -384,7 +384,9 @@ make setup   # creates venv, installs deps, generates .env
 make run     # starts server at http://localhost:8003
 ```
 
-`.env.example` defaults to `AUTH_DISABLED=false`. Only set `AUTH_DISABLED=true` for local single-user development; production must keep authentication enabled, use a strong `JWT_SECRET_KEY`, set a strong `QUANTGPT_ADMIN_PASSWORD`, and protect any HTTP MCP exposure with `QUANTGPT_MCP_HTTP_TOKEN`.
+`.env.example` defaults to `AUTH_DISABLED=false` and `QUANTGPT_ALLOW_GUEST_BACKTEST=false`. Only set `AUTH_DISABLED=true` or enable guest backtests for local single-user development; production must keep authentication enabled, use a strong `JWT_SECRET_KEY`, set a strong `QUANTGPT_ADMIN_PASSWORD`, and protect any HTTP MCP exposure with `QUANTGPT_MCP_HTTP_TOKEN`.
+
+QuantGPT is intended for localhost or trusted internal/private networks. It can trigger long-running compute jobs and WQ BRAIN account actions, so do not expose it directly to the public Internet. If remote access is unavoidable, put it behind a private VPN or authenticated reverse proxy, keep CORS restricted to trusted origins, and keep admin credentials out of normal user flows.
 
 Add MCP configuration to Claude Code or Claude Desktop:
 

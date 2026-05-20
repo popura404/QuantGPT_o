@@ -44,6 +44,11 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task_store.main_loop = asyncio.get_running_loop()
+    from .auth import is_auth_disabled, validate_runtime_secrets
+
+    if not is_auth_disabled():
+        validate_runtime_secrets()
+
     await init_db()
     logger.info("Database initialized")
 
@@ -58,7 +63,25 @@ async def lifespan(app: FastAPI):
             await session.commit()
             logger.info(f"Cleaned up {result.rowcount} stale running tasks")
 
-    from .auth import _DEV_USER_ID, is_auth_disabled
+    from .auth import (
+        _DEV_USER_ID,
+        ADMIN_SYSTEM_USER_EMAIL,
+        ADMIN_SYSTEM_USER_ID,
+    )
+    async with _sf()() as session:
+        result = await session.execute(select(User).where(User.id == ADMIN_SYSTEM_USER_ID))
+        if not result.scalar_one_or_none():
+            session.add(
+                User(
+                    id=ADMIN_SYSTEM_USER_ID,
+                    email=ADMIN_SYSTEM_USER_EMAIL,
+                    nickname="Admin System",
+                    is_active=True,
+                    subscribe_weekly=False,
+                )
+            )
+            await session.commit()
+
     if is_auth_disabled():
         from .db import _get_session_factory
         async with _get_session_factory()() as session:
@@ -147,7 +170,8 @@ async def lifespan(app: FastAPI):
 
 # ---- App ----
 
-_cors_origins = os.environ.get("QUANTGPT_CORS_ORIGINS", "*")
+_DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://localhost:8003,http://127.0.0.1:5173,http://127.0.0.1:8003"
+_cors_origins = os.environ.get("QUANTGPT_CORS_ORIGINS", _DEFAULT_CORS_ORIGINS)
 _cors_list = [o.strip() for o in _cors_origins.split(",") if o.strip()]
 
 app = FastAPI(

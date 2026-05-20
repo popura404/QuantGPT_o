@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth import get_current_user
+from ..auth import get_current_user, require_admin
 from ..db import get_db
 from ..models import User
 from ..task_store import (
@@ -121,7 +121,7 @@ async def wq_brain_status():
 @router.get("/user-info")
 async def wq_brain_user_info(
     account: str = "primary",
-    user: User = Depends(get_current_user),
+    admin: bool = Depends(require_admin),
 ):
     if not is_configured(account):
         raise HTTPException(status_code=503, detail=f"WQ BRAIN 未配置 (account={account})")
@@ -138,7 +138,7 @@ async def list_platform_alphas(
     account: str = "primary",
     limit: int = 100,
     offset: int = 0,
-    user: User = Depends(get_current_user),
+    admin: bool = Depends(require_admin),
 ):
     """List all alphas from WQ BRAIN platform (including simulated but not submitted)."""
     if not is_configured(account):
@@ -329,7 +329,7 @@ async def submit_alpha_from_task(
 async def check_alpha_platform_status(
     alpha_id: str,
     account: str = "primary",
-    user: User = Depends(get_current_user),
+    admin: bool = Depends(require_admin),
 ):
     """Check actual platform-side alpha status (whether it's really submitted)."""
     if not is_configured(account):
@@ -348,7 +348,7 @@ async def submit_alpha_by_id(
     account: str = "primary",
     expression: str | None = None,
     submission_override_reason: str | None = None,
-    user: User = Depends(get_current_user),
+    admin: bool = Depends(require_admin),
 ):
     """Submit alpha directly by alpha_id. Polls until platform confirms or SC fails."""
     if account != "primary":
@@ -383,7 +383,7 @@ async def submit_alpha_by_id(
 async def delete_alpha(
     alpha_id: str,
     account: str = "primary",
-    user: User = Depends(get_current_user),
+    admin: bool = Depends(require_admin),
 ):
     """Delete/retire an alpha from the WQ BRAIN platform."""
     if not is_configured(account):
@@ -403,7 +403,7 @@ async def delete_alpha(
 async def unhide_alpha(
     alpha_id: str,
     account: str = "primary",
-    user: User = Depends(get_current_user),
+    admin: bool = Depends(require_admin),
 ):
     """Restore a hidden alpha on WQ BRAIN platform."""
     if not is_configured(account):

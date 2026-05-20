@@ -273,6 +273,42 @@ def validate_sse_ticket(ticket: str, task_id: str) -> str | None:
     return entry["user_id"]
 
 
+# ---- Report ticket store (short-lived, single-use) ----
+
+_report_tickets: dict[str, dict] = {}
+_report_tickets_lock = threading.Lock()
+
+
+def create_report_ticket(filename: str, user_id: str) -> str:
+    """Generate a short-lived, single-use ticket for report downloads."""
+    ticket = secrets.token_urlsafe()
+    with _report_tickets_lock:
+        now = time.monotonic()
+        expired = [k for k, v in _report_tickets.items() if v["expires"] < now]
+        for k in expired:
+            _report_tickets.pop(k, None)
+
+        _report_tickets[ticket] = {
+            "filename": filename,
+            "user_id": user_id,
+            "expires": now + 60,
+        }
+    return ticket
+
+
+def validate_report_ticket(ticket: str, filename: str) -> str | None:
+    """Validate and consume a report download ticket."""
+    with _report_tickets_lock:
+        entry = _report_tickets.pop(ticket, None)
+    if entry is None:
+        return None
+    if entry["filename"] != filename:
+        return None
+    if time.monotonic() > entry["expires"]:
+        return None
+    return entry["user_id"]
+
+
 def persist_report_to_db(task_id: str, user_id: str, report_filename: str):
     from .db import _get_session_factory
 

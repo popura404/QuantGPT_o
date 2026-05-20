@@ -189,9 +189,13 @@ async def test_strategy_post_mvp_result_endpoints(client, auth_headers):
     }
 
     export = await client.post("/api/v1/strategy/export", json={"result": result}, headers=auth_headers)
-    diagnosis = await client.post("/api/v1/strategy/diagnose", json={"result": result})
-    anti = await client.post("/api/v1/strategy/anti-overfit", json={"result": result})
-    rolling = await client.post("/api/v1/strategy/rolling-validation", json={"result": result, "windows": 1})
+    diagnosis = await client.post("/api/v1/strategy/diagnose", json={"result": result}, headers=auth_headers)
+    anti = await client.post("/api/v1/strategy/anti-overfit", json={"result": result}, headers=auth_headers)
+    rolling = await client.post(
+        "/api/v1/strategy/rolling-validation",
+        json={"result": result, "windows": 1},
+        headers=auth_headers,
+    )
 
     assert export.status_code == 200
     assert export.json()["signals"][0]["stock_code"] == "A"
@@ -283,7 +287,52 @@ async def test_strategy_backtest_auth_disabled_allows_dev_user(client, monkeypat
     assert task["status"] == "completed"
 
 
-async def test_strategy_template_and_optimizer_endpoints(client):
+async def test_strategy_sync_result_endpoints_reject_anonymous(client):
+    spec = example_strategy_spec()
+    result = {
+        "spec": spec,
+        "strategy_returns": [{"date": "2024-01-03", "value": 0.01}],
+        "target_weights": [{"trade_date": "2024-01-02", "stock_code": "A", "target_weight": 0.5}],
+        "validation_provenance": _validation_provenance(),
+    }
+
+    endpoints = [
+        ("/api/v1/strategy/export", {"result": result}),
+        ("/api/v1/strategy/diagnose", {"result": result}),
+        ("/api/v1/strategy/anti-overfit", {"result": result}),
+        ("/api/v1/strategy/rolling-validation", {"result": result, "windows": 1}),
+        (
+            "/api/v1/strategy/optimize",
+            {
+                "spec": spec,
+                "signals": [{"trade_date": "2024-01-02", "stock_code": "A", "score": 1.0}],
+            },
+        ),
+    ]
+
+    for path, payload in endpoints:
+        response = await client.post(path, json=payload)
+        assert response.status_code == 401
+
+
+async def test_strategy_result_endpoint_rejects_oversized_payload(client, auth_headers):
+    response = await client.post(
+        "/api/v1/strategy/diagnose",
+        json={
+            "result": {
+                "strategy_returns": [
+                    {"date": "2024-01-03", "value": 0.01}
+                    for _ in range(10_001)
+                ]
+            }
+        },
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 422
+
+
+async def test_strategy_template_and_optimizer_endpoints(client, auth_headers):
     template = await client.post(
         "/api/v1/strategy/templates/momentum_top_n_v1/instantiate",
         json={"overrides": {"signal_rules.top_n": 3, "risk_rules.max_asset_weight": 0.4}},
@@ -301,6 +350,7 @@ async def test_strategy_template_and_optimizer_endpoints(client):
                 {"trade_date": "2024-01-02", "stock_code": "B", "score": 1.0},
             ],
         },
+        headers=auth_headers,
     )
     assert optimized.status_code == 200
     assert max(row["target_weight"] for row in optimized.json()["target_weights"]) <= 0.4

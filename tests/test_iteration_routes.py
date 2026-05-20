@@ -2,7 +2,7 @@
 
 import pytest
 
-from quantgpt.task_store import tasks
+from quantgpt.task_store import REPORT_DIR, tasks
 from quantgpt.validation.promotion import build_factor_validation_provenance, research_only_provenance
 
 pytestmark = pytest.mark.asyncio
@@ -166,3 +166,37 @@ async def test_select_candidate_still_rejects_high_selection_score_research_only
 
     assert resp.status_code == 400
     assert resp.json()["detail"]["error_code"] == "CANDIDATE_PROMOTION_BLOCKED"
+
+
+async def test_report_ticket_allows_url_without_bearer_token(client, test_user, auth_headers):
+    report_dir = REPORT_DIR / str(test_user.id)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_file = report_dir / "backtest_report_ticket.html"
+    report_file.write_text("<html>ticket report</html>", encoding="utf-8")
+
+    ticket_resp = await client.post("/api/v1/reports/backtest_report_ticket.html/ticket", headers=auth_headers)
+    assert ticket_resp.status_code == 200
+
+    report_resp = await client.get(
+        "/api/v1/reports/backtest_report_ticket.html",
+        params={"ticket": ticket_resp.json()["ticket"]},
+    )
+
+    assert report_resp.status_code == 200
+    assert "ticket report" in report_resp.text
+    assert "script-src 'none'" in report_resp.headers["content-security-policy"]
+
+
+async def test_report_ticket_is_single_use(client, test_user, auth_headers):
+    report_dir = REPORT_DIR / str(test_user.id)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_file = report_dir / "backtest_report_ticket_once.html"
+    report_file.write_text("<html>ticket once</html>", encoding="utf-8")
+
+    ticket_resp = await client.post("/api/v1/reports/backtest_report_ticket_once.html/ticket", headers=auth_headers)
+    ticket = ticket_resp.json()["ticket"]
+    first = await client.get("/api/v1/reports/backtest_report_ticket_once.html", params={"ticket": ticket})
+    second = await client.get("/api/v1/reports/backtest_report_ticket_once.html", params={"ticket": ticket})
+
+    assert first.status_code == 200
+    assert second.status_code == 401

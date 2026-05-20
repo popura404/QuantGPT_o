@@ -31,6 +31,13 @@ class TestAdminLogin:
             })
             assert resp.status_code == 503
 
+    async def test_example_admin_password_returns_503(self, client):
+        with patch.dict(os.environ, {"QUANTGPT_ADMIN_PASSWORD": "replace_with_a_strong_admin_password"}):
+            resp = await client.post("/api/v1/admin/login", json={
+                "password": "replace_with_a_strong_admin_password",
+            })
+            assert resp.status_code == 503
+
 
 class TestAdminOverview:
     async def test_requires_admin_token(self, client, test_user, auth_headers):

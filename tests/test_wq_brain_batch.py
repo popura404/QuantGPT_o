@@ -5,6 +5,9 @@ from unittest.mock import patch
 
 import pytest
 
+from quantgpt.auth import ADMIN_SYSTEM_USER_ID, create_admin_token
+from quantgpt.task_store import tasks
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -110,6 +113,49 @@ class TestBatchSubmitCreatesTask:
             assert resp.status_code == 202
             data = resp.json()
             assert data["total_combinations"] == 1 * 2 * 1 * 2
+
+
+class TestBatchSubmitByIdAuth:
+    async def test_batch_submit_by_id_requires_admin(self, client, test_user, auth_headers):
+        with patch.dict(os.environ, {"WQ_BRAIN_EMAIL": "a@b.com", "WQ_BRAIN_PASSWORD": "pw"}):
+            resp = await client.post(
+                "/api/v1/wq-brain/batch-submit-by-id",
+                json={"alpha_ids": ["alpha-1"]},
+                headers=auth_headers,
+            )
+
+        assert resp.status_code == 403
+
+    async def test_admin_batch_submit_by_id_creates_admin_task(self, client):
+        admin_headers = {"Authorization": f"Bearer {create_admin_token()}"}
+        with (
+            patch.dict(os.environ, {"WQ_BRAIN_EMAIL": "a@b.com", "WQ_BRAIN_PASSWORD": "pw"}),
+            patch("quantgpt.routes.wq_brain_batch._run_batch_submit_by_id"),
+        ):
+            resp = await client.post(
+                "/api/v1/wq-brain/batch-submit-by-id",
+                json={"alpha_ids": ["alpha-1"], "submission_override_reason": "admin review"},
+                headers=admin_headers,
+            )
+
+        assert resp.status_code == 202
+        task_id = resp.json()["task_id"]
+        assert tasks[task_id]["user_id"] == str(ADMIN_SYSTEM_USER_ID)
+
+    async def test_platform_batch_status_and_finalize_require_admin(self, client, test_user, auth_headers):
+        status_resp = await client.post(
+            "/api/v1/wq-brain/batch-alpha-status",
+            json={"alpha_ids": ["alpha-1"]},
+            headers=auth_headers,
+        )
+        finalize_resp = await client.post(
+            "/api/v1/wq-brain/batch-finalize",
+            json={"alpha_ids": ["alpha-1"]},
+            headers=auth_headers,
+        )
+
+        assert status_resp.status_code == 403
+        assert finalize_resp.status_code == 403
 
 
 class TestBatchRequestModel:

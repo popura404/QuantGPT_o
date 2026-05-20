@@ -1,8 +1,8 @@
 import { useState } from "react";
 import type { Task, IterationCandidate } from "../types/backtest";
-import { getReportUrl } from "../api/client";
 import { pct, num } from "../utils/format";
 import { useColorMode } from "../contexts/ColorModeContext";
+import ReportLink from "./ReportLink";
 
 interface Props {
   parentTaskId: string;
@@ -160,14 +160,12 @@ function CandidateRow({
                 <span className="font-medium">{num(candidate.report_metrics.sortino)}</span>
               </div>
               <div>
-                <a
-                  href={getReportUrl(candidate.report_url)}
-                  target="_blank"
-                  rel="noreferrer"
+                <ReportLink
+                  reportUrl={candidate.report_url}
                   className={isDark ? "text-amber-400 hover:underline" : "text-blue-600 hover:underline"}
                 >
                   查看报告
-                </a>
+                </ReportLink>
               </div>
             </div>
             <div className={`mt-2 text-xs font-mono break-all ${isDark ? "text-gray-400" : "text-gray-500"}`}>

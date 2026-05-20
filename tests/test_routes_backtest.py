@@ -195,6 +195,28 @@ class TestCancelTask:
 
 
 class TestAutoBacktestValidation:
+    async def test_guest_backtest_is_disabled_by_default(self, client, monkeypatch):
+        monkeypatch.delenv("QUANTGPT_ALLOW_GUEST_BACKTEST", raising=False)
+
+        resp = await client.post("/api/v1/auto_backtest", json={
+            "prompt": "close",
+        })
+
+        assert resp.status_code == 401
+        assert "Guest backtest is disabled" in resp.json()["detail"]
+
+    async def test_guest_backtest_can_be_explicitly_enabled(self, client, monkeypatch, auto_backtest_fakes):
+        monkeypatch.setenv("QUANTGPT_ALLOW_GUEST_BACKTEST", "true")
+
+        resp = await client.post("/api/v1/auto_backtest", json={
+            "prompt": "close",
+        })
+
+        assert resp.status_code == 202
+        task = tasks[resp.json()["task_id"]]
+        assert task["user_id"] == GUEST_USER_ID
+        assert task["params"]["universe"] == "small_scale"
+
     async def test_empty_prompt_rejected(self, client, test_user, auth_headers):
         resp = await client.post("/api/v1/auto_backtest", json={
             "prompt": "",

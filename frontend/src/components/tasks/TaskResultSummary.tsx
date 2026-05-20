@@ -1,7 +1,7 @@
 import { ExternalLink } from "lucide-react";
-import { getReportUrl } from "../../api/client";
 import { useColorMode } from "../../contexts/ColorModeContext";
 import type { BacktestResult, Task } from "../../types/backtest";
+import ReportLinkBase from "../ReportLink";
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -170,14 +170,12 @@ function JsonBlock({ title, value }: { title: string; value: unknown }) {
 
 function ReportLink({ href }: { href: string }) {
   return (
-    <a
-      href={getReportUrl(href)}
-      target="_blank"
-      rel="noopener noreferrer"
+    <ReportLinkBase
+      reportUrl={href}
       className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
     >
       <ExternalLink className="h-4 w-4" />
       打开报告
-    </a>
+    </ReportLinkBase>
   );
 }

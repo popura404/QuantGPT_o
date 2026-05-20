@@ -9,7 +9,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from ..auth import get_current_user
+from ..auth import ADMIN_SYSTEM_USER_ID, get_current_user, require_admin
 from ..models import User
 from ..task_store import (
     MAX_ACTIVE_TASKS,
@@ -372,7 +372,7 @@ def _run_batch_submit_by_id(
 async def wq_brain_batch_submit_by_id(
     req: BatchSubmitByIdRequest,
     request: Request,
-    user: User = Depends(get_current_user),
+    admin: bool = Depends(require_admin),
 ):
     """Batch submit multiple already-simulated alphas by their alpha_id.
 
@@ -389,7 +389,7 @@ async def wq_brain_batch_submit_by_id(
         raise HTTPException(status_code=429, detail="请求过于频繁")
 
     task_id = uuid.uuid4().hex[:12]
-    user_id = str(user.id)
+    user_id = str(ADMIN_SYSTEM_USER_ID)
 
     with tasks_lock:
         tasks[task_id] = {
@@ -430,8 +430,8 @@ async def wq_brain_batch_submit_by_id(
 @router.post("/batch-alpha-status", summary="批量查询因子平台状态")
 async def wq_brain_batch_alpha_status(
     req: BatchAlphaStatusRequest,
-    user: User = Depends(get_current_user),
     account: str = "primary",
+    admin: bool = Depends(require_admin),
 ):
     """Check platform status of multiple alphas in one call.
 
@@ -455,7 +455,7 @@ async def wq_brain_batch_alpha_status(
 @router.post("/batch-finalize", summary="批量查询 SC 检查最终结果")
 async def wq_brain_batch_finalize(
     req: BatchFinalizeRequest,
-    user: User = Depends(get_current_user),
+    admin: bool = Depends(require_admin),
 ):
     """Query final SC check results for previously submitted alphas.
 
@@ -469,7 +469,7 @@ async def wq_brain_batch_finalize(
     if not client.authenticate():
         raise HTTPException(status_code=502, detail="WQ BRAIN 认证失败")
 
-    result = _finalize_alpha_statuses(client, req.alpha_ids, user_id=str(user.id))
+    result = _finalize_alpha_statuses(client, req.alpha_ids, user_id=str(ADMIN_SYSTEM_USER_ID))
     client.close()
 
     return result

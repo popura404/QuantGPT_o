@@ -1,6 +1,6 @@
 import { ExternalLink, RefreshCw } from "lucide-react";
-import { getReportUrl } from "../../api/client";
 import type { StrategyRunRecord } from "../../types/strategy";
+import ReportLink from "../ReportLink";
 
 interface Props {
   runs: StrategyRunRecord[];
@@ -24,10 +24,10 @@ export default function StrategyRunHistory({ runs, loading, onRefresh }: Props) 
             <div className="font-mono text-xs text-gray-500">{run.task_id ?? run.id}</div>
             <div className="mt-1 text-xs text-gray-400">{run.created_at ?? "-"}</div>
             {run.report_url && (
-              <a href={getReportUrl(run.report_url)} target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs text-blue-700">
+              <ReportLink reportUrl={run.report_url} className="mt-2 inline-flex items-center gap-1 text-xs text-blue-700">
                 <ExternalLink className="h-3 w-3" />
                 报告
-              </a>
+              </ReportLink>
             )}
           </div>
         ))}

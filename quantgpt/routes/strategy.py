@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -10,7 +11,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,6 +48,48 @@ from ..task_store import (
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/strategy", tags=["strategy"])
 
+MAX_STRATEGY_RESULT_BYTES = 2_000_000
+MAX_STRATEGY_SERIES_ROWS = 10_000
+MAX_STRATEGY_OPTIMIZE_SIGNALS = 10_000
+MAX_STRATEGY_SPEC_BYTES = 250_000
+
+
+def _json_payload_size(value: object) -> int:
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8"))
+
+
+def _ensure_payload_size(value: object, *, label: str, max_bytes: int) -> None:
+    if _json_payload_size(value) > max_bytes:
+        raise ValueError(f"{label} payload is too large")
+
+
+def _ensure_list_limit(payload: dict, field: str, max_items: int) -> None:
+    value = payload.get(field)
+    if isinstance(value, list) and len(value) > max_items:
+        raise ValueError(f"{field} contains too many rows")
+
+
+def _validate_strategy_result_payload(value: dict) -> dict:
+    _ensure_payload_size(value, label="strategy result", max_bytes=MAX_STRATEGY_RESULT_BYTES)
+    for field in (
+        "strategy_returns",
+        "target_weights",
+        "cash_weights",
+        "turnover_by_rebalance",
+        "cost_by_rebalance",
+        "latest_holdings",
+        "risk_logs",
+        "validation_issues",
+    ):
+        _ensure_list_limit(value, field, MAX_STRATEGY_SERIES_ROWS)
+    return value
+
+
+def _check_strategy_sync_rate_limit(request: Request) -> None:
+    client_ip = request.client.host if request.client else "unknown"
+    if not check_rate_limit(client_ip):
+        raise HTTPException(status_code=429, detail="请求过于频繁，请稍后再试")
+
 
 class StrategyValidateRequest(BaseModel):
     spec: dict
@@ -64,9 +107,13 @@ class StrategyBacktestRequestBody(BaseModel):
 class StrategyResultRequest(BaseModel):
     result: dict
 
+    @field_validator("result")
+    @classmethod
+    def validate_result_payload(cls, value: dict) -> dict:
+        return _validate_strategy_result_payload(value)
 
-class StrategyRollingValidationRequest(BaseModel):
-    result: dict
+
+class StrategyRollingValidationRequest(StrategyResultRequest):
     windows: int = Field(3, ge=1, le=12)
 
 
@@ -90,8 +137,20 @@ class StrategyTemplateInstantiateRequest(BaseModel):
 
 
 class StrategyOptimizeRequest(BaseModel):
-    signals: list[dict]
+    signals: list[dict] = Field(..., min_length=1, max_length=MAX_STRATEGY_OPTIMIZE_SIGNALS)
     spec: dict
+
+    @field_validator("signals")
+    @classmethod
+    def validate_signals_payload(cls, value: list[dict]) -> list[dict]:
+        _ensure_payload_size(value, label="signals", max_bytes=MAX_STRATEGY_RESULT_BYTES)
+        return value
+
+    @field_validator("spec")
+    @classmethod
+    def validate_spec_payload(cls, value: dict) -> dict:
+        _ensure_payload_size(value, label="strategy spec", max_bytes=MAX_STRATEGY_SPEC_BYTES)
+        return value
 
 
 @router.get("/markets")
@@ -175,8 +234,9 @@ async def strategy_backtest(
 
 
 @router.post("/export")
-def strategy_export(req: StrategyResultRequest, user: User = Depends(get_current_user)):
+def strategy_export(req: StrategyResultRequest, request: Request, user: User = Depends(get_current_user)):
     del user
+    _check_strategy_sync_rate_limit(request)
     try:
         return export_strategy_candidate_payload(req.result)
     except Exception as exc:
@@ -184,7 +244,9 @@ def strategy_export(req: StrategyResultRequest, user: User = Depends(get_current
 
 
 @router.post("/diagnose")
-def strategy_diagnose(req: StrategyResultRequest):
+def strategy_diagnose(req: StrategyResultRequest, request: Request, user: User = Depends(get_current_user)):
+    del user
+    _check_strategy_sync_rate_limit(request)
     try:
         return diagnose_strategy_payload(req.result)
     except Exception as exc:
@@ -192,7 +254,9 @@ def strategy_diagnose(req: StrategyResultRequest):
 
 
 @router.post("/anti-overfit")
-def strategy_anti_overfit(req: StrategyResultRequest):
+def strategy_anti_overfit(req: StrategyResultRequest, request: Request, user: User = Depends(get_current_user)):
+    del user
+    _check_strategy_sync_rate_limit(request)
     try:
         return run_strategy_anti_overfit_payload(req.result)
     except Exception as exc:
@@ -200,7 +264,9 @@ def strategy_anti_overfit(req: StrategyResultRequest):
 
 
 @router.post("/rolling-validation")
-def strategy_rolling_validation(req: StrategyRollingValidationRequest):
+def strategy_rolling_validation(req: StrategyRollingValidationRequest, request: Request, user: User = Depends(get_current_user)):
+    del user
+    _check_strategy_sync_rate_limit(request)
     try:
         return run_strategy_rolling_validation_payload(req.result, windows=req.windows)
     except Exception as exc:
@@ -208,7 +274,9 @@ def strategy_rolling_validation(req: StrategyRollingValidationRequest):
 
 
 @router.post("/optimize")
-def strategy_optimize(req: StrategyOptimizeRequest):
+def strategy_optimize(req: StrategyOptimizeRequest, request: Request, user: User = Depends(get_current_user)):
+    del user
+    _check_strategy_sync_rate_limit(request)
     try:
         return optimize_candidate_weights_payload(req.signals, req.spec)
     except Exception as exc:

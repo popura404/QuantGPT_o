@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ExternalLink, Send } from "lucide-react";
-import { getReportUrl } from "../../api/client";
 import type { Task, WQBrainTaskResult } from "../../types/backtest";
+import ReportLink from "../ReportLink";
 import TaskDetailDrawer from "../tasks/TaskDetailDrawer";
 import TaskProgressPanel from "../tasks/TaskProgressPanel";
 import WQBrainPreflightPanel from "./WQBrainPreflightPanel";
@@ -61,10 +61,10 @@ export default function WQBrainTaskPanel({ task, submitting, submitResult, onFor
           共享详情
         </button>
         {typeof result?.report_url === "string" && (
-          <a href={getReportUrl(result.report_url)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-md border border-gray-300 px-3 py-2 text-sm">
+          <ReportLink reportUrl={result.report_url} className="inline-flex items-center gap-2 rounded-md border border-gray-300 px-3 py-2 text-sm">
             <ExternalLink className="h-4 w-4" />
             报告
-          </a>
+          </ReportLink>
         )}
       </div>
       <TaskDetailDrawer task={task} open={drawerOpen} onClose={() => setDrawerOpen(false)} />

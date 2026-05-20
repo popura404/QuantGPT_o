@@ -91,6 +91,9 @@ QUANTGPT_ADMIN_PASSWORD=（使用密码管理器生成的长随机密码）
 # 如需暴露 HTTP MCP (/mcp 或 /mcp-sse)，还必须配置独立 Bearer Token：
 QUANTGPT_MCP_HTTP_TOKEN=（openssl rand -hex 32 生成）
 
+# CORS 只配置本机、VPN 或可信内网前端地址；不要使用公网通配配置
+QUANTGPT_CORS_ORIGINS=http://localhost:5173,http://localhost:8003
+
 # 邮箱登录需要配置 SMTP：
 # SMTP_HOST=smtp.example.com
 # SMTP_PORT=465
@@ -120,6 +123,10 @@ QUANTGPT_MCP_HTTP_TOKEN=（openssl rand -hex 32 生成）
 ```
 
 推荐使用上面的 stdio MCP，只暴露给本机进程。HTTP 服务也挂载了 `/mcp` 和 `/mcp-sse`，但生产环境不要直接公网暴露；如需反向代理访问，必须保持 `AUTH_DISABLED=false`，配置 `QUANTGPT_MCP_HTTP_TOKEN`，并让客户端发送 `Authorization: Bearer <QUANTGPT_MCP_HTTP_TOKEN>`。
+
+### 公网暴露边界
+
+QuantGPT 适合部署在本机、VPN 或可信内网中，不建议直接暴露在公网。它包含管理后台、任务执行、报告读取、HTTP MCP 和 WQ BRAIN 提交能力；公网部署会显著放大凭证泄露、任务滥用和账号误操作风险。确需跨机器访问时，建议使用 VPN、零信任隧道或带身份认证的反向代理，并保持 `AUTH_DISABLED=false`、限制 `QUANTGPT_CORS_ORIGINS`、配置强 `QUANTGPT_ADMIN_PASSWORD` 和独立 `QUANTGPT_MCP_HTTP_TOKEN`。
 
 配置文件位置：
 - Claude Code：项目根目录 `.mcp.json`

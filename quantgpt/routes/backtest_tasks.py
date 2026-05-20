@@ -86,6 +86,10 @@ def _ensure_utc(dt: datetime) -> datetime:
     return dt
 
 
+def is_guest_backtest_enabled() -> bool:
+    return os.environ.get("QUANTGPT_ALLOW_GUEST_BACKTEST", "false").lower() in ("1", "true", "yes")
+
+
 router = APIRouter()
 
 TERMINAL_TASK_STATUSES = ("completed", "failed", "cancelled", "iteration_completed")
@@ -679,6 +683,9 @@ async def auto_backtest(
     task_id = uuid.uuid4().hex[:12]
     user_id = str(user.id) if user else GUEST_USER_ID
     session_id = req.session_id
+
+    if is_guest and not is_guest_backtest_enabled():
+        raise HTTPException(status_code=401, detail="Guest backtest is disabled; please sign in")
 
     if is_guest:
         req.universe = "small_scale"

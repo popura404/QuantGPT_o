@@ -98,6 +98,20 @@ class TestDecodeToken:
         with pytest.raises(HTTPException):
             decode_token(tampered)
 
+    def test_short_jwt_secret_is_rejected(self):
+        with (
+            patch.dict(os.environ, {"JWT_SECRET_KEY": "short"}),
+            pytest.raises(RuntimeError, match="at least 32"),
+        ):
+            create_guest_token()
+
+    def test_example_jwt_secret_is_rejected(self):
+        with (
+            patch.dict(os.environ, {"JWT_SECRET_KEY": "replace_with_a_random_64_char_hex_string"}),
+            pytest.raises(RuntimeError, match="example placeholder"),
+        ):
+            create_guest_token()
+
 
 class TestEmailRateLimit:
     def setup_method(self):
@@ -129,11 +143,13 @@ class TestExtractToken:
             query_params = {}
         assert _extract_token(FakeRequest()) == "abc123"
 
-    def test_query_param_fallback(self):
+    def test_query_param_fallback_requires_explicit_opt_in(self):
         class FakeRequest:
             headers = {}
             query_params = {"token": "qp_token"}
-        assert _extract_token(FakeRequest()) == "qp_token"
+        with pytest.raises(HTTPException, match="未提供"):
+            _extract_token(FakeRequest())
+        assert _extract_token(FakeRequest(), allow_query_param=True) == "qp_token"
 
     def test_no_token_raises(self):
         class FakeRequest:

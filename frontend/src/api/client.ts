@@ -225,7 +225,6 @@ export function streamTask(
 }
 
 export function getReportUrl(reportUrl: string): string {
-  const token = getAccessToken();
   const url = /^https?:\/\//i.test(reportUrl) ? reportUrl : `${BASE}${reportUrl}`;
   try {
     const resolved = new URL(url, window.location.origin);
@@ -233,13 +232,39 @@ export function getReportUrl(reportUrl: string): string {
   } catch {
     return url;
   }
-  if (!token || /[?&]token=/.test(url)) return url;
+  return url;
+}
 
+function appendQueryParam(url: string, key: string, value: string): string {
   const hashIndex = url.indexOf("#");
   const baseUrl = hashIndex >= 0 ? url.slice(0, hashIndex) : url;
   const hash = hashIndex >= 0 ? url.slice(hashIndex) : "";
   const sep = baseUrl.includes("?") ? "&" : "?";
-  return `${baseUrl}${sep}token=${encodeURIComponent(token)}${hash}`;
+  return `${baseUrl}${sep}${key}=${encodeURIComponent(value)}${hash}`;
+}
+
+function getReportFilename(reportUrl: string): string | null {
+  try {
+    const resolved = new URL(getReportUrl(reportUrl), window.location.origin);
+    if (resolved.origin !== window.location.origin) return null;
+    const match = resolved.pathname.match(/^\/api\/v1\/reports\/([^/]+)$/);
+    return match ? decodeURIComponent(match[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function createReportUrl(reportUrl: string): Promise<string> {
+  const url = getReportUrl(reportUrl);
+  const filename = getReportFilename(reportUrl);
+  if (!filename || _authDisabled) return url;
+
+  const res = await authFetch(`${BASE}/api/v1/reports/${encodeURIComponent(filename)}/ticket`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  const data = await res.json();
+  return appendQueryParam(url, "ticket", data.ticket as string);
 }
 
 export async function fetchTasks(

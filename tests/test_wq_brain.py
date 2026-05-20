@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from quantgpt.auth import create_admin_token
 from quantgpt.wq_brain_client import WQBrainClient, configured_accounts, get_client, is_configured
 
 pytestmark = pytest.mark.asyncio
@@ -163,6 +164,19 @@ class TestSubmittedAlphasEndpoint:
         assert data["alphas"] == []
 
 
+class TestWQBrainSharedAccountEndpoints:
+    async def test_platform_account_routes_require_admin(self, client, test_user, auth_headers):
+        responses = [
+            await client.get("/api/v1/wq-brain/user-info", headers=auth_headers),
+            await client.get("/api/v1/wq-brain/platform-alphas", headers=auth_headers),
+            await client.get("/api/v1/wq-brain/alpha-status/alpha-1", headers=auth_headers),
+            await client.delete("/api/v1/wq-brain/alpha/alpha-1", headers=auth_headers),
+            await client.post("/api/v1/wq-brain/alpha/alpha-1/unhide", headers=auth_headers),
+        ]
+
+        assert [resp.status_code for resp in responses] == [403, 403, 403, 403, 403]
+
+
 class TestSubmitAlphaEndpoint:
     async def test_submit_alpha_requires_auth(self, client):
         resp = await client.post("/api/v1/wq-brain/fake-task/submit-alpha")
@@ -173,21 +187,29 @@ class TestSubmitAlphaEndpoint:
             resp = await client.post("/api/v1/wq-brain/nonexistent/submit-alpha", headers=auth_headers)
             assert resp.status_code == 404
 
-    async def test_direct_submit_by_id_requires_local_preflight(self, client, test_user, auth_headers):
+    async def test_direct_submit_by_id_requires_admin(self, client, test_user, auth_headers):
         with patch.dict(os.environ, {"WQ_BRAIN_EMAIL": "a@b.com", "WQ_BRAIN_PASSWORD": "pw"}, clear=False):
             resp = await client.post("/api/v1/wq-brain/submit-by-id/alpha-1", headers=auth_headers)
+
+        assert resp.status_code == 403
+
+    async def test_direct_submit_by_id_requires_local_preflight_for_admin(self, client):
+        admin_headers = {"Authorization": f"Bearer {create_admin_token()}"}
+        with patch.dict(os.environ, {"WQ_BRAIN_EMAIL": "a@b.com", "WQ_BRAIN_PASSWORD": "pw"}, clear=False):
+            resp = await client.post("/api/v1/wq-brain/submit-by-id/alpha-1", headers=admin_headers)
 
         assert resp.status_code == 400
         detail = resp.json()["detail"]
         assert detail["error_code"] == "LOCAL_PREFLIGHT_BLOCKED"
         assert detail["submission_preflight"]["status"] == "unavailable"
 
-    async def test_direct_submit_by_id_rejects_local_wq_scope_mismatch(self, client, test_user, auth_headers):
+    async def test_direct_submit_by_id_rejects_local_wq_scope_mismatch_for_admin(self, client):
+        admin_headers = {"Authorization": f"Bearer {create_admin_token()}"}
         with patch.dict(os.environ, {"WQ_BRAIN_EMAIL": "a@b.com", "WQ_BRAIN_PASSWORD": "pw"}, clear=False):
             resp = await client.post(
                 "/api/v1/wq-brain/submit-by-id/alpha-1",
                 params={"expression": "rank(close)"},
-                headers=auth_headers,
+                headers=admin_headers,
             )
 
         assert resp.status_code == 400

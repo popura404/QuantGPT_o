@@ -22,10 +22,18 @@ from .models import ApiKey, User
 logger = logging.getLogger(__name__)
 
 _JWT_ALGORITHM = "HS256"
+_JWT_SECRET_PLACEHOLDERS = frozenset({
+    "replace_with_a_random_64_char_hex_string",
+})
+_ADMIN_PASSWORD_PLACEHOLDERS = frozenset({
+    "replace_with_a_strong_admin_password",
+})
 
 # ---- Dev mode (auth bypass) ----
 
 _DEV_USER_ID = _uuid_mod.UUID("00000000-0000-0000-0000-000000000099")
+ADMIN_SYSTEM_USER_ID = _uuid_mod.UUID("00000000-0000-0000-0000-000000000003")
+ADMIN_SYSTEM_USER_EMAIL = "admin@system.internal"
 
 
 def is_auth_disabled() -> bool:
@@ -46,7 +54,26 @@ def _get_secret() -> str:
     secret = os.environ.get("JWT_SECRET_KEY", "")
     if not secret:
         raise RuntimeError("JWT_SECRET_KEY environment variable is not set")
+    if secret in _JWT_SECRET_PLACEHOLDERS:
+        raise RuntimeError("JWT_SECRET_KEY is still set to the example placeholder")
+    if len(secret) < 32:
+        raise RuntimeError("JWT_SECRET_KEY must be at least 32 characters")
     return secret
+
+
+def get_admin_password() -> str:
+    password = os.environ.get("QUANTGPT_ADMIN_PASSWORD", "")
+    if not password:
+        raise RuntimeError("QUANTGPT_ADMIN_PASSWORD environment variable is not set")
+    if password in _ADMIN_PASSWORD_PLACEHOLDERS:
+        raise RuntimeError("QUANTGPT_ADMIN_PASSWORD is still set to the example placeholder")
+    return password
+
+
+def validate_runtime_secrets() -> None:
+    """Fail fast on production auth secrets copied from the example config."""
+    _get_secret()
+    get_admin_password()
 
 
 def create_access_token(user_id: UUID, email: str) -> str:
@@ -96,13 +123,14 @@ def check_email_rate_limit(email: str) -> None:
         _email_rate[email] = now
 
 
-def _extract_token(request: Request) -> str:
+def _extract_token(request: Request, *, allow_query_param: bool = False) -> str:
     """Extract Bearer token from Authorization header or query param."""
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         return auth[7:]
-    # Fallback for SSE (EventSource can't set headers)
-    token = request.query_params.get("token")
+    # Fallback only for legacy/SSE callers that explicitly opt in. Report
+    # downloads use short-lived tickets instead of bearer tokens in URLs.
+    token = request.query_params.get("token") if allow_query_param else None
     if token:
         return token
     raise HTTPException(status_code=401, detail="未提供认证信息")

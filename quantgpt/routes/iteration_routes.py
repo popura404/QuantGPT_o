@@ -27,17 +27,29 @@ from ..task_store import (
     active_task_count,
     check_rate_limit,
     cleanup_tasks,
+    create_report_ticket,
     main_loop,
     persist_report_to_db,
     persist_task_to_db,
     tasks,
     tasks_lock,
+    validate_report_ticket,
 )
 from ..validation.promotion import BOUNDARY_CANDIDATE, evaluate_promotion_provenance
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+REPORT_CSP = (
+    "default-src 'self'; "
+    "script-src 'none'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "object-src 'none'; "
+    "base-uri 'none'; "
+    "frame-ancestors 'self'"
+)
 
 
 class IterateRequest(BaseModel):
@@ -331,13 +343,21 @@ async def select_candidate(
 @router.get("/api/v1/reports/{filename}", summary="下载 HTML 回测报告")
 async def get_report(
     filename: str,
-    user: User = Depends(get_current_user),
+    request: Request,
+    ticket: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     if not SAFE_FILENAME_RE.match(filename):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    user_id = str(user.id)
+    if ticket:
+        user_id = validate_report_ticket(ticket, filename)
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid or expired report ticket")
+    else:
+        user = await get_current_user(request, db)
+        user_id = str(user.id)
+
     user_report_dir = REPORT_DIR / user_id
     file_path = (user_report_dir / filename).resolve()
 
@@ -347,4 +367,18 @@ async def get_report(
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="Report not found")
 
-    return FileResponse(str(file_path), media_type="text/html")
+    return FileResponse(
+        str(file_path),
+        media_type="text/html",
+        headers={"Content-Security-Policy": REPORT_CSP},
+    )
+
+
+@router.post("/api/v1/reports/{filename}/ticket", summary="创建 HTML 报告下载票据")
+async def create_report_download_ticket(
+    filename: str,
+    user: User = Depends(get_current_user),
+):
+    if not SAFE_FILENAME_RE.match(filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    return {"ticket": create_report_ticket(filename, str(user.id))}

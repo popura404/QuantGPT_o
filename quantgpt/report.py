@@ -4,6 +4,7 @@ https://github.com/Miasyster/QuantGPT
 """
 
 import logging
+from html import escape
 
 import matplotlib
 
@@ -63,11 +64,12 @@ def generate_report(
     timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
     report_path = str(output_path / f"backtest_report_{timestamp}.html")
 
+    safe_title = escape(title, quote=True)
     qs.reports.html(
         returns,
         benchmark=benchmark_series,
         output=report_path,
-        title=title,
+        title=safe_title,
         rf=0.03,
         match_dates=False,
         periods_per_year=periods_per_year,
