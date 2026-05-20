@@ -1,6 +1,8 @@
 """Tests for quantgpt.market_data — pure logic and cache behavior."""
 
+import sys
 import tempfile
+import types
 
 import numpy as np
 import pandas as pd
@@ -10,8 +12,10 @@ from quantgpt.market_data import (
     BENCHMARK_CODES,
     UNIVERSES,
     MarketDataFetcher,
+    _fetch_akshare,
     _from_rq_code,
     _to_rq_code,
+    _transform_rq_to_schema,
     get_universe,
 )
 
@@ -131,6 +135,56 @@ class TestCacheRoundtrip:
             f = MarketDataFetcher(cache_dir=td)
             f._save_cache("sh.600519", pd.DataFrame())
             assert f._load_cache("sh.600519") is None
+
+
+def test_transform_rq_preserves_first_tier_trade_metadata():
+    rq_df = pd.DataFrame(
+        {
+            "open": [10.0, 10.5],
+            "high": [10.8, 10.5],
+            "low": [9.9, 10.5],
+            "close": [10.5, 10.5],
+            "prev_close": [10.0, 10.5],
+            "volume": [1000, 0],
+            "total_turnover": [10_500.0, 0.0],
+            "limit_up": [11.0, 11.55],
+            "limit_down": [9.0, 9.45],
+            "suspended": [False, True],
+        },
+        index=pd.Index(pd.to_datetime(["2024-01-02", "2024-01-03"]), name="date"),
+    )
+
+    out = _transform_rq_to_schema(rq_df, "sh.600519")
+
+    assert {"pre_close", "limit_up", "limit_down", "suspended", "trade_status"}.issubset(out.columns)
+    assert out.loc[out.index[0], "pre_close"] == 10.0
+    assert bool(out.loc[out.index[1], "suspended"]) is True
+    assert out.loc[out.index[1], "trade_status"] == 0
+
+
+def test_fetch_akshare_derives_pct_change_when_provider_column_is_missing(monkeypatch):
+    fake_akshare = types.SimpleNamespace(
+        stock_zh_a_hist=lambda **_kwargs: pd.DataFrame(
+            {
+                "日期": ["2024-01-02", "2024-01-03"],
+                "开盘": [10.0, 10.5],
+                "最高": [10.2, 11.0],
+                "最低": [9.9, 10.4],
+                "收盘": [10.0, 11.0],
+                "成交量": [1000, 1200],
+                "成交额": [10_000.0, 13_200.0],
+            }
+        )
+    )
+    monkeypatch.setitem(sys.modules, "akshare", fake_akshare)
+
+    out = _fetch_akshare("sh.600519", "2024-01-02", "2024-01-03")
+
+    assert out is not None
+    assert "pct_change" in out.columns
+    assert "pre_close" in out.columns
+    assert out["pct_change"].iloc[1] == pytest.approx(10.0)
+    assert out["pre_close"].iloc[1] == pytest.approx(10.0)
 
 
 # ─── Forward returns ─────────────────────────────────────────────

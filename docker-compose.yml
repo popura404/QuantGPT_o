@@ -10,7 +10,7 @@ services:
     env_file:
       - .env
     environment:
-      - AUTH_DISABLED=true
+      - AUTH_DISABLED=false
       - DATABASE_URL=postgresql+asyncpg://quantgpt:password@host.docker.internal:5433/quantgpt
     restart: unless-stopped
 

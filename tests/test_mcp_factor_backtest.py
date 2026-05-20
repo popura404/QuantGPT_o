@@ -135,7 +135,7 @@ def mcp_backtest_fakes(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_legacy_mcp_run_backtest_omits_oos_and_data_quality_fields(mcp_backtest_fakes):
-    result = json.loads(await mcp_server.run_backtest("close", universe="small_scale"))
+    result = json.loads(await mcp_server.run_backtest("close", universe="small_scale", oos_enabled=False))
 
     assert "oos_result" not in result
     assert "data_quality" not in result
@@ -144,13 +144,28 @@ async def test_legacy_mcp_run_backtest_omits_oos_and_data_quality_fields(mcp_bac
 
 @pytest.mark.asyncio
 async def test_oos_mcp_run_backtest_returns_public_oos_and_data_quality(mcp_backtest_fakes):
-    result = json.loads(await mcp_server.run_backtest("close", universe="small_scale", oos_enabled=True))
+    result = json.loads(await mcp_server.run_backtest("close", universe="small_scale"))
 
     assert result["direction_policy"] == "train_fixed"
     assert result["data_quality"]["enabled"] is True
-    assert result["oos_result"]["report_scope"] == "oos_train_valid_test"
+    assert result["oos_result"]["report_scope"] == "oos_train_valid_selection"
+    assert result["oos_result"]["test"]["status"] == "withheld"
     assert "_private" not in result["oos_result"]
     assert result["backtest_summary"]["metrics_scope"] == "legacy_compat_single_run"
+    assert result["selection_score"]["metrics_scope"] == "oos_train_valid_selection"
+
+
+@pytest.mark.asyncio
+async def test_final_mcp_run_backtest_exposes_test_score(mcp_backtest_fakes):
+    result = json.loads(await mcp_server.run_backtest(
+        "close",
+        universe="small_scale",
+        validation_stage="final",
+    ))
+
+    assert result["oos_result"]["report_scope"] == "oos_train_valid_test"
+    assert "status" not in result["oos_result"]["test"]
+    assert result["oos_score"]["metrics_scope"] == "oos_train_valid_test"
 
 
 @pytest.mark.asyncio
@@ -176,6 +191,7 @@ async def test_mcp_direction_validation_returns_structured_errors(mcp_backtest_f
     ))
     non_oos_error = json.loads(await mcp_server.run_backtest(
         "close",
+        oos_enabled=False,
         direction_mode="fixed",
     ))
 
@@ -196,7 +212,7 @@ async def test_mcp_accepts_rebalance_anchor(mcp_backtest_fakes):
 
 @pytest.mark.asyncio
 async def test_legacy_score_factor_keeps_oos_and_data_quality_omitted(mcp_backtest_fakes):
-    result = json.loads(await mcp_server.score_factor("close", universe="small_scale"))
+    result = json.loads(await mcp_server.score_factor("close", universe="small_scale", oos_enabled=False))
 
     assert "oos_result" not in result
     assert "data_quality" not in result
@@ -211,18 +227,32 @@ async def test_oos_score_factor_returns_oos_first_score_and_data_quality(mcp_bac
     result = json.loads(await mcp_server.score_factor(
         "close",
         universe="small_scale",
-        oos_enabled=True,
         rebalance_anchor="2024-01-02",
     ))
 
     assert result["direction_policy"] == "train_fixed"
-    assert result["oos_score"]["metrics_scope"] == "oos_train_valid_test"
+    assert result["oos_score"]["metrics_scope"] == "oos_train_valid_selection"
     assert result["data_quality"]["enabled"] is True
     assert result["oos_result"]["data_quality"]["enabled"] is True
+    assert result["oos_result"]["test"]["status"] == "withheld"
     assert "_private" not in result["oos_result"]
-    assert result["component_scores"]["test"] == result["oos_score"]["test_score"]
+    assert "test" not in result["component_scores"]
+    assert result["selection_score"] == result["oos_score"]
     assert result["params"]["oos_enabled"] is True
     assert result["params"]["rebalance_anchor"] == "2024-01-02"
+
+
+@pytest.mark.asyncio
+async def test_final_score_factor_uses_test_score(mcp_backtest_fakes):
+    result = json.loads(await mcp_server.score_factor(
+        "close",
+        universe="small_scale",
+        validation_stage="final",
+    ))
+
+    assert result["oos_score"]["metrics_scope"] == "oos_train_valid_test"
+    assert result["component_scores"]["test"] == result["oos_score"]["test_score"]
+    assert "status" not in result["oos_result"]["test"]
 
 
 @pytest.mark.asyncio
@@ -243,6 +273,7 @@ async def test_score_factor_can_run_data_quality_without_oos(mcp_backtest_fakes)
     result = json.loads(await mcp_server.score_factor(
         "close",
         universe="small_scale",
+        oos_enabled=False,
         data_quality=True,
         adjustment="qfq",
     ))

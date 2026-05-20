@@ -35,6 +35,7 @@ export type TaskType =
   | (string & {});
 
 export type DirectionMode = "auto_full" | "fixed";
+export type ValidationStage = "selection" | "final";
 
 export interface OOSRequest {
   method?: "date_ratio" | "date_cut";
@@ -77,6 +78,7 @@ export interface BacktestRequest {
   rebalance_anchor?: string | null;
   oos_enabled?: boolean;
   oos?: OOSRequest | null;
+  validation_stage?: ValidationStage;
   direction_mode?: DirectionMode;
   fixed_direction?: 1 | -1 | null;
   data_quality?: DataQualityRequest | null;
@@ -243,6 +245,7 @@ export interface BacktestResult {
     stock_count: number;
     oos_enabled?: boolean;
     oos?: OOSRequest | null;
+    validation_stage?: ValidationStage;
     direction_mode?: DirectionMode;
     fixed_direction?: 1 | -1 | null;
     data_quality?: DataQualityRequest | null;

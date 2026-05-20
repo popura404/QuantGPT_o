@@ -266,8 +266,13 @@ HTTP MCP 端点不复用用户 JWT。认证开启时，`/mcp` 和 `/mcp-sse` 需
 | `holding_period` | int | 否 | `5` | 持仓周期 (1~60 交易日) |
 | `benchmark` | string | 否 | `hs300` | 基准: `hs300` / `zz500` / `sz50` |
 | `session_id` | string | 否 | null | 关联会话 ID |
+| `oos_enabled` | bool | 否 | `true` | 默认启用 OOS selection；显式 `false` 才走 legacy `auto_full` |
+| `validation_stage` | string | 否 | `selection` | `selection` 只用 train+valid；`final` 才运行并暴露 test |
 
 **请求示例:**
+
+data-quality 默认会在元数据可用时过滤 ST/*ST、停牌、新股窗口和一字涨跌停，并报告复权收益不一致；
+旧缓存或免费源缺字段时会在 `data_quality.warnings` 中标明降级。
 
 ```bash
 curl -X POST http://localhost:8003/api/v1/auto_backtest \
@@ -1016,8 +1021,11 @@ QuantGPT 提供 MCP (Model Context Protocol) 服务,支持因子研究工具和 
 | `generate_strategy_report` | 根据策略回测结果生成 HTML 报告和 summary JSON |
 
 candidate / submit / export 边界要求 `factor_validation/v1` 晋级证明：data-quality gate、
-train/valid/test、rolling window、placebo test、time-shift test 必须全部通过。普通
-`auto_full` 回测结果会标记为 `research_only`，不能直接选择为候选、提交或导出。
+train/valid/test、rolling window、placebo test、time-shift test 必须全部通过。Agent/结论型
+因子回测默认使用 `oos_enabled=true` 与 `validation_stage="selection"`：train 定方向/参数，
+valid 选候选，test 指标 withheld；只有显式 `validation_stage="final"` 才运行并暴露 test 作为
+frozen candidate 的最终验收。普通 `auto_full` 回测结果会标记为 `research_only`，不能直接选择为
+候选、提交或导出。
 
 ### 配置 (.mcp.json)
 

@@ -294,7 +294,7 @@ def _route_backtest_result(oos: bool = False) -> dict:
                 "direction_policy": "train_fixed",
                 "report_scope": "oos_train_valid_test",
                 "train": {"metrics": {"long_short_sharpe": 1.0}},
-                "valid": {"metrics": {"long_short_sharpe": 0.8}},
+                "valid": {"metrics": {"long_short_sharpe": 0.8, "direction_adjusted_rank_ic_mean": 0.03}},
                 "test": {"metrics": {"long_short_sharpe": 0.5}},
                 "_private": returns,
             },
@@ -355,6 +355,7 @@ class TestAutoBacktestOOSResults:
     ):
         resp = await client.post("/api/v1/auto_backtest", json={
             "prompt": "close",
+            "oos_enabled": False,
             "rebalance_anchor": "2024-01-02",
         }, headers=auth_headers)
 
@@ -371,21 +372,39 @@ class TestAutoBacktestOOSResults:
         assert "AUTO_FULL_NOT_PROMOTABLE" in result["promotion_blockers"]
         assert result["params"]["rebalance_anchor"] == "2024-01-02"
 
-    async def test_oos_completed_task_result_is_public_and_marked(
+    async def test_default_auto_backtest_uses_oos_selection_and_withholds_test(
+        self, client, test_user, auth_headers, auto_backtest_fakes
+    ):
+        resp = await client.post("/api/v1/auto_backtest", json={
+            "prompt": "close",
+        }, headers=auth_headers)
+
+        assert resp.status_code == 202
+        result = tasks[resp.json()["task_id"]]["result"]
+        assert result["direction_policy"] == "train_fixed"
+        assert result["data_quality"]["enabled"] is True
+        assert result["oos_result"]["report_scope"] == "oos_train_valid_selection"
+        assert result["oos_result"]["test"]["status"] == "withheld"
+        assert result["selection_score"]["metrics_scope"] == "oos_train_valid_selection"
+        assert "FINAL_TEST_NOT_RUN" in result["promotion_blockers"]
+
+    async def test_final_oos_completed_task_result_is_public_and_marked(
         self, client, test_user, auth_headers, auto_backtest_fakes
     ):
         resp = await client.post("/api/v1/auto_backtest", json={
             "prompt": "close",
             "oos_enabled": True,
+            "validation_stage": "final",
             "oos": {"min_train_days": 5, "min_valid_days": 5, "min_test_days": 5},
         }, headers=auth_headers)
 
         assert resp.status_code == 202
         result = tasks[resp.json()["task_id"]]["result"]
         assert result["direction_policy"] == "train_fixed"
-        assert result["report_scope"] == "legacy_compat_single_run"
+        assert result["report_scope"] == "oos_train_valid_test"
         assert result["data_quality"]["enabled"] is True
         assert result["oos_result"]["report_scope"] == "oos_train_valid_test"
+        assert "status" not in result["oos_result"]["test"]
         assert "_private" not in result["oos_result"]
         assert result["backtest_summary"]["metrics_scope"] == "legacy_compat_single_run"
         assert result["promotion_state"] == "research_only"
@@ -396,6 +415,7 @@ class TestAutoBacktestOOSResults:
     ):
         resp = await client.post("/api/v1/auto_backtest", json={
             "prompt": "close",
+            "oos_enabled": False,
             "data_quality": {"enabled": True, "adjustment": "qfq"},
         }, headers=auth_headers)
 

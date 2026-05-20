@@ -10,7 +10,7 @@ from quantgpt.strategy.backtest import StrategyBacktestRequest, run_strategy_bac
 from quantgpt.strategy.service import score_strategy_payload, strategy_result_to_payload
 from quantgpt.strategy.spec import StrategySpecV1, example_strategy_spec_v1
 from quantgpt.strategy.validator import validate_strategy_spec
-from quantgpt.validation.oos_score import compute_oos_score
+from quantgpt.validation.oos_score import compute_oos_score, compute_oos_selection_score, withhold_final_test
 
 
 def _market_df(days: int = 90) -> pd.DataFrame:
@@ -165,3 +165,25 @@ def test_oos_score_prioritizes_test_metrics_and_service_payload():
     assert score["decision"] == "reject"
     assert score["overfit_risk"] == "high"
     assert payload_score["metrics_scope"] == "oos_train_valid_test"
+
+
+def test_oos_selection_score_ignores_and_withholds_test_metrics():
+    oos = {
+        "train": {"metrics": {"sharpe": 1.5, "ic_mean": 0.06, "max_drawdown": -0.02, "turnover": 0.2}},
+        "valid": {"metrics": {"sharpe": 0.9, "ic_mean": 0.04, "max_drawdown": -0.04, "turnover": 0.2}},
+        "test": {"metrics": {"sharpe": -2.0, "ic_mean": -0.1, "max_drawdown": -0.2, "turnover": 0.2}},
+        "decay": {
+            "valid_sharpe_decay": 0.4,
+            "valid_ic_decay": 0.33,
+            "test_sharpe_decay": 3.0,
+            "test_ic_decay": 3.0,
+        },
+    }
+    withheld = withhold_final_test(oos)
+    score = compute_oos_selection_score(withheld)
+
+    assert withheld["test"]["status"] == "withheld"
+    assert withheld["test"]["metrics"] == {}
+    assert score["metrics_scope"] == "oos_train_valid_selection"
+    assert score["decision"] != "reject"
+    assert "test_score" not in score

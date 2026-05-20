@@ -131,6 +131,28 @@ def test_run_factor_oos_backtest_uses_train_fixed_direction_and_public_payload(o
     assert public["report_scope"] == "oos_train_valid_test"
 
 
+def test_selection_stage_withholds_final_test(oos_market_df):
+    result = run_factor_oos_backtest(
+        oos_market_df,
+        "close",
+        n_groups=3,
+        holding_period=5,
+        neutralize_industry=False,
+        neutralize_cap=False,
+        oos_config=_small_config(warmup_days=0),
+        rebalance_anchor="2024-01-02",
+        evaluation_stage="selection",
+    )
+
+    oos = result["oos_result"]
+    assert result["report_scope"] == "oos_train_valid_selection"
+    assert oos["evaluation_stage"] == "selection"
+    assert oos["test"]["status"] == "withheld"
+    assert oos["test"]["metrics"] == {}
+    assert "_test_result" not in oos
+    assert "test_sharpe_decay" not in oos["decay"]
+
+
 def test_oos_rejects_external_direction_override(oos_market_df):
     with pytest.raises(ValueError, match="train_fixed"):
         run_factor_oos_backtest(

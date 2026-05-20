@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { useColorMode } from "../contexts/ColorModeContext";
-import type { DataQualityRequest, DirectionMode, OOSRequest } from "../types/backtest";
+import type { DataQualityRequest, DirectionMode, OOSRequest, ValidationStage } from "../types/backtest";
 import OOSSettingsPanel from "./backtest/OOSSettingsPanel";
 import DataQualitySettingsPanel from "./backtest/DataQualitySettingsPanel";
 import DirectionSettingsPanel from "./backtest/DirectionSettingsPanel";
@@ -21,6 +21,7 @@ export interface AdvancedSettingsValues {
   fixed_direction: 1 | -1 | null;
   oos_enabled: boolean;
   oos: OOSRequest;
+  validation_stage: ValidationStage;
   data_quality: DataQualityRequest;
 }
 
@@ -46,6 +47,7 @@ export default function AdvancedSettings({ values, onChange }: Props) {
       oos_enabled: enabled,
       direction_mode: enabled ? "auto_full" : values.direction_mode,
       fixed_direction: enabled ? null : values.fixed_direction,
+      data_quality: enabled ? { ...values.data_quality, enabled: true } : values.data_quality,
     });
   };
 

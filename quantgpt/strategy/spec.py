@@ -149,7 +149,7 @@ class DataQualityValidationConfigV1(StrictBaseModel):
     max_missing_ratio_per_stock: float = Field(0.2, ge=0, le=1)
     require_positive_volume: bool = True
     require_positive_amount: bool = True
-    drop_st: bool = False
+    drop_st: bool = True
     drop_new_listing_days: int = Field(60, ge=0)
     adjustment: Literal["qfq", "hfq", "none", "unknown"] = "unknown"
     fail_on_unknown_adjustment: bool = False

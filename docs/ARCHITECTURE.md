@@ -93,7 +93,11 @@ Rank-based 分组回测引擎。
 
 因子和 `StrategySpecV1` 都可以走更严格的 train/valid/test 样本外闭环：
 - 基础行情先经过 data-quality gate，记录缺列、OHLC、极端收益和缺失率问题
+- A 股第一档现实约束在元数据可用时同步处理：ST/*ST、停牌、新股窗口、一字涨跌停不可成交、
+  `close/pre_close` 与 `pct_change` 的复权一致性
 - 训练期确定方向，验证期和测试期使用固定方向或 StrategySpec 声明方向
+- Agent/结论型因子评分默认停在 `validation_stage="selection"`：train 定方向/参数，valid 选候选，
+  test withheld；`validation_stage="final"` 才运行并暴露 test 终验
 - OOS payload 暴露 `data_quality`、`oos_result`、`oos_summary` 和 `oos_score`
 - OOS scoring 优先使用验证/测试表现、样本外衰减、换手和数据质量惩罚
 - `validation/promotion.py` 是 candidate / submit / export 的统一晋级门禁：

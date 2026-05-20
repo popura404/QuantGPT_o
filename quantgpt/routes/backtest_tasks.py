@@ -67,7 +67,12 @@ from ..task_store import (
     validate_sse_ticket,
 )
 from ..validation.oos_backtest import to_public_oos_result
-from ..validation.oos_score import compute_oos_score
+from ..validation.oos_score import (
+    FINAL_TEST_NOT_RUN,
+    compute_oos_score,
+    compute_oos_selection_score,
+    withhold_final_test,
+)
 from ..validation.promotion import AUTO_FULL_NOT_PROMOTABLE, research_only_provenance
 from ..validation.split import OOSConfig
 
@@ -132,7 +137,7 @@ class DataQualityRequest(BaseModel):
     max_missing_ratio_per_stock: float = Field(0.2, ge=0.0, le=1.0)
     require_positive_volume: bool = True
     require_positive_amount: bool = True
-    drop_st: bool = False
+    drop_st: bool = True
     drop_new_listing_days: int = Field(60, ge=0)
     adjustment: Literal["qfq", "hfq", "none", "unknown"] = "unknown"
     fail_on_unknown_adjustment: bool = False
@@ -154,8 +159,12 @@ class AutoBacktestRequest(BaseModel):
     neutralize_cap: bool = Field(True, description="市值中性化")
     universe_date: str | None = Field(None, description="股票池基准日期，用于子区间验证时固定股票池。为空时使用 start_date")
     rebalance_anchor: str | None = Field(None, description="换仓网格锚定日期，用于跨期比较时对齐换仓时间。为空时从数据起始日开始")
-    oos_enabled: bool = Field(False, description="是否启用训练/验证/测试样本外评估")
+    oos_enabled: bool = Field(True, description="是否启用训练/验证/测试样本外评估；默认开启 OOS selection")
     oos: OOSRequest | None = Field(None, description="样本外切分配置")
+    validation_stage: Literal["selection", "final"] = Field(
+        "selection",
+        description="selection: train 定方向、valid 选候选；final: 运行并暴露 test 终验",
+    )
     direction_mode: str = Field("auto_full", description="方向策略: auto_full 或 fixed")
     fixed_direction: int | None = Field(None, description="fixed 模式方向: 1=高值做多, -1=低值做多")
     data_quality: DataQualityRequest | None = Field(None, description="数据质量门配置；为空时保持兼容默认")
@@ -178,6 +187,8 @@ class AutoBacktestRequest(BaseModel):
     def validate_direction_policy(self):
         if self.direction_mode not in {"auto_full", "fixed"}:
             raise ValueError("direction_mode must be 'auto_full' or 'fixed'")
+        if self.validation_stage == "final" and not self.oos_enabled:
+            raise ValueError("validation_stage='final' requires oos_enabled=true")
         if self.oos_enabled:
             if self.direction_mode != "auto_full" or self.fixed_direction is not None:
                 raise ValueError("oos_enabled=true always uses train_fixed direction; fixed_direction is not allowed")
@@ -203,6 +214,18 @@ def _disabled_data_quality_report(reason: str) -> dict:
         "issues": [],
         "warnings": [reason],
     }
+
+
+def _score_oos_for_stage(oos_result: dict, data_quality_report: dict | None, validation_stage: str) -> dict:
+    if validation_stage == "selection":
+        return compute_oos_selection_score(oos_result, data_quality=data_quality_report)
+    return compute_oos_score(oos_result, data_quality=data_quality_report)
+
+
+def _oos_blockers_for_stage(validation_stage: str) -> list[str]:
+    if validation_stage == "selection":
+        return [FINAL_TEST_NOT_RUN, "FULL_VALIDATION_SUITE_NOT_RUN"]
+    return ["FULL_VALIDATION_SUITE_NOT_RUN"]
 
 
 def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
@@ -359,6 +382,7 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
                 trading_days_per_year=252,
                 rebalance_anchor=req.rebalance_anchor,
                 oos_config=oos_config,
+                evaluation_stage=req.validation_stage,
             )
         else:
             future = executor.submit_cpu_work(
@@ -493,7 +517,7 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
             "total_cost_drag": result.get("total_cost_drag", 0),
         }
         if req.oos_enabled:
-            backtest_summary["metrics_scope"] = "legacy_compat_single_run"
+            backtest_summary["metrics_scope"] = result.get("report_scope", "oos_train_valid_selection")
 
         task_result = {
             "report_url": f"/api/v1/reports/{report_filename}",
@@ -518,6 +542,7 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
                 "stock_count": len(stock_codes),
                 "oos_enabled": req.oos_enabled,
                 "oos": req.oos.model_dump() if req.oos else None,
+                "validation_stage": req.validation_stage,
                 "direction_mode": req.direction_mode,
                 "fixed_direction": req.fixed_direction,
                 "data_quality": req.data_quality.model_dump() if req.data_quality else None,
@@ -528,14 +553,14 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
             },
         }
         promotion_blockers = (
-            ["FULL_VALIDATION_SUITE_NOT_RUN"]
+            _oos_blockers_for_stage(req.validation_stage)
             if req.oos_enabled
             else [AUTO_FULL_NOT_PROMOTABLE, "OOS_TRAIN_VALID_TEST_NOT_RUN"]
         )
         task_result["promotion_state"] = "research_only"
         task_result["promotion_blockers"] = promotion_blockers
         task_result["validation_provenance"] = research_only_provenance(
-            source="auto_backtest_oos" if req.oos_enabled else "auto_backtest_auto_full",
+            source=f"auto_backtest_oos_{req.validation_stage}" if req.oos_enabled else "auto_backtest_auto_full",
             reason_code=promotion_blockers[0],
             blockers=promotion_blockers,
             params=task_result["params"],
@@ -546,14 +571,20 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
             public_oos = to_public_oos_result(result.get("oos_result", {}))
             if data_quality_report is not None:
                 public_oos["data_quality"] = data_quality_report
-            oos_scoring = compute_oos_score(public_oos, data_quality=data_quality_report)
+            if req.validation_stage == "selection":
+                public_oos = withhold_final_test(public_oos)
+            oos_scoring = _score_oos_for_stage(public_oos, data_quality_report, req.validation_stage)
             task_result["oos_result"] = public_oos
             task_result["direction_policy"] = "train_fixed"
-            task_result["report_scope"] = result.get("report_scope", "legacy_compat_single_run")
+            task_result["report_scope"] = public_oos.get("report_scope", result.get("report_scope"))
             task_result["compatibility_warning"] = result.get("compatibility_warning")
             task_result["legacy_scoring"] = task_result["scoring"]
             task_result["scoring"] = oos_scoring
-            task_result["interpretation"]["metrics_scope"] = "legacy_compat_single_run"
+            if req.validation_stage == "selection":
+                task_result["selection_score"] = oos_scoring
+            else:
+                task_result["oos_score"] = oos_scoring
+            task_result["interpretation"]["metrics_scope"] = oos_scoring["metrics_scope"]
             task_result["interpretation"]["oos_decision"] = oos_scoring["decision"]
             task_result["interpretation"]["oos_risk"] = oos_scoring["overfit_risk"]
         task["result"] = task_result

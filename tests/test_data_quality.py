@@ -67,6 +67,59 @@ def test_extreme_return_uses_decimal_close_return_not_pct_change_points():
     assert any(issue["rule"] == "extreme_return" for issue in report["issues"])
 
 
+def test_st_and_suspended_rows_are_filtered_when_metadata_available():
+    df = _base_market_df(days=4, stocks=("A",))
+    df["is_st"] = 0
+    df["trade_status"] = 1
+    df.loc[df.index[0], "is_st"] = 1
+    df.loc[df.index[1], "trade_status"] = 0
+
+    cleaned, report = run_data_quality_gate(df, DataQualityConfig(adjustment="qfq"))
+
+    assert len(cleaned) == len(df) - 2
+    assert any(issue["rule"] == "st_stock" for issue in report["issues"])
+    assert any(issue["rule"] == "suspended" for issue in report["issues"])
+
+
+def test_one_price_limit_rows_are_filtered_with_pre_close():
+    df = _base_market_df(days=4, stocks=("A",))
+    df.loc[df.index[1], ["open", "high", "low", "close"]] = 11.0
+    df["pre_close"] = df.groupby("stock_code")["close"].shift(1)
+    df.loc[df.index[1], "pre_close"] = 10.0
+    df.loc[df.index[1], "pct_change"] = 10.0
+
+    cleaned, report = run_data_quality_gate(df, DataQualityConfig(adjustment="qfq"))
+
+    assert len(cleaned) == len(df) - 1
+    assert any(issue["rule"] == "one_price_limit" for issue in report["issues"])
+
+
+def test_return_adjustment_mismatch_is_reported_but_not_filtered():
+    df = _base_market_df(days=4, stocks=("A",))
+    df["pre_close"] = df.groupby("stock_code")["close"].shift(1)
+    df.loc[df.index[1], "pre_close"] = df.loc[df.index[0], "close"]
+    df.loc[df.index[1], "pct_change"] = -5.0
+
+    cleaned, report = run_data_quality_gate(df, DataQualityConfig(adjustment="qfq"))
+
+    assert len(cleaned) == len(df)
+    assert any(issue["rule"] == "return_adjustment_mismatch" for issue in report["issues"])
+    assert any("pct_change is inconsistent" in warning for warning in report["warnings"])
+
+
+def test_listing_age_window_is_filtered_when_listing_date_available():
+    df = _base_market_df(days=4, stocks=("A",))
+    df["listing_date"] = pd.Timestamp("2024-01-01")
+
+    cleaned, report = run_data_quality_gate(
+        df,
+        DataQualityConfig(adjustment="qfq", drop_new_listing_days=5),
+    )
+
+    assert cleaned.empty
+    assert any(issue["rule"] == "new_listing_window" for issue in report["issues"])
+
+
 def test_high_missing_ratio_stock_is_filtered():
     df = _base_market_df(days=10, stocks=("A", "B"))
     df = df[~((df["stock_code"] == "B") & (df["trade_date"] > df["trade_date"].min()))].copy()

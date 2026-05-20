@@ -17,6 +17,12 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+_BASE_MARKET_COLUMNS = ["trade_date", "stock_code", "open", "high", "low", "close", "volume", "amount", "pct_change"]
+_OPTIONAL_MARKET_COLUMNS = ["pre_close", "trade_status", "is_st", "limit_up", "limit_down", "suspended"]
+_NUMERIC_MARKET_COLUMNS = [
+    "open", "high", "low", "close", "pre_close", "volume", "amount", "pct_change", "limit_up", "limit_down"
+]
+
 # Global lock for baostock — it only supports one session per process
 _bs_lock = threading.Lock()
 
@@ -378,6 +384,13 @@ def _transform_rq_to_schema(rq_df: pd.DataFrame, bs_code: str) -> pd.DataFrame:
     elif "amount" not in df.columns:
         df["amount"] = 0.0
 
+    if "prev_close" in df.columns and "pre_close" not in df.columns:
+        df["pre_close"] = df["prev_close"]
+    if "suspended" in df.columns:
+        df["suspended"] = df["suspended"].astype(bool)
+        if "trade_status" not in df.columns:
+            df["trade_status"] = np.where(df["suspended"], 0, 1)
+
     # Compute pct_change from prev_close if available, else from close
     if "prev_close" in df.columns:
         df["pct_change"] = ((df["close"] / df["prev_close"]) - 1) * 100
@@ -385,11 +398,12 @@ def _transform_rq_to_schema(rq_df: pd.DataFrame, bs_code: str) -> pd.DataFrame:
     else:
         df["pct_change"] = df["close"].pct_change() * 100
 
-    for col in ("open", "high", "low", "close", "volume", "amount", "pct_change"):
+    for col in _NUMERIC_MARKET_COLUMNS:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    result = df[["trade_date", "stock_code", "open", "high", "low", "close", "volume", "amount", "pct_change"]].copy()
+    columns = _BASE_MARKET_COLUMNS + [col for col in _OPTIONAL_MARKET_COLUMNS if col in df.columns]
+    result = df[columns].copy()
     return result.sort_values("trade_date")
 
 
@@ -477,29 +491,54 @@ class MarketDataFetcher:
             if not already_logged_in:
                 _baostock_login()
                 logged_in = True
-            rs = bs.query_history_k_data_plus(
-                code,
-                "date,code,open,high,low,close,volume,amount,pctChg",
-                start_date=start_date,
-                end_date=end_date,
-                frequency="d",
-                adjustflag="2",
-            )
             rows = []
-            while rs.error_code == "0" and rs.next():
-                rows.append(rs.get_row_data())
+            fields = []
+            field_sets = [
+                "date,code,open,high,low,close,preclose,volume,amount,pctChg,tradestatus,isST",
+                "date,code,open,high,low,close,volume,amount,pctChg",
+            ]
+            for query_fields in field_sets:
+                rs = bs.query_history_k_data_plus(
+                    code,
+                    query_fields,
+                    start_date=start_date,
+                    end_date=end_date,
+                    frequency="d",
+                    adjustflag="2",
+                )
+                if rs.error_code != "0":
+                    logger.warning(f"baostock history query failed for {code}: {rs.error_msg}")
+                    continue
+                fields = list(rs.fields)
+                rows = []
+                while rs.next():
+                    rows.append(rs.get_row_data())
+                if rows:
+                    break
             if not rows:
                 return None
-            df = pd.DataFrame(rows, columns=rs.fields)
-            df = df.rename(columns={"date": "trade_date", "code": "stock_code", "pctChg": "pct_change"})
+            df = pd.DataFrame(rows, columns=fields)
+            df = df.rename(columns={
+                "date": "trade_date",
+                "code": "stock_code",
+                "preclose": "pre_close",
+                "pctChg": "pct_change",
+                "tradestatus": "trade_status",
+                "isST": "is_st",
+            })
             df["trade_date"] = pd.to_datetime(df["trade_date"])
-            for col in ("open", "high", "low", "close", "volume", "amount", "pct_change"):
+            for col in _NUMERIC_MARKET_COLUMNS:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors="coerce")
+            if "trade_status" in df.columns:
+                df["trade_status"] = pd.to_numeric(df["trade_status"], errors="coerce")
+            if "is_st" in df.columns:
+                df["is_st"] = pd.to_numeric(df["is_st"], errors="coerce").fillna(0).astype(int)
             df = df.sort_values("trade_date")
             if "pct_change" not in df.columns or df["pct_change"].isna().all():
                 df["pct_change"] = df["close"].pct_change() * 100
-            return df
+            columns = _BASE_MARKET_COLUMNS + [col for col in _OPTIONAL_MARKET_COLUMNS if col in df.columns]
+            return df[columns].copy()
         except Exception as e:
             logger.error(f"Fetch failed for {stock_code}: {e}")
             return None
@@ -755,8 +794,14 @@ def _fetch_akshare(bs_code: str, start_date: str, end_date: str) -> pd.DataFrame
         for col in ("open", "high", "low", "close", "volume", "amount", "pct_change"):
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
-        df = df[["trade_date", "stock_code", "open", "high", "low", "close", "volume", "amount", "pct_change"]]
-        return df.sort_values("trade_date")
+        df = df.sort_values("trade_date")
+        if "pct_change" not in df.columns or df["pct_change"].isna().all():
+            df["pct_change"] = df["close"].pct_change() * 100
+        if "pct_change" in df.columns:
+            denom = 1 + df["pct_change"] / 100
+            df["pre_close"] = np.where(denom != 0, df["close"] / denom, np.nan)
+        df = df[_BASE_MARKET_COLUMNS + [col for col in _OPTIONAL_MARKET_COLUMNS if col in df.columns]]
+        return df
     except Exception as e:
         logger.warning(f"[akshare] Failed to fetch {bs_code}: {e}")
         return None

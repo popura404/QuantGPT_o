@@ -158,10 +158,13 @@ def run_factor_oos_backtest(
     trading_days_per_year: int = 252,
     direction_mode: str = "auto_full",
     fixed_direction: int | None = None,
+    evaluation_stage: str = "final",
 ) -> dict:
     """Run train-fixed OOS validation for a single factor expression."""
     if direction_mode != "auto_full" or fixed_direction is not None:
         raise ValueError("oos_enabled=true always uses train_fixed direction; do not pass fixed_direction")
+    if evaluation_stage not in {"selection", "final"}:
+        raise ValueError("evaluation_stage must be 'selection' or 'final'")
 
     config = oos_config or OOSConfig()
     if rebalance_anchor is not None:
@@ -200,13 +203,15 @@ def run_factor_oos_backtest(
         fixed_direction=train_direction,
         **common_kwargs,
     )
-    test_result = run_factor_backtest(
-        split["frames"]["test"],
-        expression=expression,
-        direction_mode="fixed",
-        fixed_direction=train_direction,
-        **common_kwargs,
-    )
+    test_result = None
+    if evaluation_stage == "final":
+        test_result = run_factor_backtest(
+            split["frames"]["test"],
+            expression=expression,
+            direction_mode="fixed",
+            fixed_direction=train_direction,
+            **common_kwargs,
+        )
 
     train_metrics = _metrics_for_window(
         train_result, split["eval_windows"]["train"], trading_days_per_year, warnings, "train"
@@ -214,16 +219,17 @@ def run_factor_oos_backtest(
     valid_metrics = _metrics_for_window(
         valid_result, split["eval_windows"]["valid"], trading_days_per_year, warnings, "valid"
     )
-    test_metrics = _metrics_for_window(
-        test_result, split["eval_windows"]["test"], trading_days_per_year, warnings, "test"
-    )
+    test_window = split["eval_windows"]["test"]
+    if test_result is not None:
+        test_metrics = _metrics_for_window(
+            test_result, test_window, trading_days_per_year, warnings, "test"
+        )
+    else:
+        test_metrics = {}
 
     decay = {
         "valid_sharpe_decay": safe_decay(
             train_metrics.get("long_short_sharpe"), valid_metrics.get("long_short_sharpe"), warnings, "valid sharpe"
-        ),
-        "test_sharpe_decay": safe_decay(
-            train_metrics.get("long_short_sharpe"), test_metrics.get("long_short_sharpe"), warnings, "test sharpe"
         ),
         "valid_ic_decay": safe_decay(
             train_metrics.get("direction_adjusted_rank_ic_mean"),
@@ -231,17 +237,24 @@ def run_factor_oos_backtest(
             warnings,
             "valid rank IC",
         ),
-        "test_ic_decay": safe_decay(
+    }
+    if test_result is not None:
+        decay["test_sharpe_decay"] = safe_decay(
+            train_metrics.get("long_short_sharpe"), test_metrics.get("long_short_sharpe"), warnings, "test sharpe"
+        )
+        decay["test_ic_decay"] = safe_decay(
             train_metrics.get("direction_adjusted_rank_ic_mean"),
             test_metrics.get("direction_adjusted_rank_ic_mean"),
             warnings,
             "test rank IC",
-        ),
-    }
+        )
+    else:
+        warnings.append("final test was not run because evaluation_stage=selection")
 
     oos_result = {
         "oos_enabled": True,
         "direction_policy": "train_fixed",
+        "evaluation_stage": evaluation_stage,
         "direction_basis": "cost_adjusted_group_mean",
         "direction_source": "train",
         "train_direction_source": train_result.get("direction_source"),
@@ -258,24 +271,38 @@ def run_factor_oos_backtest(
             "metrics": valid_metrics,
         },
         "test": {
-            "period": [split["eval_windows"]["test"]["start"], split["eval_windows"]["test"]["end"]],
+            "period": [test_window["start"], test_window["end"]],
             "metrics": test_metrics,
         },
         "decay": decay,
-        "oos_risk": _risk_from_decay(decay, test_metrics),
+        "oos_risk": _risk_from_decay(decay, test_metrics if test_result is not None else valid_metrics),
         "warnings": warnings,
         "_train_result": train_result,
         "_valid_result": valid_result,
-        "_test_result": test_result,
     }
+    if test_result is not None:
+        oos_result["_test_result"] = test_result
+    else:
+        oos_result["test"].update({
+            "status": "withheld",
+            "reason": "final_test_only",
+        })
+        oos_result["report_scope"] = "oos_train_valid_selection"
+        oos_result["final_test_policy"] = "withheld_until_validation_stage_final"
 
-    compatibility = dict(test_result)
+    compatibility = dict(test_result if test_result is not None else valid_result)
     compatibility["holding_period"] = holding_period
     compatibility["oos_result"] = oos_result
     compatibility["direction_policy"] = "train_fixed"
-    compatibility["report_scope"] = "legacy_compat_single_run"
-    compatibility["compatibility_warning"] = (
-        "Top-level metrics are legacy-compatible single-window output; "
-        "use oos_result for authoritative OOS research conclusions."
-    )
+    compatibility["report_scope"] = "oos_train_valid_test" if test_result is not None else "oos_train_valid_selection"
+    if test_result is not None:
+        compatibility["compatibility_warning"] = (
+            "Top-level metrics are legacy-compatible final-test output; "
+            "use oos_result for authoritative OOS research conclusions."
+        )
+    else:
+        compatibility["compatibility_warning"] = (
+            "Top-level metrics are valid-window selection output; "
+            "final test metrics are withheld until evaluation_stage=final."
+        )
     return compatibility

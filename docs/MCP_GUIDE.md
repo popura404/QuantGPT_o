@@ -153,21 +153,28 @@ metrics 作为权威结论。
 | `neutralize_industry` | bool | `true` | 行业中性化 |
 | `neutralize_cap` | bool | `true` | 市值中性化 |
 
-`run_backtest` 与 `score_factor` 额外支持 OOS/data-quality 参数。省略 `oos_enabled` 时保持 legacy
-单窗口兼容；研究结论优先显式传 `oos_enabled=true`，此时方向策略固定为 train-fixed，评分以
-`oos_score` / `oos_result` 为准。普通 `auto_full` 或只跑 OOS 的结果都会返回
+`run_backtest` 与 `score_factor` 额外支持 OOS/data-quality 参数。面向 Agent 的默认结论路径为
+`oos_enabled=true`、`validation_stage="selection"`：train 只用于确定方向/参数，valid 用于候选选择，
+test 指标会被 withheld。只有显式传 `validation_stage="final"` 时才运行并暴露 test，作为 frozen
+candidate 的最终验收。显式传 `oos_enabled=false` 会回到 legacy 单窗口兼容路径，但该路径仅用于
+快速研究展示。普通 `auto_full` 或未跑完整 validation suite 的结果都会返回
 `promotion_state="research_only"`；它们只能用于研究展示，不能作为 candidate / submit / export
 的授权证明。
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `rebalance_anchor` | str \| null | `null` | 换仓网格锚定日期；为空时使用数据起始日 |
-| `oos_enabled` | bool | `false` | 是否启用 train/valid/test 样本外评估 |
+| `oos_enabled` | bool | `true` | 是否启用 train/valid/test 样本外评估；Agent 结论默认开启 |
+| `validation_stage` | str | `selection` | `selection` 只用 train+valid 选候选；`final` 才运行并暴露 test |
 | `data_quality` | bool \| null | `null` | 是否运行基础行情数据质量门；`null` 表示 OOS 时默认启用、非 OOS 时默认关闭 |
 | `data_quality_mode` | str | `filter` | 数据质量模式：`report_only` / `filter` / `strict` |
 | `max_abs_daily_ret` | float | `0.25` | 单股最大绝对日收益阈值 |
 | `max_missing_ratio_per_stock` | float | `0.2` | 单股最大缺失交易日比例 |
 | `adjustment` | str | `unknown` | 复权模式：`qfq` / `hfq` / `none` / `unknown` |
+
+data-quality 会优先使用免费行情源可取得的 A 股元数据：`is_st`、`trade_status` / `suspended`、
+`pre_close`、`limit_up` / `limit_down`。可用时默认过滤 ST/*ST、停牌、新股窗口和一字涨跌停，
+并报告 `close/pre_close` 与 `pct_change` 的复权一致性问题；旧缓存缺少字段时会降级为 warning。
 
 candidate / submit / export 边界统一要求 `validation_provenance.suite_version="factor_validation/v1"`，
 且必须同时通过 data-quality gate、train/valid/test、rolling window、placebo test 和 time-shift test。

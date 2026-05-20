@@ -77,7 +77,12 @@ from .strategy.service import (
 )
 from .task_executor import _run_backtest_in_process, _run_oos_backtest_in_process, get_executor
 from .validation.oos_backtest import to_public_oos_result
-from .validation.oos_score import compute_oos_score
+from .validation.oos_score import (
+    FINAL_TEST_NOT_RUN,
+    compute_oos_score,
+    compute_oos_selection_score,
+    withhold_final_test,
+)
 from .validation.promotion import AUTO_FULL_NOT_PROMOTABLE, research_only_provenance
 from .validation.split import OOSConfig
 from .wq_brain_service import (
@@ -94,7 +99,11 @@ logger = logging.getLogger(__name__)
 
 mcp = FastMCP(
     "quantgpt",
-    instructions="QuantGPT — A 股因子回测服务。先用 list_operators 了解可用算子，再用 run_backtest 执行回测。可用 score_factor 评分、diagnose_factor 诊断、run_anti_overfit 检测过拟合、run_rolling_validation 滚动验证。",
+    instructions=(
+        "QuantGPT — A 股因子回测服务。先用 list_operators 了解可用算子。"
+        "用于研究结论或候选选择时，score_factor/run_backtest 默认走 OOS selection："
+        "train 定方向，valid 选候选，test 仅在 validation_stage=final 时最终验收。"
+    ),
     streamable_http_path="/",
     stateless_http=True,
     transport_security=TransportSecuritySettings(
@@ -121,6 +130,18 @@ def _fetch_data_for_market(universe: str, start_date: str, end_date: str):
 def _fetch_benchmark_for_market(benchmark: str, start_date: str, end_date: str):
     """Fetch benchmark returns."""
     return fetch_benchmark_returns(benchmark, start_date, end_date)
+
+
+def _score_oos_for_stage(oos_result: dict, data_quality_report: dict | None, validation_stage: str) -> dict:
+    if validation_stage == "selection":
+        return compute_oos_selection_score(oos_result, data_quality=data_quality_report)
+    return compute_oos_score(oos_result, data_quality=data_quality_report)
+
+
+def _oos_blockers_for_stage(validation_stage: str) -> list[str]:
+    if validation_stage == "selection":
+        return [FINAL_TEST_NOT_RUN, "FULL_VALIDATION_SUITE_NOT_RUN"]
+    return ["FULL_VALIDATION_SUITE_NOT_RUN"]
 
 
 # Dummy DataFrame for expression validation (includes fundamental columns)
@@ -333,7 +354,8 @@ async def run_backtest(
     neutralize_industry: bool = True,
     neutralize_cap: bool = True,
     rebalance_anchor: str | None = None,
-    oos_enabled: bool = False,
+    oos_enabled: bool = True,
+    validation_stage: Literal["selection", "final"] = "selection",
     direction_mode: str = "auto_full",
     fixed_direction: int | None = None,
     data_quality: bool | None = None,
@@ -355,7 +377,8 @@ async def run_backtest(
         neutralize_industry: 行业中性化(默认开启)
         neutralize_cap: 市值中性化(默认开启)
         rebalance_anchor: 换仓网格锚定日期
-        oos_enabled: 启用训练/验证/测试样本外评估
+        oos_enabled: 启用训练/验证/测试样本外评估；默认开启 OOS selection
+        validation_stage: selection 只用 train+valid 选候选；final 才运行并暴露 test
         direction_mode: 非 OOS 回测方向模式，auto_full 或 fixed
         fixed_direction: fixed 模式方向，1=高值做多，-1=低值做多
         data_quality: 是否运行基础行情数据质量门；None 表示兼容默认
@@ -367,13 +390,23 @@ async def run_backtest(
         "universe": universe, "start_date": start_date, "end_date": end_date,
         "n_groups": n_groups, "holding_period": holding_period, "benchmark": benchmark,
         "neutralize_industry": neutralize_industry, "neutralize_cap": neutralize_cap,
-        "rebalance_anchor": rebalance_anchor, "oos_enabled": oos_enabled,
+        "rebalance_anchor": rebalance_anchor, "oos_enabled": oos_enabled, "validation_stage": validation_stage,
         "direction_mode": direction_mode, "fixed_direction": fixed_direction,
         "data_quality": data_quality,
     })
     _error_msg = None
     _result = None
     try:
+        if validation_stage not in {"selection", "final"}:
+            return json.dumps({
+                "error_code": "INVALID_VALIDATION_STAGE",
+                "hint": "validation_stage must be selection or final",
+            })
+        if validation_stage == "final" and not oos_enabled:
+            return json.dumps({
+                "error_code": "INVALID_VALIDATION_STAGE",
+                "hint": "validation_stage=final requires oos_enabled=true",
+            })
         if direction_mode not in {"auto_full", "fixed"}:
             return json.dumps({"error_code": "INVALID_DIRECTION_POLICY", "hint": "direction_mode must be auto_full or fixed"})
         if oos_enabled and (direction_mode != "auto_full" or fixed_direction is not None):
@@ -425,7 +458,7 @@ async def run_backtest(
             future = executor.submit_cpu_work(
                 _run_oos_backtest_in_process, market_df, expression, n_groups, holding_period,
                 neutralize_industry=neutralize_industry, neutralize_cap=neutralize_cap,
-                rebalance_anchor=rebalance_anchor, oos_config=oos_config,
+                rebalance_anchor=rebalance_anchor, oos_config=oos_config, evaluation_stage=validation_stage,
             )
         else:
             future = executor.submit_cpu_work(
@@ -490,7 +523,7 @@ async def run_backtest(
             "total_cost_drag": result.get("total_cost_drag", 0),
         }
         if oos_enabled:
-            backtest_summary["metrics_scope"] = "legacy_compat_single_run"
+            backtest_summary["metrics_scope"] = result.get("report_scope", "oos_train_valid_selection")
 
         _result = {
             "report_path": report_result["report_path"],
@@ -510,6 +543,7 @@ async def run_backtest(
                 "neutralize_cap": neutralize_cap,
                 "rebalance_anchor": rebalance_anchor,
                 "oos_enabled": oos_enabled,
+                "validation_stage": validation_stage,
                 "direction_mode": direction_mode,
                 "fixed_direction": fixed_direction,
                 "data_quality": data_quality,
@@ -517,14 +551,14 @@ async def run_backtest(
             },
         }
         promotion_blockers = (
-            ["FULL_VALIDATION_SUITE_NOT_RUN"]
+            _oos_blockers_for_stage(validation_stage)
             if oos_enabled
             else [AUTO_FULL_NOT_PROMOTABLE, "OOS_TRAIN_VALID_TEST_NOT_RUN"]
         )
         _result["promotion_state"] = "research_only"
         _result["promotion_blockers"] = promotion_blockers
         _result["validation_provenance"] = research_only_provenance(
-            source="mcp_run_backtest_oos" if oos_enabled else "mcp_run_backtest_auto_full",
+            source=f"mcp_run_backtest_oos_{validation_stage}" if oos_enabled else "mcp_run_backtest_auto_full",
             reason_code=promotion_blockers[0],
             blockers=promotion_blockers,
             params=_result["params"],
@@ -535,10 +569,18 @@ async def run_backtest(
             public_oos = to_public_oos_result(result.get("oos_result", {}))
             if data_quality_report is not None:
                 public_oos["data_quality"] = data_quality_report
+            if validation_stage == "selection":
+                public_oos = withhold_final_test(public_oos)
+            oos_scoring = _score_oos_for_stage(public_oos, data_quality_report, validation_stage)
             _result["oos_result"] = public_oos
             _result["direction_policy"] = "train_fixed"
-            _result["report_scope"] = result.get("report_scope", "legacy_compat_single_run")
+            _result["report_scope"] = public_oos.get("report_scope", result.get("report_scope"))
             _result["compatibility_warning"] = result.get("compatibility_warning")
+            _result["scoring"] = oos_scoring
+            if validation_stage == "selection":
+                _result["selection_score"] = oos_scoring
+            else:
+                _result["oos_score"] = oos_scoring
         return json.dumps(_result, ensure_ascii=False, indent=2, default=str)
 
     except Exception as e:
@@ -561,7 +603,8 @@ async def score_factor(
     neutralize_industry: bool = True,
     neutralize_cap: bool = True,
     rebalance_anchor: str | None = None,
-    oos_enabled: bool = False,
+    oos_enabled: bool = True,
+    validation_stage: Literal["selection", "final"] = "selection",
     data_quality: bool | None = None,
     data_quality_mode: Literal["report_only", "filter", "strict"] = "filter",
     max_abs_daily_ret: float = 0.25,
@@ -583,7 +626,8 @@ async def score_factor(
         neutralize_industry: 行业中性化(默认开启)
         neutralize_cap: 市值中性化(默认开启)
         rebalance_anchor: 换仓网格锚定日期
-        oos_enabled: 启用训练/验证/测试样本外评估
+        oos_enabled: 启用训练/验证/测试样本外评估；默认开启 OOS selection
+        validation_stage: selection 只用 train+valid 选候选；final 才运行并暴露 test
         data_quality: 是否运行基础行情数据质量门；None 表示兼容默认
 
     Returns:
@@ -594,12 +638,22 @@ async def score_factor(
     task_id = await start_mcp_task("score", expression, {
         "universe": universe, "start_date": start_date, "end_date": end_date,
         "n_groups": n_groups, "holding_period": holding_period, "benchmark": benchmark,
-        "rebalance_anchor": rebalance_anchor, "oos_enabled": oos_enabled,
+        "rebalance_anchor": rebalance_anchor, "oos_enabled": oos_enabled, "validation_stage": validation_stage,
         "data_quality": data_quality,
     })
     _error_msg = None
     _result = None
     try:
+        if validation_stage not in {"selection", "final"}:
+            return json.dumps({
+                "error_code": "INVALID_VALIDATION_STAGE",
+                "hint": "validation_stage must be selection or final",
+            })
+        if validation_stage == "final" and not oos_enabled:
+            return json.dumps({
+                "error_code": "INVALID_VALIDATION_STAGE",
+                "hint": "validation_stage=final requires oos_enabled=true",
+            })
         market_df, stock_codes = await asyncio.to_thread(_fetch_data_for_market, universe, start_date, end_date)
         if market_df is None or len(market_df) == 0:
             return json.dumps({"error": "No market data available."})
@@ -631,7 +685,7 @@ async def score_factor(
             future = executor.submit_cpu_work(
                 _run_oos_backtest_in_process, market_df, expression, n_groups, holding_period,
                 neutralize_industry=neutralize_industry, neutralize_cap=neutralize_cap,
-                rebalance_anchor=rebalance_anchor, oos_config=oos_config,
+                rebalance_anchor=rebalance_anchor, oos_config=oos_config, evaluation_stage=validation_stage,
             )
         else:
             future = executor.submit_cpu_work(
@@ -653,6 +707,7 @@ async def score_factor(
             "neutralize_cap": neutralize_cap,
             "rebalance_anchor": rebalance_anchor,
             "oos_enabled": oos_enabled,
+            "validation_stage": validation_stage,
             "data_quality": data_quality,
             "stock_count": len(stock_codes),
         }
@@ -661,30 +716,25 @@ async def score_factor(
             public_oos = to_public_oos_result(result.get("oos_result", {}))
             if data_quality_report is not None:
                 public_oos["data_quality"] = data_quality_report
-            oos_scoring = compute_oos_score(public_oos, data_quality=data_quality_report)
-            test_metrics = public_oos.get("test", {}).get("metrics", {})
+            if validation_stage == "selection":
+                public_oos = withhold_final_test(public_oos)
+            oos_scoring = _score_oos_for_stage(public_oos, data_quality_report, validation_stage)
+            metrics_key = "valid" if validation_stage == "selection" else "test"
+            key_metrics = public_oos.get(metrics_key, {}).get("metrics", {})
             _result = {
                 "score": oos_scoring["score"],
                 "grade": oos_scoring["grade"],
                 "decision": oos_scoring["decision"],
                 "overfit_risk": oos_scoring["overfit_risk"],
-                "component_scores": {
-                    "train": oos_scoring["train_score"],
-                    "valid": oos_scoring["valid_score"],
-                    "test": oos_scoring["test_score"],
-                    "stability": oos_scoring["stability_score"],
-                    "decay_penalty": oos_scoring["decay_penalty"],
-                    "data_quality_penalty": oos_scoring["data_quality_penalty"],
-                },
                 "key_metrics": {
-                    "ic_mean": test_metrics.get("ic_mean", test_metrics.get("direction_adjusted_rank_ic_mean", 0)),
-                    "ic_ir": test_metrics.get("ic_ir", 0),
-                    "monotonicity": test_metrics.get("monotonicity_score", 0),
-                    "top_group_sharpe": test_metrics.get("top_group_sharpe", 0),
-                    "turnover": test_metrics.get("turnover", 0),
-                    "wq_fitness": test_metrics.get("wq_fitness", 0),
-                    "sharpe": test_metrics.get("sharpe", test_metrics.get("long_short_sharpe", 0)),
-                    "max_drawdown": test_metrics.get("max_drawdown", 0),
+                    "ic_mean": key_metrics.get("ic_mean", key_metrics.get("direction_adjusted_rank_ic_mean", 0)),
+                    "ic_ir": key_metrics.get("ic_ir", 0),
+                    "monotonicity": key_metrics.get("monotonicity_score", 0),
+                    "top_group_sharpe": key_metrics.get("top_group_sharpe", 0),
+                    "turnover": key_metrics.get("turnover", 0),
+                    "wq_fitness": key_metrics.get("wq_fitness", 0),
+                    "sharpe": key_metrics.get("sharpe", key_metrics.get("long_short_sharpe", 0)),
+                    "max_drawdown": key_metrics.get("max_drawdown", 0),
                 },
                 "interpretation": {
                     "rating": oos_scoring["grade"],
@@ -694,16 +744,30 @@ async def score_factor(
                 "oos_score": oos_scoring,
                 "oos_result": public_oos,
                 "direction_policy": "train_fixed",
-                "report_scope": result.get("report_scope", "legacy_compat_single_run"),
+                "report_scope": public_oos.get("report_scope", result.get("report_scope")),
                 "compatibility_warning": result.get("compatibility_warning"),
                 "params": params,
             }
+            component_scores = {
+                "train": oos_scoring["train_score"],
+                "valid": oos_scoring["valid_score"],
+                "stability": oos_scoring["stability_score"],
+                "decay_penalty": oos_scoring["decay_penalty"],
+                "data_quality_penalty": oos_scoring["data_quality_penalty"],
+            }
+            if validation_stage == "final":
+                component_scores["test"] = oos_scoring["test_score"]
+            _result["component_scores"] = component_scores
+            if validation_stage == "selection":
+                _result["selection_score"] = oos_scoring
+            else:
+                _result["final_oos_score"] = oos_scoring
             _result["promotion_state"] = "research_only"
-            _result["promotion_blockers"] = ["FULL_VALIDATION_SUITE_NOT_RUN"]
+            _result["promotion_blockers"] = _oos_blockers_for_stage(validation_stage)
             _result["validation_provenance"] = research_only_provenance(
-                source="mcp_score_factor_oos",
-                reason_code="FULL_VALIDATION_SUITE_NOT_RUN",
-                blockers=["FULL_VALIDATION_SUITE_NOT_RUN"],
+                source=f"mcp_score_factor_oos_{validation_stage}",
+                reason_code=_result["promotion_blockers"][0],
+                blockers=_result["promotion_blockers"],
                 params=params,
             )
             if data_quality_report is not None:
