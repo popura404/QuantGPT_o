@@ -27,6 +27,7 @@ from .mutation_engine import MutationEngine
 from .report import generate_report
 from .task_executor import _run_backtest_in_process, get_executor
 from .trajectory_analyzer import analyze_trajectory
+from .validation.promotion import AUTO_FULL_NOT_PROMOTABLE, research_only_provenance
 
 logger = logging.getLogger(__name__)
 
@@ -270,6 +271,13 @@ def _evaluate_candidate(
     return {
         "expression": expression,
         "status": "success",
+        "promotion_state": "research_only",
+        "promotion_blockers": [AUTO_FULL_NOT_PROMOTABLE, "FULL_VALIDATION_SUITE_NOT_RUN"],
+        "validation_provenance": research_only_provenance(
+            source="iteration_auto_full",
+            blockers=[AUTO_FULL_NOT_PROMOTABLE, "FULL_VALIDATION_SUITE_NOT_RUN"],
+            params=params,
+        ),
         "score": scoring["score"],
         "grade": scoring["grade"],
         "component_scores": scoring["component_scores"],

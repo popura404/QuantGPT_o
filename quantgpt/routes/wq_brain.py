@@ -22,7 +22,7 @@ from ..task_store import (
 )
 from ..wq_brain_client import SUBMIT_THRESHOLDS, configured_accounts, get_client, is_configured
 from ..wq_brain_service import fitness_to_grade, run_list_alphas, run_single_simulation, safe_float
-from ..wq_submission_guard import require_submission_preflight
+from ..wq_submission_guard import require_submission_preflight, wq_target_scope
 
 logger = logging.getLogger(__name__)
 
@@ -269,10 +269,17 @@ async def submit_alpha_from_task(
         raise HTTPException(status_code=403, detail="Alpha 提交仅允许 primary 账号，禁止从 alt 账号提交")
 
     expression = result.get("expression") or task.get("expression") or task.get("params", {}).get("expression")
+    params = task.get("params", {})
     submission_preflight = require_submission_preflight(
         expression,
         override_reason=submission_override_reason,
         unavailable_reason=f"Task {task_id} has no local expression provenance for submission preflight",
+        target_scope=wq_target_scope(
+            region=params.get("region", "USA"),
+            universe=params.get("universe", "TOP3000"),
+            delay=params.get("delay", 1),
+            neutralization=params.get("neutralization", "SUBINDUSTRY"),
+        ),
     )
     if not submission_preflight.get("allowed"):
         raise HTTPException(status_code=400, detail={
@@ -294,7 +301,6 @@ async def submit_alpha_from_task(
         task["result"]["submitted"] = True
         try:
             from ..alpha_tracker import record_submitted_alpha_sync
-            params = task.get("params", {})
             is_metrics = result.get("is_metrics", {})
             record_submitted_alpha_sync(
                 user_id=user_id, alpha_id=alpha_id, expression=result.get("expression", ""),
@@ -354,6 +360,7 @@ async def submit_alpha_by_id(
         expression,
         override_reason=submission_override_reason,
         unavailable_reason=f"Alpha {alpha_id} has no local expression provenance for submission preflight",
+        target_scope=wq_target_scope(),
     )
     if not submission_preflight.get("allowed"):
         raise HTTPException(status_code=400, detail={

@@ -78,6 +78,7 @@ from .strategy.service import (
 from .task_executor import _run_backtest_in_process, _run_oos_backtest_in_process, get_executor
 from .validation.oos_backtest import to_public_oos_result
 from .validation.oos_score import compute_oos_score
+from .validation.promotion import AUTO_FULL_NOT_PROMOTABLE, research_only_provenance
 from .validation.split import OOSConfig
 from .wq_brain_service import (
     run_batch_simulation,
@@ -86,7 +87,7 @@ from .wq_brain_service import (
     run_single_simulation,
     run_submit_by_ids,
 )
-from .wq_submission_guard import require_submission_preflight
+from .wq_submission_guard import require_submission_preflight, wq_target_scope
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s", stream=sys.stderr)
 logger = logging.getLogger(__name__)
@@ -515,6 +516,19 @@ async def run_backtest(
                 "stock_count": len(stock_codes),
             },
         }
+        promotion_blockers = (
+            ["FULL_VALIDATION_SUITE_NOT_RUN"]
+            if oos_enabled
+            else [AUTO_FULL_NOT_PROMOTABLE, "OOS_TRAIN_VALID_TEST_NOT_RUN"]
+        )
+        _result["promotion_state"] = "research_only"
+        _result["promotion_blockers"] = promotion_blockers
+        _result["validation_provenance"] = research_only_provenance(
+            source="mcp_run_backtest_oos" if oos_enabled else "mcp_run_backtest_auto_full",
+            reason_code=promotion_blockers[0],
+            blockers=promotion_blockers,
+            params=_result["params"],
+        )
         if data_quality_report is not None:
             _result["data_quality"] = data_quality_report
         if oos_enabled:
@@ -684,6 +698,14 @@ async def score_factor(
                 "compatibility_warning": result.get("compatibility_warning"),
                 "params": params,
             }
+            _result["promotion_state"] = "research_only"
+            _result["promotion_blockers"] = ["FULL_VALIDATION_SUITE_NOT_RUN"]
+            _result["validation_provenance"] = research_only_provenance(
+                source="mcp_score_factor_oos",
+                reason_code="FULL_VALIDATION_SUITE_NOT_RUN",
+                blockers=["FULL_VALIDATION_SUITE_NOT_RUN"],
+                params=params,
+            )
             if data_quality_report is not None:
                 _result["data_quality"] = data_quality_report
             return json.dumps(_result, ensure_ascii=False, indent=2, default=str)
@@ -731,6 +753,14 @@ async def score_factor(
             "interpretation": {"rating": scoring["grade"]},
             "params": params,
         }
+        _result["promotion_state"] = "research_only"
+        _result["promotion_blockers"] = [AUTO_FULL_NOT_PROMOTABLE, "OOS_TRAIN_VALID_TEST_NOT_RUN"]
+        _result["validation_provenance"] = research_only_provenance(
+            source="mcp_score_factor_auto_full",
+            reason_code=AUTO_FULL_NOT_PROMOTABLE,
+            blockers=[AUTO_FULL_NOT_PROMOTABLE, "OOS_TRAIN_VALID_TEST_NOT_RUN"],
+            params=params,
+        )
         if data_quality_report is not None:
             _result["data_quality"] = data_quality_report
         return json.dumps(_result, ensure_ascii=False, indent=2, default=str)
@@ -1154,6 +1184,7 @@ async def wq_brain_submit_by_ids(
                     unavailable_reason=(
                         f"Alpha {alpha_id} has no local expression provenance for submission preflight"
                     ),
+                    target_scope=wq_target_scope(),
                 )
             return preflight_cache[cache_key]
 

@@ -181,3 +181,17 @@ class TestSubmitAlphaEndpoint:
         detail = resp.json()["detail"]
         assert detail["error_code"] == "LOCAL_PREFLIGHT_BLOCKED"
         assert detail["submission_preflight"]["status"] == "unavailable"
+
+    async def test_direct_submit_by_id_rejects_local_wq_scope_mismatch(self, client, test_user, auth_headers):
+        with patch.dict(os.environ, {"WQ_BRAIN_EMAIL": "a@b.com", "WQ_BRAIN_PASSWORD": "pw"}, clear=False):
+            resp = await client.post(
+                "/api/v1/wq-brain/submit-by-id/alpha-1",
+                params={"expression": "rank(close)"},
+                headers=auth_headers,
+            )
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert detail["error_code"] == "LOCAL_PREFLIGHT_BLOCKED"
+        assert detail["submission_preflight"]["status"] == "scope_mismatch"
+        assert detail["submission_preflight"]["error_code"] == "LOCAL_PREFLIGHT_SCOPE_MISMATCH"

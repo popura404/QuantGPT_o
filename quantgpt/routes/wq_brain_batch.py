@@ -26,7 +26,7 @@ from ..wq_brain_service import (
     run_submit_by_ids,
     safe_float,
 )
-from ..wq_submission_guard import require_submission_preflight
+from ..wq_submission_guard import require_submission_preflight, wq_target_scope
 
 logger = logging.getLogger(__name__)
 
@@ -331,6 +331,7 @@ def _run_batch_submit_by_id(
                     expression,
                     override_reason=submission_override_reason,
                     unavailable_reason=f"Alpha {aid} has no local expression provenance for submission preflight",
+                    target_scope=wq_target_scope(),
                 )
             return preflight_cache[cache_key]
 

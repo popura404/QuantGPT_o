@@ -16,7 +16,8 @@ import logging
 import time
 from typing import Any, Callable
 
-from .wq_submission_guard import PreflightRunner, require_submission_preflight
+from .validation.promotion import BOUNDARY_SUBMIT, evaluate_promotion_provenance
+from .wq_submission_guard import PreflightRunner, require_submission_preflight, wq_target_scope
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,12 @@ def run_single_simulation(
             expression,
             override_reason=submission_override_reason,
             preflight_runner=submission_preflight_runner,
+            target_scope=wq_target_scope(
+                region=region,
+                universe=universe,
+                delay=delay,
+                neutralization=neutralization,
+            ),
         )
         if submission_preflight.get("allowed"):
             submit_result = client.submit_alpha(alpha_id)
@@ -167,7 +174,7 @@ def run_batch_simulation(
     """Sweep expression over region×delay×universe×neutralization grid. Returns result dict."""
     combos = list(itertools.product(regions, delays, universes, neutralizations))
     sub_results: dict[str, dict] = {}
-    submission_preflight = None
+    submission_preflight_by_scope: dict[tuple[tuple[str, object], ...], dict] = {}
 
     for i, (region, delay_val, universe, neut) in enumerate(combos):
         if check_cancelled and check_cancelled():
@@ -198,13 +205,23 @@ def run_batch_simulation(
 
         submitted = False
         submission_blocked = False
+        submission_preflight = None
         if auto_submit and alpha_id and grade == "A":
-            if submission_preflight is None:
-                submission_preflight = require_submission_preflight(
+            target_scope = wq_target_scope(
+                region=region,
+                universe=universe,
+                delay=delay_val,
+                neutralization=neut,
+            )
+            cache_key = tuple(sorted(target_scope.items()))
+            if cache_key not in submission_preflight_by_scope:
+                submission_preflight_by_scope[cache_key] = require_submission_preflight(
                     expression,
                     override_reason=submission_override_reason,
                     preflight_runner=submission_preflight_runner,
+                    target_scope=target_scope,
                 )
+            submission_preflight = submission_preflight_by_scope[cache_key]
             if submission_preflight.get("allowed"):
                 submit_result = client.submit_alpha(alpha_id)
                 submitted = submit_result.get("ok", False)
@@ -266,6 +283,20 @@ def run_submit_by_ids(
                 unavailable_reason=f"Alpha {alpha_id} has no local expression provenance for submission preflight",
             )
         )
+        if submission_preflight.get("allowed"):
+            promotion_gate = evaluate_promotion_provenance(
+                submission_preflight.get("validation_provenance"),
+                BOUNDARY_SUBMIT,
+            )
+            if not promotion_gate["allowed"]:
+                submission_preflight = {
+                    **submission_preflight,
+                    "allowed": False,
+                    "status": "failed",
+                    "error_code": promotion_gate["error_code"],
+                    "promotion_gate": promotion_gate,
+                    "error": "Submission requires factor_validation/v1 promotion provenance.",
+                }
         if not submission_preflight.get("allowed"):
             local_preflight_blocked += 1
             entry = {

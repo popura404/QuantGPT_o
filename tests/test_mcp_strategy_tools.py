@@ -6,6 +6,22 @@ import pytest
 
 from quantgpt import mcp_server
 from quantgpt.strategy.spec import example_strategy_spec
+from quantgpt.validation.promotion import build_factor_validation_provenance
+
+
+def _validation_provenance() -> dict:
+    return build_factor_validation_provenance(
+        oos_result={
+            "direction_policy": "train_fixed",
+            "train": {"metrics": {"long_short_sharpe": 1.0, "direction_adjusted_rank_ic_mean": 0.03}},
+            "valid": {"metrics": {"long_short_sharpe": 0.9, "direction_adjusted_rank_ic_mean": 0.02}},
+            "test": {"metrics": {"long_short_sharpe": 0.8, "direction_adjusted_rank_ic_mean": 0.02}},
+        },
+        oos_score={"decision": "candidate", "score": 80},
+        data_quality={"enabled": True, "after_rows": 100, "after_stocks": 10},
+        rolling_validation={"score": 70, "windows": [{"window_index": 0}]},
+        placebo_test={"passed": True, "details": {"perm_pass": True, "decay_ok": True, "shift_ics": {"5": 0.01}}},
+    )
 
 
 def test_mcp_strategy_discovery_tools_return_json():
@@ -41,6 +57,7 @@ async def test_mcp_run_score_report_strategy_flow(monkeypatch, tmp_path):
         "cash_weights": [{"trade_date": "2024-01-02", "cash_weight": 0.5}],
         "turnover_by_rebalance": [],
         "cost_by_rebalance": [],
+        "validation_provenance": _validation_provenance(),
     }
 
     monkeypatch.setattr(mcp_server, "_run_strategy_backtest_payload", lambda request: payload)

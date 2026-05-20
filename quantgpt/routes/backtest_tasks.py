@@ -68,6 +68,7 @@ from ..task_store import (
 )
 from ..validation.oos_backtest import to_public_oos_result
 from ..validation.oos_score import compute_oos_score
+from ..validation.promotion import AUTO_FULL_NOT_PROMOTABLE, research_only_provenance
 from ..validation.split import OOSConfig
 
 logger = logging.getLogger(__name__)
@@ -526,6 +527,19 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
                 "generated_expression": expression,
             },
         }
+        promotion_blockers = (
+            ["FULL_VALIDATION_SUITE_NOT_RUN"]
+            if req.oos_enabled
+            else [AUTO_FULL_NOT_PROMOTABLE, "OOS_TRAIN_VALID_TEST_NOT_RUN"]
+        )
+        task_result["promotion_state"] = "research_only"
+        task_result["promotion_blockers"] = promotion_blockers
+        task_result["validation_provenance"] = research_only_provenance(
+            source="auto_backtest_oos" if req.oos_enabled else "auto_backtest_auto_full",
+            reason_code=promotion_blockers[0],
+            blockers=promotion_blockers,
+            params=task_result["params"],
+        )
         if data_quality_report is not None:
             task_result["data_quality"] = data_quality_report
         if req.oos_enabled:

@@ -367,6 +367,8 @@ class TestAutoBacktestOOSResults:
             assert key in result
         assert "oos_result" not in result
         assert "data_quality" not in result
+        assert result["promotion_state"] == "research_only"
+        assert "AUTO_FULL_NOT_PROMOTABLE" in result["promotion_blockers"]
         assert result["params"]["rebalance_anchor"] == "2024-01-02"
 
     async def test_oos_completed_task_result_is_public_and_marked(
@@ -386,6 +388,8 @@ class TestAutoBacktestOOSResults:
         assert result["oos_result"]["report_scope"] == "oos_train_valid_test"
         assert "_private" not in result["oos_result"]
         assert result["backtest_summary"]["metrics_scope"] == "legacy_compat_single_run"
+        assert result["promotion_state"] == "research_only"
+        assert "FULL_VALIDATION_SUITE_NOT_RUN" in result["promotion_blockers"]
 
     async def test_data_quality_only_non_oos_result_has_no_oos_result(
         self, client, test_user, auth_headers, auto_backtest_fakes

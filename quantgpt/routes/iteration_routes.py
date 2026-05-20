@@ -32,6 +32,7 @@ from ..task_store import (
     tasks,
     tasks_lock,
 )
+from ..validation.promotion import BOUNDARY_CANDIDATE, evaluate_promotion_provenance
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +282,19 @@ async def select_candidate(
     candidate = candidates[req.candidate_index]
     if candidate.get("status") != "success":
         raise HTTPException(status_code=400, detail="该候选因子回测失败，无法选择")
+    promotion_gate = evaluate_promotion_provenance(
+        candidate.get("validation_provenance"),
+        BOUNDARY_CANDIDATE,
+    )
+    if not promotion_gate["allowed"]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "CANDIDATE_PROMOTION_BLOCKED",
+                "message": "候选因子必须先通过 train/validation/test、rolling window、placebo、time-shift 和 data quality gate。",
+                "promotion_gate": promotion_gate,
+            },
+        )
 
     task["selected_candidate_index"] = req.candidate_index
 

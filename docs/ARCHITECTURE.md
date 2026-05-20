@@ -96,6 +96,10 @@ Rank-based 分组回测引擎。
 - 训练期确定方向，验证期和测试期使用固定方向或 StrategySpec 声明方向
 - OOS payload 暴露 `data_quality`、`oos_result`、`oos_summary` 和 `oos_score`
 - OOS scoring 优先使用验证/测试表现、样本外衰减、换手和数据质量惩罚
+- `validation/promotion.py` 是 candidate / submit / export 的统一晋级门禁：
+  `factor_validation/v1` 必须同时记录并通过 data-quality、train/valid/test、
+  rolling window、placebo 和 time-shift。普通 `auto_full` 回测和未跑完整 suite 的
+  OOS 回测都标记为 `research_only`，不得直接进入提交或导出。
 
 ### 3.4 WQ BRAIN Simulation (`wq_simulate.py`)
 
@@ -106,7 +110,9 @@ Rank-based 分组回测引擎。
 
 正式提交到 WQ BRAIN 前会经过 `wq_submission_guard.py` 本地 preflight：
 远程模拟不强制本地执行，但 `auto_submit`、手动 submit 和 by-id submit 都必须先通过
-本地 OOS/data-quality；WQ-only 或缺少表达式溯源的候选需要显式 `submission_override_reason`。
+完整 promotion preflight gate。默认本地 A 股 `a_share` / `hs300` 检查不能授权 WQ `USA` / `TOP3000`
+目标，范围不一致会返回 `LOCAL_PREFLIGHT_SCOPE_MISMATCH`；WQ-only、缺少表达式溯源、
+本地不可执行或接受远程 WQ 验证代替本地代理验证时，需要显式 `submission_override_reason`。
 
 ## 4. Data Pipeline (`market_data.py`)
 

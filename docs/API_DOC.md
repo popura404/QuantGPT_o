@@ -710,7 +710,8 @@ Example optimizer input:
 }
 ```
 
-Signal export responses contain candidate `target_weight` rows and a
+Signal export requires promotion-ready `validation_provenance`; missing or
+research-only provenance returns 400. Successful responses contain candidate `target_weight` rows and a
 non-live-trading notice. They do not contain `broker`, `account`, `order`,
 `api_key`, or execution instructions.
 
@@ -822,7 +823,9 @@ es.addEventListener("done", (e) => {
 
 ### POST /api/v1/tasks/{task_id}/select_candidate
 
-选择一个迭代候选因子。
+选择一个迭代候选因子。该边界会检查 `validation_provenance`；普通迭代候选默认来自
+`auto_full` 研究回测，状态为 `research_only`，必须先通过完整 `factor_validation/v1`
+suite 后才能被选择为正式候选。
 
 **请求体:**
 
@@ -1012,6 +1015,10 @@ QuantGPT 提供 MCP (Model Context Protocol) 服务,支持因子研究工具和 
 | `score_strategy` | 根据策略回测结果计算策略评分 |
 | `generate_strategy_report` | 根据策略回测结果生成 HTML 报告和 summary JSON |
 
+candidate / submit / export 边界要求 `factor_validation/v1` 晋级证明：data-quality gate、
+train/valid/test、rolling window、placebo test、time-shift test 必须全部通过。普通
+`auto_full` 回测结果会标记为 `research_only`，不能直接选择为候选、提交或导出。
+
 ### 配置 (.mcp.json)
 
 ```json
@@ -1138,7 +1145,7 @@ QuantGPT 提供 MCP (Model Context Protocol) 服务,支持因子研究工具和 
 6. GET  /tasks/{id}              → 获取完整结果
 7. GET  /reports/{filename}      → 下载报告
 8. POST /tasks/{id}/iterate      → AI 迭代优化
-9. POST /tasks/{id}/select_candidate → 选择候选
+9. POST /tasks/{id}/select_candidate → 选择候选（必须已有完整 validation_provenance）
 ```
 
 ### 策略 MVP 流程

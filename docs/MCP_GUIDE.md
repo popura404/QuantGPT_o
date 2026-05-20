@@ -111,7 +111,8 @@ MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先�
 ### StrategySpec 策略工具
 
 这些工具保持非实盘边界。`export_strategy_candidate` 只输出候选调仓信号，
-不是订单协议，也不包含 broker/account/order/api_key/execution 字段。
+不是订单协议，也不包含 broker/account/order/api_key/execution 字段。该导出仍属于
+candidate/export 边界，调用方必须提供 promotion-ready `validation_provenance`。
 
 | 工具 | 说明 |
 |------|------|
@@ -154,7 +155,9 @@ metrics 作为权威结论。
 
 `run_backtest` 与 `score_factor` 额外支持 OOS/data-quality 参数。省略 `oos_enabled` 时保持 legacy
 单窗口兼容；研究结论优先显式传 `oos_enabled=true`，此时方向策略固定为 train-fixed，评分以
-`oos_score` / `oos_result` 为准。
+`oos_score` / `oos_result` 为准。普通 `auto_full` 或只跑 OOS 的结果都会返回
+`promotion_state="research_only"`；它们只能用于研究展示，不能作为 candidate / submit / export
+的授权证明。
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
@@ -166,10 +169,16 @@ metrics 作为权威结论。
 | `max_missing_ratio_per_stock` | float | `0.2` | 单股最大缺失交易日比例 |
 | `adjustment` | str | `unknown` | 复权模式：`qfq` / `hfq` / `none` / `unknown` |
 
+candidate / submit / export 边界统一要求 `validation_provenance.suite_version="factor_validation/v1"`，
+且必须同时通过 data-quality gate、train/valid/test、rolling window、placebo test 和 time-shift test。
+缺少该证明的 `allowed=true` preflight 会被降级为 blocked。
+
 WQ BRAIN 远程模拟本身不强制本地 OOS/data-quality，因为 WQ-only 字段和算子可能无法在本地执行。
-但所有正式提交动作都会执行本地 preflight：`auto_submit=true`、`submit-alpha`、`submit-by-id`
-和 `batch-submit-by-id` 只有在本地 OOS/data-quality 通过时才会调用平台 submit。缺少表达式溯源
-或本地不可执行时返回 `LOCAL_PREFLIGHT_UNAVAILABLE`；确需提交 WQ-only 表达式时必须提供
+所有正式提交动作仍会经过 preflight gate：`auto_submit=true`、`submit-alpha`、`submit-by-id`
+和 `batch-submit-by-id` 只有在完整 promotion gate 允许时才会调用平台 submit。默认本地 preflight 是
+A 股 `a_share` / `hs300` 代理检查，不能直接授权 WQ `USA` / `TOP3000` 提交；这类范围不一致会返回
+`LOCAL_PREFLIGHT_SCOPE_MISMATCH`。缺少表达式溯源或本地不可执行时返回
+`LOCAL_PREFLIGHT_UNAVAILABLE`。确需提交 WQ-only 表达式，或基于远程 WQ 验证接受范围不一致时，必须提供
 `submission_override_reason`，该豁免会写入返回结果。
 
 ---

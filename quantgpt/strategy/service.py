@@ -7,6 +7,7 @@ import json
 import pandas as pd
 
 from ..validation.oos_score import compute_oos_score
+from ..validation.promotion import BOUNDARY_EXPORT, assert_promotion_ready_for_boundary
 from .adapters import list_data_fields as _list_data_fields
 from .adapters import list_markets as _list_markets
 from .backtest import StrategyBacktestRequest, run_strategy_backtest
@@ -84,8 +85,11 @@ def generate_strategy_report_payload(result_payload: dict, output_dir: str | Non
 
 
 def export_strategy_candidate_payload(result_payload: dict, output_dir: str | None = None) -> dict:
+    assert_promotion_ready_for_boundary(result_payload.get("validation_provenance"), BOUNDARY_EXPORT)
     result = strategy_result_from_payload(result_payload)
-    return export_strategy_candidate(result, output_dir=output_dir)
+    payload = export_strategy_candidate(result, output_dir=output_dir)
+    payload["validation_provenance"] = result_payload["validation_provenance"]
+    return payload
 
 
 def diagnose_strategy_payload(result_payload: dict) -> dict:
