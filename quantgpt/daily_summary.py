@@ -104,7 +104,7 @@ _SYSTEM_PROMPT = """你是一位资深量化策略师，擅长用因子模型刻
 ## 严格要求
 
 1. 直接输出正文，第一行必须是 `#` 标题，禁止任何开场白（"好的""根据"等）
-2. 严禁出现任何个股代码或个股名称，只能用"多头组Top 10%""分位90%"等分组表达
+2. 允许引用数据中明确提供的个股代码或个股名称；禁止编造未提供的个股信息。涉及个股时必须说明仅供研究参考，不构成买卖建议。
 3. 使用 **加粗** 突出关键数字和结论
 4. 每个因子的解读必须用 Markdown 无序列表（`- ` 开头），禁止直接写成段落
 5. 字数控制在 1800-2500 字
@@ -112,6 +112,56 @@ _SYSTEM_PROMPT = """你是一位资深量化策略师，擅长用因子模型刻
 7. 重点解读分位数异常（>80 或 <20）和 Z-Score 异常（|z|>1.5）的因子
 8. 行业轮动分析必须基于提供的行业因子数据，给出具体行业名称和因子逻辑
 9. 报告末尾必须有总结+投资建议+免责声明"""
+
+
+def _format_stock_sample(item) -> str:
+    code = None
+    name = None
+    value = None
+    if isinstance(item, dict):
+        code = item.get("code") or item.get("stock_code") or item.get("symbol")
+        name = item.get("name") or item.get("stock_name")
+        value = item.get("value") or item.get("factor_value")
+    elif isinstance(item, (list, tuple)) and item:
+        code = item[0]
+        if len(item) >= 2:
+            value = item[1]
+        if len(item) >= 3:
+            name = item[2]
+
+    label = str(code) if code is not None else "未知标的"
+    if name:
+        label = f"{name}({label})"
+    if value is None:
+        return label
+    return f"{label}: {value}"
+
+
+def _build_stock_sample_lines(factor_signals: list[FactorSignal], limit: int = 8) -> list[str]:
+    signals = [
+        s for s in factor_signals
+        if getattr(s, "top_stocks", None) or getattr(s, "bottom_stocks", None)
+    ]
+    if not signals:
+        return []
+
+    def priority(signal: FactorSignal) -> tuple[float, float, float]:
+        percentile_extreme = abs(float(signal.percentile_20d) - 50.0)
+        return (
+            abs(float(signal.signal_strength)),
+            abs(float(signal.zscore_20d)),
+            percentile_extreme,
+        )
+
+    lines = []
+    for signal in sorted(signals, key=priority, reverse=True)[:limit]:
+        top = "、".join(_format_stock_sample(item) for item in signal.top_stocks[:3]) or "无"
+        bottom = "、".join(_format_stock_sample(item) for item in signal.bottom_stocks[:3]) or "无"
+        lines.append(
+            f"- **{signal.factor_name}** [{signal.direction}]："
+            f"Top样本 {top}；Bottom样本 {bottom}"
+        )
+    return lines
 
 
 def _build_llm_prompt(
@@ -122,7 +172,7 @@ def _build_llm_prompt(
     industry_signals: list[dict] | None = None,
     history_summaries: list[dict] | None = None,
 ) -> str:
-    """Build a rich LLM prompt with real factor data (no individual stock codes)."""
+    """Build a rich LLM prompt with real factor data."""
     lines = [f"今日日期：{date}\n"]
 
     # Market regime context (computed from factors, not price)
@@ -200,7 +250,7 @@ def _build_llm_prompt(
     lines.append("## 因子信号总览（基于沪深300成分股）\n")
     lines.append(f"**{up_count}** 个因子转强，**{down_count}** 个转弱，**{flat_count}** 个持平\n")
 
-    # Factor signals grouped by category — NO individual stock codes
+    # Factor signals grouped by category
     category_order = ["trend", "volume", "volatility", "technical", "valuation"]
     for cat in category_order:
         cat_signals = [s for s in factor_signals if s.category == cat]
@@ -217,6 +267,13 @@ def _build_llm_prompt(
                 f"{s.pct_above_median}%标的高于中位数。"
                 f"{s.signal_description}"
             )
+        lines.append("")
+
+    stock_sample_lines = _build_stock_sample_lines(factor_signals)
+    if stock_sample_lines:
+        lines.append("## 个股样本信号（仅限引用下列明确提供的代码/名称）\n")
+        lines.append("以下个股样本来自当日因子截面 Top/Bottom 计算。可以引用这些代码或名称，但不得补充未提供的个股信息，不得给出个股买卖指令。")
+        lines.extend(stock_sample_lines)
         lines.append("")
 
     # Industry rotation signals
@@ -257,6 +314,7 @@ def _build_llm_prompt(
     # Writing instructions
     lines.append("## 输出格式要求\n")
     lines.append("严格按以下结构输出，不要有任何开场白：\n")
+    lines.append("如引用个股，只能引用“个股样本信号”中明确提供的代码或名称，并在相关段落说明仅供研究参考、不构成买卖建议。\n")
     lines.append(f"# A股市场量化研究日报 | {date}\n")
     lines.append("## 一、市场全景解读\n")
     lines.append('**开头用 1-2 句加粗文字给出今日市场核心特征**（如“这是一个典型的小盘风格占优交易日”）。\n')
