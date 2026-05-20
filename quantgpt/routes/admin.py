@@ -5,12 +5,20 @@ import logging
 import uuid as uuid_mod
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth import create_admin_token, create_api_key_for_user, get_admin_password, require_admin
+from ..auth import (
+    check_auth_failure_limit,
+    clear_auth_failures,
+    create_admin_token,
+    create_api_key_for_user,
+    get_admin_password,
+    record_auth_failure,
+    require_admin,
+)
 from ..db import get_db
 from ..models import ApiKey, Feedback, Task, User
 
@@ -24,14 +32,18 @@ class AdminLoginRequest(BaseModel):
 
 
 @router.post("/login")
-async def admin_login(req: AdminLoginRequest):
+async def admin_login(req: AdminLoginRequest, request: Request):
     """Authenticate admin with password, return JWT."""
+    client_ip = request.client.host if request.client else "unknown"
     try:
         expected = get_admin_password()
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
+    check_auth_failure_limit("admin", "admin", client_ip)
     if not hmac.compare_digest(req.password, expected):
+        record_auth_failure("admin", "admin", client_ip)
         raise HTTPException(status_code=401, detail="密码错误")
+    clear_auth_failures("admin", "admin", client_ip)
     token = create_admin_token()
     return {"token": token}
 

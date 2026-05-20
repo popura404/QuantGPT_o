@@ -10,6 +10,15 @@ from quantgpt.auth import create_admin_token
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture(autouse=True)
+def _clear_auth_failure_buckets():
+    from quantgpt.auth import _auth_failure_buckets
+
+    _auth_failure_buckets.clear()
+    yield
+    _auth_failure_buckets.clear()
+
+
 class TestAdminLogin:
     async def test_correct_password(self, client):
         resp = await client.post("/api/v1/admin/login", json={
@@ -23,6 +32,40 @@ class TestAdminLogin:
             "password": "wrong-password",
         })
         assert resp.status_code == 401
+
+    async def test_wrong_password_locks_after_repeated_failures(self, client):
+        for _ in range(4):
+            resp = await client.post("/api/v1/admin/login", json={
+                "password": "wrong-password",
+            })
+            assert resp.status_code == 401
+
+        locked = await client.post("/api/v1/admin/login", json={
+            "password": "wrong-password",
+        })
+        assert locked.status_code == 429
+
+        correct = await client.post("/api/v1/admin/login", json={
+            "password": "test-admin-pw",
+        })
+        assert correct.status_code == 429
+
+    async def test_successful_login_clears_prior_failures(self, client):
+        for _ in range(4):
+            resp = await client.post("/api/v1/admin/login", json={
+                "password": "wrong-password",
+            })
+            assert resp.status_code == 401
+
+        ok = await client.post("/api/v1/admin/login", json={
+            "password": "test-admin-pw",
+        })
+        assert ok.status_code == 200
+
+        next_wrong = await client.post("/api/v1/admin/login", json={
+            "password": "wrong-password",
+        })
+        assert next_wrong.status_code == 401
 
     async def test_empty_admin_password_returns_503(self, client):
         with patch.dict(os.environ, {"QUANTGPT_ADMIN_PASSWORD": ""}):

@@ -50,6 +50,14 @@ _email_rate_lock = threading.Lock()
 EMAIL_RATE_LIMIT_SECONDS = 60
 
 
+_auth_failure_buckets: dict[str, dict[str, float | int]] = {}
+_auth_failure_lock = threading.Lock()
+AUTH_FAILURE_LIMIT = int(os.environ.get("QUANTGPT_AUTH_FAILURE_LIMIT", "5"))
+AUTH_FAILURE_IP_LIMIT = int(os.environ.get("QUANTGPT_AUTH_FAILURE_IP_LIMIT", "20"))
+AUTH_FAILURE_WINDOW_SECONDS = int(os.environ.get("QUANTGPT_AUTH_FAILURE_WINDOW_SECONDS", "900"))
+AUTH_FAILURE_LOCK_SECONDS = int(os.environ.get("QUANTGPT_AUTH_FAILURE_LOCK_SECONDS", "900"))
+
+
 def _get_secret() -> str:
     secret = os.environ.get("JWT_SECRET_KEY", "")
     if not secret:
@@ -121,6 +129,65 @@ def check_email_rate_limit(email: str) -> None:
             remaining = int(EMAIL_RATE_LIMIT_SECONDS - (now - last_sent))
             raise HTTPException(status_code=429, detail=f"发送过于频繁，请 {remaining} 秒后重试")
         _email_rate[email] = now
+
+
+def _auth_failure_key(scope: str, kind: str, value: str) -> str:
+    normalized = value.strip().lower()
+    return hashlib.sha256(f"{scope}:{kind}:{normalized}".encode()).hexdigest()
+
+
+def _auth_failure_keys(scope: str, identifier: str, ip: str) -> list[tuple[str, int]]:
+    return [
+        (_auth_failure_key(scope, "principal_ip", f"{identifier}:{ip}"), AUTH_FAILURE_LIMIT),
+        (_auth_failure_key(scope, "ip", ip), AUTH_FAILURE_IP_LIMIT),
+    ]
+
+
+def _remaining_lock_seconds(locked_until: float, now: float) -> int:
+    return max(1, int(locked_until - now))
+
+
+def _raise_auth_locked(remaining: int) -> None:
+    raise HTTPException(status_code=429, detail=f"登录失败过多，请 {remaining} 秒后重试")
+
+
+def check_auth_failure_limit(scope: str, identifier: str, ip: str) -> None:
+    now = time.monotonic()
+    with _auth_failure_lock:
+        for key, _limit in _auth_failure_keys(scope, identifier, ip):
+            entry = _auth_failure_buckets.get(key)
+            if not entry:
+                continue
+            locked_until = float(entry.get("locked_until", 0))
+            if locked_until > now:
+                _raise_auth_locked(_remaining_lock_seconds(locked_until, now))
+            first_failure = float(entry.get("first_failure", now))
+            if now - first_failure > AUTH_FAILURE_WINDOW_SECONDS:
+                _auth_failure_buckets.pop(key, None)
+
+
+def record_auth_failure(scope: str, identifier: str, ip: str) -> None:
+    now = time.monotonic()
+    locked_remaining = 0
+    with _auth_failure_lock:
+        for key, limit in _auth_failure_keys(scope, identifier, ip):
+            entry = _auth_failure_buckets.get(key)
+            if not entry or now - float(entry.get("first_failure", now)) > AUTH_FAILURE_WINDOW_SECONDS:
+                entry = {"first_failure": now, "count": 0, "locked_until": 0.0}
+                _auth_failure_buckets[key] = entry
+            entry["count"] = int(entry.get("count", 0)) + 1
+            if int(entry["count"]) >= limit:
+                locked_until = now + AUTH_FAILURE_LOCK_SECONDS
+                entry["locked_until"] = locked_until
+                locked_remaining = max(locked_remaining, _remaining_lock_seconds(locked_until, now))
+    if locked_remaining:
+        _raise_auth_locked(locked_remaining)
+
+
+def clear_auth_failures(scope: str, identifier: str, ip: str) -> None:
+    with _auth_failure_lock:
+        principal_key = _auth_failure_key(scope, "principal_ip", f"{identifier}:{ip}")
+        _auth_failure_buckets.pop(principal_key, None)
 
 
 def _extract_token(request: Request, *, allow_query_param: bool = False) -> str:

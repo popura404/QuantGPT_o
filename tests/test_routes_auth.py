@@ -13,6 +13,14 @@ from quantgpt.models import User, VerificationCode
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture(autouse=True)
+def _clear_auth_failure_buckets():
+    from quantgpt.auth import _auth_failure_buckets
+    _auth_failure_buckets.clear()
+    yield
+    _auth_failure_buckets.clear()
+
+
 class TestGuestToken:
     async def test_returns_token(self, client):
         resp = await client.post("/api/v1/auth/guest-token")
@@ -131,12 +139,52 @@ class TestLogin:
         })
         assert resp.status_code == 401
 
+    async def test_wrong_password_locks_after_repeated_failures(self, client, test_user):
+        for _ in range(4):
+            resp = await client.post("/api/v1/auth/login", json={
+                "email": "test@example.com",
+                "password": "wrong_password",
+            })
+            assert resp.status_code == 401
+
+        locked = await client.post("/api/v1/auth/login", json={
+            "email": "test@example.com",
+            "password": "wrong_password",
+        })
+        assert locked.status_code == 429
+
+        correct = await client.post("/api/v1/auth/login", json={
+            "email": "test@example.com",
+            "password": "test123456",
+        })
+        assert correct.status_code == 429
+
     async def test_nonexistent_user_rejected(self, client):
         resp = await client.post("/api/v1/auth/login", json={
             "email": "nobody@test.com",
             "password": "any_password",
         })
         assert resp.status_code == 401
+
+    async def test_successful_login_clears_prior_failures(self, client, test_user):
+        for _ in range(4):
+            resp = await client.post("/api/v1/auth/login", json={
+                "email": "test@example.com",
+                "password": "wrong_password",
+            })
+            assert resp.status_code == 401
+
+        ok = await client.post("/api/v1/auth/login", json={
+            "email": "test@example.com",
+            "password": "test123456",
+        })
+        assert ok.status_code == 200
+
+        next_wrong = await client.post("/api/v1/auth/login", json={
+            "email": "test@example.com",
+            "password": "wrong_password",
+        })
+        assert next_wrong.status_code == 401
 
     async def test_no_password_set_gets_hint(self, client, db_session):
         user = User(id=uuid.uuid4(), email="nopw@test.com", is_active=True)

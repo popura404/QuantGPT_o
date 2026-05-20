@@ -5,19 +5,22 @@ import re
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import (
+    check_auth_failure_limit,
     check_email_rate_limit,
+    clear_auth_failures,
     create_access_token,
     create_guest_token,
     create_refresh_token,
     decode_token,
     get_current_user,
     hash_password,
+    record_auth_failure,
     verify_password,
 )
 from ..db import get_db
@@ -212,20 +215,25 @@ async def verify_code(req: VerifyCodeRequest, db: AsyncSession = Depends(get_db)
 
 
 @router.post("/login")
-async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """Login with email and password."""
+    client_ip = request.client.host if request.client else "unknown"
+    check_auth_failure_limit("password", req.email, client_ip)
     user_result = await db.execute(select(User).where(User.email == req.email))
     user = user_result.scalar_one_or_none()
 
     if not user or not user.is_active:
+        record_auth_failure("password", req.email, client_ip)
         raise HTTPException(status_code=401, detail="邮箱或密码错误")
 
     if not user.password_hash:
         raise HTTPException(status_code=400, detail="该账号尚未设置密码，请使用验证码登录后设置密码")
 
     if not verify_password(req.password, user.password_hash):
+        record_auth_failure("password", req.email, client_ip)
         raise HTTPException(status_code=401, detail="邮箱或密码错误")
 
+    clear_auth_failures("password", req.email, client_ip)
     user.last_login_at = datetime.now(timezone.utc)
     await db.commit()
 
