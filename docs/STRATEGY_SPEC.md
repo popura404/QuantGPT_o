@@ -274,10 +274,18 @@ MCP tools:
 
 - `list_markets`
 - `list_data_fields`
+- `list_strategy_templates`
+- `get_strategy_template`
+- `instantiate_strategy_template`
 - `validate_strategy_spec`
 - `run_strategy_backtest`
 - `score_strategy`
 - `generate_strategy_report`
+- `export_strategy_candidate`
+- `diagnose_strategy`
+- `run_strategy_anti_overfit`
+- `run_strategy_rolling_validation`
+- `optimize_strategy_candidate`
 
 REST endpoints:
 
@@ -296,8 +304,9 @@ REST endpoints:
 - `POST /api/v1/strategy/runs`
 
 REST v0 does not add separate score/report endpoints. The async backtest task
-result contains `strategy_result`, `strategy_score`, `summary_json`, and
-`report_url`.
+result contains `strategy_result`, `strategy_score`, and `report_url`.
+`summary_json` remains a server-side artifact path rather than a task-result
+field for frontend clients.
 
 ## MVP Non-Goals
 

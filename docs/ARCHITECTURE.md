@@ -7,28 +7,20 @@ QuantGPT 是 Agent-Driven 的因子研究引擎。核心架构分为六层：Age
 ```
 LLM Agent (Claude Code / Claude Desktop)
     │
-    ├── MCP Tools (14 个)            ← Agent 的工具箱
-    │   ├── run_backtest              ← 全市场分组回测
-    │   ├── score_factor              ← 0-100 综合评分
-    │   ├── diagnose_factor           ← 失败模式诊断
-    │   ├── run_anti_overfit          ← 4 项反过拟合检验
-    │   ├── run_rolling_validation    ← Walk-forward 验证
-    │   ├── validate_expression       ← 语法校验（local/wq 双模式）
-    │   ├── list_operators / list_universes
-    │   ├── wq_brain_submit           ← WQ BRAIN 单因子提交
-    │   ├── wq_brain_batch_submit     ← 批量参数扫描提交
-    │   ├── wq_brain_submit_by_ids    ← 按 ID 提交
-    │   ├── wq_brain_list_alphas      ← 查询已提交 alpha
-    │   ├── wq_brain_check_alphas     ← 检查 alpha 状态
-    │   └── wq_brain_finalize_submissions ← 最终提交确认
+    ├── MCP Tools (29 个)            ← Agent 的工具箱
+    │   ├── 因子研究                 ← 表达式校验、回测、评分、诊断、OOS/rolling、factor_values
+    │   ├── StrategySpec 工作流       ← 模板、校验、回测、评分、报告、候选导出、优化
+    │   └── WQ BRAIN 工作流          ← 远程模拟、批量扫描、状态检查、preflight-gated 正式提交
     │
     ├── REST API                      ← 程序化访问
     │   ├── /api/v1/auto_backtest
-    │   ├── /api/v1/wq-brain/submit
-    │   ├── /api/v1/wq-brain/batch
+    │   ├── /api/v1/factor_values
+    │   ├── /api/v1/strategy/...
+    │   ├── /api/v1/wq-brain/batch-submit
+    │   ├── /api/v1/wq-brain/{task_id}/submit-alpha
     │   └── ...
     │
-    └── Web UI (monitoring)           ← 任务监控 + 报告查看
+    └── Web UI (browser workbench)    ← 因子、策略、WQ、任务和报告工作台
 ```
 
 ## 1. Expression Parser (`expression_parser.py`)
@@ -152,18 +144,26 @@ Request
 
 ### MCP Server (`mcp_server.py`)
 
-14 个 MCP 工具，供 Claude Code / AI Agent 直接调用：
-- `list_operators` / `list_universes`
-- `validate_expression` / `run_backtest` / `score_factor`
-- `diagnose_factor` / `run_anti_overfit` / `run_rolling_validation`
-- `wq_brain_submit` / `wq_brain_batch_submit` / `wq_brain_submit_by_ids`
-- `wq_brain_list_alphas` / `wq_brain_check_alphas` / `wq_brain_finalize_submissions`
+29 个 MCP 工具，供 Claude Code / AI Agent 直接调用：
+- 因子研究：`list_operators` / `list_universes` / `validate_expression` /
+  `run_backtest` / `score_factor` / `compute_factor_values` / `diagnose_factor` /
+  `run_anti_overfit` / `run_rolling_validation`
+- StrategySpec：`list_markets` / `list_data_fields` / `list_strategy_templates` /
+  `get_strategy_template` / `instantiate_strategy_template` / `validate_strategy_spec` /
+  `run_strategy_backtest` / `score_strategy` / `generate_strategy_report` /
+  `export_strategy_candidate` / `diagnose_strategy` / `run_strategy_anti_overfit` /
+  `run_strategy_rolling_validation` / `optimize_strategy_candidate`
+- WQ BRAIN：`wq_brain_submit` / `wq_brain_batch_submit` /
+  `wq_brain_submit_by_ids` / `wq_brain_list_alphas` / `wq_brain_check_alphas` /
+  `wq_brain_finalize_submissions`
 
 ### WQ BRAIN Integration (`wq_brain_client.py`)
 
-- 认证 → 模拟 → IS 检查 → 提交，全流程 API
+- 认证 → 远程模拟 → IS/SC 检查 → preflight-gated 正式提交，全流程 API
 - Alpha Tracker：已提交 alpha 记录 + 自相关预筛
 - 批量参数扫描：region × delay × universe × neutralization 网格
+- 正式 submit 路径统一经过 `wq_submission_guard.py`；本地 preflight 不可用或范围不一致时必须记录
+  `submission_override_reason`
 
 ## 6. Database
 
@@ -175,11 +175,15 @@ SQLAlchemy 2.0 async ORM，支持 SQLite（默认）和 PostgreSQL。
 - `reports` — HTML 报告文件记录
 - `saved_factors` — 用户保存的因子
 - `submitted_alphas` — WQ BRAIN 已提交 alpha 记录
-- `paper_strategies` / `paper_snapshots` / `paper_orders` — 模拟盘
+- `factor_search_attempts` — 因子搜索尝试的不可变审计记录
+- `strategies` / `strategy_runs` — StrategySpec 和策略回测运行记录
+- `api_keys` — API key 哈希和权限范围
+- `daily_summaries` — 每日市场摘要
 
 ## 7. Frontend
 
-React 18 + TypeScript + Vite + Tailwind CSS 4。定位为监控面板，Agent 通过 MCP 工作，Web UI 用于查看结果。
+React 18 + TypeScript + Vite + Tailwind CSS 4。定位为浏览器工作台，Agent 可以通过 MCP 工作，Web UI
+用于因子研究、策略工作流、WQ BRAIN 操作、任务中心和报告查看。
 
 **组件层次**：
 ```
@@ -191,5 +195,8 @@ App
 ├── IterationPanel        # AI 迭代优化
 ├── FactorLibrary         # 因子库管理
 ├── CompositeBuilder      # 多因子组合
-└── PaperTrading          # 模拟盘
+├── FactorComparison      # 因子对比
+├── StrategyWorkbench     # StrategySpec 校验/回测/评分/导出
+├── WQBrainWorkspace      # WQ BRAIN 模拟、preflight 和提交操作
+└── TaskCenter            # 会话任务中心
 ```

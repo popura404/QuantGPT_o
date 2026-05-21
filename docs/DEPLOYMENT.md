@@ -128,6 +128,10 @@ QUANTGPT_CORS_ORIGINS=http://localhost:5173,http://localhost:8003
 
 QuantGPT 适合部署在本机、VPN 或可信内网中，不建议直接暴露在公网。它包含管理后台、任务执行、报告读取、HTTP MCP 和 WQ BRAIN 提交能力；公网部署会显著放大凭证泄露、任务滥用和账号误操作风险。确需跨机器访问时，建议使用 VPN、零信任隧道或带身份认证的反向代理，并保持 `AUTH_DISABLED=false`、限制 `QUANTGPT_CORS_ORIGINS`、配置强 `QUANTGPT_ADMIN_PASSWORD` 和独立 `QUANTGPT_MCP_HTTP_TOKEN`。
 
+WQ BRAIN 远程模拟可以用于研究验证；正式 submit 路径仍会经过本地 OOS/data-quality
+preflight，或要求调用方显式提供 `submission_override_reason`。这道门禁降低误提交风险，但不能替代
+账号、网络和访问控制隔离。
+
 配置文件位置：
 - Claude Code：项目根目录 `.mcp.json`
 - Claude Desktop (Mac)：`~/Library/Application Support/Claude/claude_desktop_config.json`

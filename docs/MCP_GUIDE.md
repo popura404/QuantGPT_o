@@ -105,7 +105,7 @@ MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先�
 | `diagnose_factor` | 诊断因子问题，推荐改进策略 |
 | `run_anti_overfit` | 反过拟合检测 (4 项测试) |
 | `run_rolling_validation` | 滚动验证 (Walk-Forward) |
-| `wq_brain_submit` | 提交因子到 WorldQuant BRAIN |
+| `wq_brain_submit` | 调用 WorldQuant BRAIN 远程模拟；正式 submit 受 preflight/override 约束 |
 | `ask_deepseek` | 调用 DeepSeek LLM 进行研究评审（独立 MCP） |
 
 ### StrategySpec 策略工具
@@ -137,6 +137,17 @@ candidate/export 边界，调用方必须提供 promotion-ready `validation_prov
 train/valid/test 指标、样本外衰减、换手和数据质量惩罚为主，不再让单一全周期
 metrics 作为权威结论。
 
+### WQ BRAIN 工具
+
+| 工具 | 说明 |
+|------|------|
+| `wq_brain_submit` | 单表达式远程模拟；`auto_submit` 需要 preflight/override |
+| `wq_brain_batch_submit` | 批量扫描 region / delay / universe / neutralization 组合 |
+| `wq_brain_submit_by_ids` | 按 alpha ID 批量正式提交，需要 preflight/override |
+| `wq_brain_list_alphas` | 查询 WQ BRAIN 平台 alpha |
+| `wq_brain_check_alphas` | 批量检查 alpha 状态 |
+| `wq_brain_finalize_submissions` | 对 pending alpha 做最终状态确认 |
+
 ### 通用参数
 
 以下参数在 `run_backtest`、`score_factor`、`run_anti_overfit`、`run_rolling_validation` 中通用：
@@ -149,7 +160,7 @@ metrics 作为权威结论。
 | `end_date` | str | `2025-12-31` | 回测结束日期 |
 | `n_groups` | int | `5` | 分组数量 |
 | `holding_period` | int | `5` | 持仓周期（交易日） |
-| `benchmark` | str | `hs300` | 基准指数：`hs300` / `zz500` / `sz50` |
+| `benchmark` | str | `hs300` | 基准指数：`hs300` / `zz500` / `sz50` / `csi1000` |
 | `neutralize_industry` | bool | `true` | 行业中性化 |
 | `neutralize_cap` | bool | `true` | 市值中性化 |
 

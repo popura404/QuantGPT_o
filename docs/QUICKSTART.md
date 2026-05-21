@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Python 3.10+
-- Node.js 20+ (optional, for frontend dashboard)
+- Node.js 20+ (optional, for the browser workbench)
 
 ## 1. Clone & Setup
 
@@ -47,6 +47,9 @@ Then let the Agent work:
 在沪深300上挖掘高 fitness 的因子，目标 WQ BRAIN 可提交
 ```
 
+这里的“可提交”应理解为生成可模拟/可候选的 WQ BRAIN 表达式；正式 submit 仍需要本地
+preflight 通过，或显式提供 `submission_override_reason` 记录豁免理由。
+
 ## 4. Expression Mode (No LLM Required)
 
 Via API:
@@ -59,7 +62,7 @@ curl -X POST http://localhost:8003/api/v1/auto_backtest \
 
 Or enter a factor expression directly in the web UI at `http://localhost:8003`.
 
-## 5. StrategySpec Mode (MVP)
+## 5. StrategySpec Mode
 
 Use this when the Agent has produced a structured `StrategySpecV0` instead of a
 single factor expression:
@@ -136,16 +139,16 @@ curl -X POST http://localhost:8003/api/v1/strategy/backtest \
   }'
 ```
 
-MVP strategy mode is intentionally narrow: A-share only, one factor, top
-quantile, equal weight, HTML report plus summary JSON. Multi-factor, top N,
-multi-market, standalone SignalExport, strategy persistence, and strategy-level
-rolling/anti-overfit are Post-MVP.
-
-Post-MVP strategy mode adds StrategySpec v1 templates and a browser workbench.
-Open the `策略工作台` tab after starting the server to instantiate a template,
-edit JSON, validate it, submit a strategy backtest, track task status, view
-score/metrics/holdings, open the generated report, and run candidate export for
-signals. The same workflow is available through:
+`StrategySpecV0` strategy mode is intentionally narrow: A-share only, one factor,
+top quantile, equal weight, an HTML report, and server-side summary artifact.
+`StrategySpecV1` adds implemented Post-MVP capabilities such as templates,
+multi-factor/top-N specs, strategy persistence, OOS/data-quality validation,
+strategy-level diagnostics, rolling/anti-overfit summaries, candidate export,
+optimization, and a browser workbench. Open the `策略工作台` tab after starting
+the server to instantiate a template, edit JSON, validate it, submit a strategy
+backtest, track task status, view score/metrics/holdings, open the generated
+report, and run candidate export for signals. The same workflow is available
+through:
 
 ```bash
 curl http://localhost:8003/api/v1/strategy/templates
@@ -160,13 +163,13 @@ they do not create broker/account/order instructions.
 ## 6. Try More Expressions
 
 ```
-# Debt-momentum composite (submitted, Fitness 1.26, Sharpe 1.77)
+# Debt-momentum composite (validated, Fitness 1.26, Sharpe 1.77)
 -1 * rank(ts_av_diff(close, 10)) + rank(debt / enterprise_value)
 
-# VWAP decay reversal (submitted, Fitness 1.07, Sharpe 1.69)
+# VWAP decay reversal (validated, Fitness 1.07, Sharpe 1.69)
 -1 * rank(ts_decay_linear(close / vwap, 10))
 
-# Returns-volume momentum (submitted, Fitness 1.03, Sharpe 1.60)
+# Returns-volume momentum (validated, Fitness 1.03, Sharpe 1.60)
 -1 * rank(ts_decay_linear(returns * volume / adv20, 5))
 
 # Volume anomaly
@@ -187,7 +190,7 @@ rank(-1 * pe)
 
 ## What's Next
 
-- Read [STRATEGY_SPEC.md](STRATEGY_SPEC.md) for StrategySpec v0 and MVP boundaries
+- Read [STRATEGY_SPEC.md](STRATEGY_SPEC.md) for StrategySpec v0/v1 and non-trading boundaries
 - Read [ARCHITECTURE.md](ARCHITECTURE.md) for system design
 - Check [MCP_GUIDE.md](MCP_GUIDE.md) for MCP tool details
 - Read [FACTOR_MINING.md](FACTOR_MINING.md) for the autonomous research loop

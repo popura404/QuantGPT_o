@@ -17,11 +17,12 @@
 9. [报告](#报告)
 10. [反馈](#反馈)
 11. [管理后台](#管理后台)
-12. [MCP Tools](#mcp-tools)
-13. [健康检查](#健康检查)
-14. [错误码](#错误码)
-15. [股票池与基准](#股票池与基准)
-16. [因子表达式语法](#因子表达式语法)
+12. [WQ BRAIN](#wq-brain)
+13. [MCP Tools](#mcp-tools)
+14. [健康检查](#健康检查)
+15. [错误码](#错误码)
+16. [股票池与基准](#股票池与基准)
+17. [因子表达式语法](#因子表达式语法)
 
 ---
 
@@ -56,7 +57,7 @@ python -m quantgpt --prefetch hs300 csi500
 | `QUANTGPT_ADMIN_PASSWORD` | 是 | — | 管理后台密码；生产必须使用强随机密码 |
 | `QUANTGPT_MAX_ACTIVE_TASKS` | 否 | `100` | 最大并发任务数 |
 | `QUANTGPT_TASK_TTL` | 否 | `3600` | 内存任务 TTL (秒) |
-| `QUANTGPT_RATE_LIMIT` | 否 | `10` | 每分钟请求限制 |
+| `QUANTGPT_RATE_LIMIT` | 否 | `50` | 每分钟请求限制 |
 | `QUANTGPT_MAX_PROMPT_LEN` | 否 | `500` | Prompt 最大长度 |
 | `QUANTGPT_FEEDBACK_WEBHOOK` | 否 | — | 飞书 Webhook URL |
 | `QUANTGPT_FEEDBACK_WEBHOOK_SECRET` | 否 | — | 飞书签名密钥 |
@@ -262,12 +263,12 @@ HTTP MCP 端点不复用用户 JWT。认证开启时，`/mcp` 和 `/mcp-sse` 需
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | `prompt` | string | 是 | — | 自然语言描述或因子表达式 |
-| `universe` | string | 否 | `hs300` | 股票池: `small_scale` / `hs300` / `csi500` |
+| `universe` | string | 否 | `hs300` | 股票池: `small_scale` / `hs300` / `csi500` / `csi1000` / `csi2000` |
 | `start_date` | string | 否 | `2023-01-01` | 起始日期 YYYY-MM-DD |
 | `end_date` | string | 否 | `2025-12-31` | 结束日期 YYYY-MM-DD |
 | `n_groups` | int | 否 | `5` | 分组数量 (2~20) |
 | `holding_period` | int | 否 | `5` | 持仓周期 (1~60 交易日) |
-| `benchmark` | string | 否 | `hs300` | 基准: `hs300` / `zz500` / `sz50` |
+| `benchmark` | string | 否 | `hs300` | 基准: `hs300` / `zz500` / `sz50` / `csi1000` |
 | `session_id` | string | 否 | null | 关联会话 ID |
 | `oos_enabled` | bool | 否 | `true` | 默认启用 OOS selection；显式 `false` 才走 legacy `auto_full` |
 | `validation_stage` | string | 否 | `selection` | `selection` 只用 train+valid；`final` 才运行并暴露 test |
@@ -497,9 +498,9 @@ pending → iterating → iteration_completed / failed
 
 ## 策略框架
 
-策略框架 API 使用 `StrategySpecV0` 作为 MVP 结构化输入。MVP 只支持
-`a_share + single factor + rank_threshold + equal_weight + risk v0`。
-当前仓库还包含 Post-MVP 能力：`StrategySpecV1`、多因子、top N、候选
+策略框架 API 兼容 `StrategySpecV0` 和 `StrategySpecV1`。`StrategySpecV0`
+保留 MVP 的 `a_share + single factor + rank_threshold + equal_weight + risk v0`
+基线；当前仓库还包含 Post-MVP 能力：`StrategySpecV1`、多因子、top N、候选
 SignalExport、策略持久化、模板、优化器和前端策略工作台。所有策略能力仍不提供
 券商、账户、下单、API key 执行或实盘交易能力。
 
@@ -547,7 +548,7 @@ SignalExport、策略持久化、模板、优化器和前端策略工作台。�
 
 ### POST /api/v1/strategy/validate
 
-校验 `StrategySpecV0`。成功时返回规范化后的 spec；失败时返回结构化错误。
+校验 `StrategySpecV0` / `StrategySpecV1`。成功时返回规范化后的 spec；失败时返回结构化错误。
 
 **请求体:**
 
@@ -1001,9 +1002,34 @@ curl -H "Authorization: Bearer <token>" \
 
 ---
 
+## WQ BRAIN
+
+WQ BRAIN REST 接口用于远程模拟、批量参数扫描、状态检查和正式提交。远程模拟本身不强制本地
+OOS/data-quality preflight；所有正式 submit 路径都会调用 `wq_submission_guard.py`，需要本地
+preflight 通过，或显式提供 `submission_override_reason` 记录豁免理由。
+
+| Endpoint | 认证 | 说明 |
+|----------|------|------|
+| `GET /api/v1/wq-brain/status` | 公开 | 检查 WQ 账号配置和提交阈值 |
+| `POST /api/v1/wq-brain/submit` | 登录 | 提交表达式到 WQ BRAIN 远程模拟；异步返回 `task_id` |
+| `POST /api/v1/wq-brain/batch-submit` | 登录 | 对 region/delay/universe/neutralization 网格做批量远程模拟，组合数上限 36 |
+| `POST /api/v1/wq-brain/{task_id}/submit-alpha` | 登录且任务归属本人 | 将已有模拟任务的 `alpha_id` 正式提交；需要 preflight 或 override |
+| `POST /api/v1/wq-brain/submit-by-id/{alpha_id}` | 管理员 | 按平台 alpha ID 正式提交；需要表达式溯源 preflight 或 override |
+| `POST /api/v1/wq-brain/batch-submit-by-id` | 管理员 | 批量提交已模拟 alpha，最多 50 个；需要 preflight 或 override |
+| `GET /api/v1/wq-brain/submitted-alphas` | 登录 | 查询当前用户已记录的正式提交 |
+| `GET /api/v1/wq-brain/platform-alphas` | 管理员 | 查询平台侧 alpha 列表 |
+| `GET /api/v1/wq-brain/alpha-status/{alpha_id}` | 管理员 | 查询平台侧 alpha 状态和 SC 检查结果 |
+
+`submit` / `batch-submit` 请求体支持 `auto_submit`，但该字段只会在 WQ 检查通过且本地
+preflight/override 允许时触发正式提交。`alt` 账号只能用于模拟，正式提交只允许 `primary`。
+
+---
+
 ## MCP Tools
 
-QuantGPT 提供 MCP (Model Context Protocol) 服务,支持因子研究工具和 StrategySpec v0 策略工具。推荐本机 stdio 模式；如果暴露 HTTP MCP (`/mcp`, `/mcp-sse`)，认证开启时必须设置 `QUANTGPT_MCP_HTTP_TOKEN` 并由客户端发送 `Authorization: Bearer <token>`。
+QuantGPT 提供 29 个 MCP (Model Context Protocol) 工具，覆盖因子研究、StrategySpec v0/v1
+策略工具和 WQ BRAIN 工作流。推荐本机 stdio 模式；如果暴露 HTTP MCP (`/mcp`, `/mcp-sse`)，
+认证开启时必须设置 `QUANTGPT_MCP_HTTP_TOKEN` 并由客户端发送 `Authorization: Bearer <token>`。
 
 | Tool | 说明 |
 |------|------|
@@ -1018,10 +1044,24 @@ QuantGPT 提供 MCP (Model Context Protocol) 服务,支持因子研究工具和 
 | `run_rolling_validation` | Walk-Forward 滚动验证 |
 | `list_markets` | 返回策略框架支持的市场 |
 | `list_data_fields` | 返回指定市场可用于策略因子表达式的数据字段 |
-| `validate_strategy_spec` | 校验 `StrategySpecV0`，失败时返回 `error_code` 和 `hint` |
+| `list_strategy_templates` | 返回可用策略模板和治理边界 |
+| `get_strategy_template` | 返回指定模板的 spec 和治理元数据 |
+| `instantiate_strategy_template` | 从模板生成可校验 StrategySpec |
+| `validate_strategy_spec` | 校验 `StrategySpecV0` / `StrategySpecV1`，失败时返回 `error_code` 和 `hint` |
 | `run_strategy_backtest` | 运行策略级回测，返回收益、目标权重和风控日志 |
 | `score_strategy` | 根据策略回测结果计算策略评分 |
 | `generate_strategy_report` | 根据策略回测结果生成 HTML 报告和 summary JSON |
+| `export_strategy_candidate` | 导出候选调仓信号，不包含执行字段 |
+| `diagnose_strategy` | 输出策略诊断 taxonomy 和 spec 调整建议 |
+| `run_strategy_anti_overfit` | 基于策略回测结果执行策略级反过拟合摘要 |
+| `run_strategy_rolling_validation` | 基于策略收益执行 rolling validation 摘要 |
+| `optimize_strategy_candidate` | 按 StrategySpec 风控约束优化候选权重，不生成真实订单 |
+| `wq_brain_submit` | 调用 WQ BRAIN 远程模拟；`auto_submit` 走 preflight/override |
+| `wq_brain_batch_submit` | 批量扫描 WQ 参数组合；`auto_submit` 走 preflight/override |
+| `wq_brain_submit_by_ids` | 按 alpha ID 批量正式提交，需要 preflight/override |
+| `wq_brain_list_alphas` | 查询 WQ BRAIN 平台 alpha |
+| `wq_brain_check_alphas` | 批量检查 alpha 状态 |
+| `wq_brain_finalize_submissions` | 对 pending alpha 做最终状态确认 |
 
 candidate / submit / export 边界要求 `factor_validation/v1` 晋级证明：data-quality gate、
 train/valid/test、rolling window、placebo test、time-shift test 必须全部通过。Agent/结论型
@@ -1072,7 +1112,7 @@ frozen candidate 的最终验收。普通 `auto_full` 回测结果会标记为 `
 | 401 | 未认证或 Token 过期 |
 | 403 | 权限不足 (管理接口) |
 | 404 | 资源不存在 |
-| 429 | 频率限制 (每分钟 10 次) |
+| 429 | 频率限制 (默认每分钟 50 次，可用 `QUANTGPT_RATE_LIMIT` 调整) |
 | 503 | 服务繁忙 (并发任务已满) |
 
 **错误响应格式:**
@@ -1094,6 +1134,8 @@ frozen candidate 的最终验收。普通 `auto_full` 回测结果会标记为 `
 | `small_scale` | 5 只蓝筹 (茅台、平安、五粮液、美的、招行),快速测试 |
 | `hs300` | 沪深300成分股,动态获取 |
 | `csi500` | 中证500成分股,动态获取 |
+| `csi1000` | 中证1000成分股,动态获取或派生 |
+| `csi2000` | 中证2000候选池,从全 A 排除沪深300/中证500/中证1000后派生 |
 
 ### 基准指数
 
@@ -1101,6 +1143,8 @@ frozen candidate 的最终验收。普通 `auto_full` 回测结果会标记为 `
 |------|------|
 | `hs300` | 沪深300指数 |
 | `zz500` | 中证500指数 |
+| `csi500` | 中证500指数别名 |
+| `csi1000` | 中证1000指数 |
 | `sz50` | 上证50指数 |
 
 ---
@@ -1159,12 +1203,12 @@ frozen candidate 的最终验收。普通 `auto_full` 回测结果会标记为 `
 9. POST /tasks/{id}/select_candidate → 选择候选（必须已有完整 validation_provenance）
 ```
 
-### 策略 MVP 流程
+### 策略流程
 
 ```
 1. GET  /strategy/markets        → 确认可用市场
 2. GET  /strategy/data-fields    → 确认可用字段
-3. POST /strategy/validate       → 校验 StrategySpecV0
+3. POST /strategy/validate       → 校验 StrategySpecV0 / StrategySpecV1
 4. POST /strategy/backtest       → 提交策略回测任务
 5. GET  /tasks/{id}              → 读取 strategy_result / score / report_url
 6. GET  /reports/{filename}      → 查看策略 HTML 报告

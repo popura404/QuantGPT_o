@@ -4,7 +4,7 @@
 
 **Agent-Driven LLM Quant Research Engine — Autonomous Factor Mining at WorldQuant BRAIN Submission Quality**
 
-LLM Agent 自治因子挖矿 → 批量回测 → 多维评分 → 反过拟合验证 → WQ BRAIN 自动提交 | 全程零人工干预
+LLM Agent 自治因子挖矿 → 批量回测 → 多维评分 → 反过拟合验证 → WQ BRAIN 模拟与 preflight-gated 提交
 
 [![CI](https://github.com/Miasyster/quantgpt/actions/workflows/ci.yml/badge.svg)](https://github.com/Miasyster/quantgpt/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://python.org)
@@ -31,28 +31,17 @@ LLM Agent 自治因子挖矿 → 批量回测 → 多维评分 → 反过拟合�
 
 ## What Is QuantGPT
 
-QuantGPT is an **agent-driven factor research engine** — not a backtest library, not a chatbot wrapper. It gives an LLM Agent (Claude, via MCP) a complete toolkit to autonomously discover, evaluate, iterate, and submit alpha factors to WorldQuant BRAIN, with zero human intervention per research cycle.
+QuantGPT is an **agent-driven factor research engine** — not a backtest library, not a chatbot wrapper. It gives an LLM Agent (Claude, via MCP) a complete toolkit to autonomously discover, evaluate, iterate, and prepare alpha factors for WorldQuant BRAIN. Research cycles can be automated end-to-end; formal WQ BRAIN submission is guarded by local OOS/data-quality/promotion preflight or an explicit override reason.
 
 The core architecture:
 
 ```
 LLM Agent (Claude Code / Claude Desktop)
     │
-    ├── MCP Tools (14 个)         ← Agent 的工具箱
-    │   ├── run_backtest           ← 全市场分组回测
-    │   ├── score_factor           ← 0-100 综合评分
-    │   ├── diagnose_factor        ← 失败模式诊断
-    │   ├── run_anti_overfit       ← 4 项反过拟合检验
-    │   ├── run_rolling_validation ← Walk-forward 验证
-    │   ├── validate_expression    ← 语法校验
-    │   ├── list_operators         ← 50+ 算子文档
-    │   ├── list_universes         ← 股票池和基准
-    │   ├── wq_brain_submit        ← WQ BRAIN 单因子提交
-    │   ├── wq_brain_batch_submit  ← 批量参数扫描提交
-    │   ├── wq_brain_submit_by_ids ← 按 ID 提交
-    │   ├── wq_brain_list_alphas   ← 查询已提交 alpha
-    │   ├── wq_brain_check_alphas  ← 检查 alpha 状态
-    │   └── wq_brain_finalize_submissions ← 最终提交确认
+    ├── MCP Tools (29 个)         ← Agent 的工具箱
+    │   ├── Factor research        ← 回测、评分、诊断、OOS、因子截面值
+    │   ├── StrategySpec workflow  ← 模板、校验、策略回测、报告、导出、优化
+    │   └── WQ BRAIN workflow      ← 模拟、查询、检查、preflight-gated 正式提交
     │
     ├── Evolution Engine           ← 因子进化引擎
     │   ├── MutationEngine (8 方向突变)
@@ -64,12 +53,13 @@ LLM Agent (Claude Code / Claude Desktop)
     │   ├── Dollar-neutral 模拟
     │   ├── IS 检测对齐
     │   ├── Fitness 评分
-    │   └── 一键正式提交
+    │   └── preflight / override 审计后的正式提交
     │
     └── Knowledge Base             ← 跨会话知识积累
-        ├── rules/    (已验证规则)
-        ├── findings/ (经验发现)
-        └── failures/ (已证伪路径)
+        └── docs/knowledge/
+            ├── rules/    (已验证规则)
+            ├── findings/ (经验发现)
+            └── failures/ (已证伪路径)
 ```
 
 ### How It Differs from "AI Backtest Tools"
@@ -88,7 +78,7 @@ QuantGPT 的模式是：**人类定义目标 → Agent 自治研究 → 人类�
 | 单轮迭代（8 候选因子） | **~15 分钟** |
 | 表达式算子标准 | **WorldQuant BRAIN 对齐** |
 | BRAIN 正式提交 | **3 个因子 IS 全部 PASS，已提交（最佳 Fitness 1.26）** |
-| WQ BRAIN 集成 | **内置 API — 一键模拟 + 自动提交** |
+| WQ BRAIN 集成 | **内置 API — 一键模拟 + preflight-gated 正式提交** |
 
 ---
 
@@ -102,7 +92,7 @@ QuantGPT Agent 已产出 **3 个正式提交因子**，全部通过 WQ BRAIN IS 
 | **VWAP Decay Reversal** | `-1 * rank(ts_decay_linear(close / vwap, 10))` | **1.69** | **1.07** | **18.63%** | **ALL PASS** | **Submitted** |
 | **Returns-Volume Momentum** | `-1 * rank(ts_decay_linear(returns * volume / adv20, 5))` | **1.60** | **1.03** | **24.15%** | **ALL PASS** | **Submitted** |
 
-> 3 个因子代表不同的 alpha 来源：**Debt-Momentum** 结合动量反转与基本面（债务/企业价值），行业中性化；**VWAP Decay Reversal** 捕捉价格偏离 VWAP 的衰减回归，市场中性化；**Returns-Volume Momentum** 捕捉收益率与相对成交量的衰减动量，市场中性化。全程 Agent 自治完成。
+> 3 个因子代表不同的 alpha 来源：**Debt-Momentum** 结合动量反转与基本面（债务/企业价值），行业中性化；**VWAP Decay Reversal** 捕捉价格偏离 VWAP 的衰减回归，市场中性化；**Returns-Volume Momentum** 捕捉收益率与相对成交量的衰减动量，市场中性化。研究、模拟和报告流程由 Agent 驱动；正式提交按当前版本的 preflight / override 规则执行。
 
 <p align="center">
   <img src="example_factor/1-1.png" width="49%" alt="WQ BRAIN PnL — Debt-Momentum Composite (Submitted)" />
@@ -199,7 +189,7 @@ QuantGPT Agent 已产出 **3 个正式提交因子**，全部通过 WQ BRAIN IS 
 **Persistent Knowledge Base**
 
 ```
-research_notes/knowledge/
+docs/knowledge/
 ├── rules/       ← 已验证的稳定规则（必须遵守）
 ├── findings/    ← 经验发现（参考）
 └── failures/    ← 已证伪路径（禁止重复）
@@ -258,9 +248,9 @@ results = batch_evaluate(
 │  Interface  │  │  Expression Parser   │   │  ┌─────────────────┐  │
 │             │  │  50+ operators       │   │  │ baostock (free)  │  │
 │ MCP Tools   │  │  WQ BRAIN compatible │   │  │ akshare (free)   │  │
-│ REST API    │  └──────────┬───────────┘   │  │ PolarDB (opt)    │  │
+│ REST API    │  └──────────┬───────────┘   │  │ PostgreSQL (opt) │  │
 │ Web UI      │  ┌──────────▼───────────┐   │  │ Parquet cache    │  │
-│ (monitor)   │  │  Backtest Engine     │   │  └─────────────────┘  │
+│ (workbench) │  │  Backtest Engine     │   │  └─────────────────┘  │
 │             │  │  Rank-based grouping │   │                       │
 │             │  │  WQ BRAIN aligned    │   │   AI Layer            │
 │             │  └──────────┬───────────┘   │  ┌─────────────────┐  │
@@ -289,9 +279,9 @@ results = batch_evaluate(
 | Database | SQLite (default, zero-config) / PostgreSQL (optional) |
 | AI/LLM | DeepSeek (factor generation + cross-review) |
 | Market Data | baostock + akshare (free) → Parquet cache |
-| Frontend | React 18 + TypeScript + Tailwind CSS 4 (monitoring dashboard) |
+| Frontend | React 18 + TypeScript + Tailwind CSS 4 (factor, strategy, WQ, and task workbench) |
 | MCP | FastMCP (stdio / SSE / streamable-http) |
-| Report | QuantStats HTML |
+| Report | QuantStats HTML + strategy summary JSON |
 
 ---
 
@@ -299,10 +289,10 @@ results = batch_evaluate(
 
 ### 1. Expression Parser — The Core Differentiator
 
-自研的表达式解析器（`expression_parser.py`, 870+ lines）是整个系统的核心：
+自研的表达式解析器（`expression_parser.py`, 1000+ lines）是整个系统的核心：
 
 - **50+ 算子**：截面（`rank`, `zscore`）、时序（`ts_corr`, `decay_linear`）、非线性（`sign_power`）、条件（`where`, `trade_when`）、技术指标（`rsi`, `macd`, `atr`）
-- **双模式**：`mode="wq"` 仅允许 WQ BRAIN 兼容算子（提交前校验），`mode="local"` 开放全部算子
+- **双模式**：`mode="wq"` 接受 WQ BRAIN 兼容的远端字段/算子（提交前校验），`mode="local"` 校验可在本地 A 股数据上执行的表达式
 - **语义正确的截面/时序分离**：`rank()` 按 `trade_date` 分组（截面），`ts_mean()` 按 `stock_code` 分组（时序），自动处理分组逻辑
 - **安全约束**：递归深度限制、窗口上限、表达式长度限制，防止恶意输入
 
@@ -313,7 +303,7 @@ results = batch_evaluate(
 | Statistical Tests | `anti_overfit.py` | IC 稳定性 + 子样本压力测试（牛/熊/震荡）+ 安慰剂检验 + 半衰期估计 |
 | Walk-Forward | `rolling_validator.py` | 滚动 train/valid/test 窗口，评估样本外 IC 衰减 |
 | WQ Simulation | `wq_simulate.py` | Dollar-neutral 多空模拟，对齐 BRAIN 的 Sharpe/Turnover/Fitness 计算 |
-| **WQ BRAIN API** | `wq_brain_client.py` | **直连 BRAIN 平台 — 真实模拟 + IS 检测 + 一键正式提交** |
+| **WQ BRAIN API** | `wq_brain_client.py` | **直连 BRAIN 平台 — 真实模拟 + IS 检测 + preflight-gated 正式提交** |
 
 `StrategySpecV1` 还支持 OOS 验证配置：`validation.oos.enabled=true`
 时返回 train/valid/test 指标、`direction_policy="train_fixed"`、
@@ -338,21 +328,42 @@ TrajectoryAnalyzer → MetaEvolutionSelector → Strategy Execution
 |:-----|:-----|:---------|
 | **MCP (primary)** | Agent toolkit | Claude Code / Claude Desktop 通过 MCP 调用所有研究工具，驱动自治研究循环 |
 | **REST API** | Programmatic access | 批量回测、外部系统集成、CI/CD 因子验证 |
-| **Web UI** | Monitoring dashboard | 任务监控、报告查看、因子库管理 |
+| **Web UI** | Browser workbench | 单因子、组合、StrategySpec、WQ BRAIN、任务中心、报告查看、因子库管理 |
 
 <details>
-<summary><b>MCP Tools (8 个)</b></summary>
+<summary><b>MCP Tools (29 个)</b></summary>
 
-| Tool | Description |
-|:-----|:------------|
-| `list_operators` | 全部算子文档 |
-| `list_universes` | 股票池和基准 |
-| `validate_expression` | 语法校验 |
-| `run_backtest` | 完整回测 |
-| `score_factor` | 评分（0–100, A/B/C/D） |
-| `diagnose_factor` | 失败模式诊断 + 改进建议 |
-| `run_anti_overfit` | 4 项反过拟合检验 |
-| `run_rolling_validation` | Walk-forward 验证 |
+| Category | Tool | Description |
+|:---------|:-----|:------------|
+| Factor | `list_operators` | 全部算子文档 |
+| Factor | `list_universes` | 股票池和基准 |
+| Factor | `validate_expression` | 语法校验 |
+| Factor | `run_backtest` | 因子回测，默认 OOS selection |
+| Factor | `score_factor` | 评分（0–100, A/B/C/D），支持 OOS/data-quality |
+| Factor | `diagnose_factor` | 失败模式诊断 + 改进建议 |
+| Factor | `run_anti_overfit` | 4 项反过拟合检验 |
+| Factor | `run_rolling_validation` | Walk-forward 验证 |
+| Factor | `compute_factor_values` | 输出每日全市场截面因子值 |
+| StrategySpec | `list_markets` | 策略框架支持的市场和能力 |
+| StrategySpec | `list_data_fields` | 指定市场可用数据字段 |
+| StrategySpec | `list_strategy_templates` | StrategySpec 模板列表 |
+| StrategySpec | `get_strategy_template` | 读取指定模板 |
+| StrategySpec | `instantiate_strategy_template` | 从模板生成可校验 StrategySpec |
+| StrategySpec | `validate_strategy_spec` | 校验 StrategySpec v0/v1 |
+| StrategySpec | `run_strategy_backtest` | 运行 StrategySpec 策略回测 |
+| StrategySpec | `score_strategy` | 策略级评分 |
+| StrategySpec | `generate_strategy_report` | 策略 HTML 报告和 summary JSON |
+| StrategySpec | `export_strategy_candidate` | 导出研究候选信号，不包含下单字段 |
+| StrategySpec | `diagnose_strategy` | 策略诊断和 spec 调整建议 |
+| StrategySpec | `run_strategy_anti_overfit` | 策略级反过拟合摘要 |
+| StrategySpec | `run_strategy_rolling_validation` | 策略级 rolling validation |
+| StrategySpec | `optimize_strategy_candidate` | 按 StrategySpec 风控约束优化候选权重 |
+| WQ BRAIN | `wq_brain_submit` | WQ BRAIN 单因子模拟；`auto_submit` 受 preflight 约束 |
+| WQ BRAIN | `wq_brain_batch_submit` | WQ BRAIN 参数网格模拟 |
+| WQ BRAIN | `wq_brain_submit_by_ids` | 按 alpha_id 正式提交，需 preflight 或 override |
+| WQ BRAIN | `wq_brain_list_alphas` | 查询平台 alpha |
+| WQ BRAIN | `wq_brain_check_alphas` | 检查 alpha 状态 |
+| WQ BRAIN | `wq_brain_finalize_submissions` | 查询提交后的最终 SC 状态 |
 
 </details>
 
@@ -366,9 +377,9 @@ TrajectoryAnalyzer → MetaEvolutionSelector → Strategy Execution
 | Factor discovery | Manual | Manual | One-shot LLM | **Multi-round evolution + knowledge base** |
 | Anti-bias | Researcher judgment | None | None | **Dual-LLM mandatory cross-review** |
 | Knowledge accumulation | Personal notes | None | Lost between sessions | **Structured KB across sessions** |
-| WQ BRAIN integration | -- | -- | -- | **Operator-aligned + direct submission** |
+| WQ BRAIN integration | -- | -- | -- | **Operator-aligned + preflight-gated submission** |
 | Anti-overfit | -- | -- | -- | **4 statistical tests + walk-forward** |
-| MCP / AI Agent | -- | -- | -- | **14 tools, skill-loop orchestration** |
+| MCP / AI Agent | -- | -- | -- | **29 tools, skill-loop orchestration** |
 | Live trading | Yes | Limited | -- | -- |
 | Intraday data | Yes | Yes | -- | Daily only |
 
@@ -387,6 +398,8 @@ make run     # starts server at http://localhost:8003
 `.env.example` defaults to `AUTH_DISABLED=false` and `QUANTGPT_ALLOW_GUEST_BACKTEST=false`. Only set `AUTH_DISABLED=true` or enable guest backtests for local single-user development; production must keep authentication enabled, use a strong `JWT_SECRET_KEY`, set a strong `QUANTGPT_ADMIN_PASSWORD`, and protect any HTTP MCP exposure with `QUANTGPT_MCP_HTTP_TOKEN`.
 
 QuantGPT is intended for localhost or trusted internal/private networks. It can trigger long-running compute jobs and WQ BRAIN account actions, so do not expose it directly to the public Internet. If remote access is unavoidable, put it behind a private VPN or authenticated reverse proxy, keep CORS restricted to trusted origins, and keep admin credentials out of normal user flows.
+
+Formal WQ BRAIN submit paths (`auto_submit=true`, task-based submit, direct submit-by-id, and batch submit-by-id) require local OOS/data-quality/promotion preflight evidence, or an explicit `submission_override_reason` that records the waiver.
 
 Add MCP configuration to Claude Code or Claude Desktop:
 
@@ -485,16 +498,16 @@ decay_linear(rank(ts_corr(vwap, volume, 10)), 5)
 -1 * rank(ts_av_diff(close, 10)) + rank(roe)
 ```
 
-**WQ BRAIN remote** — requires WQ BRAIN submission (fields like `debt`, `enterprise_value` are not available locally):
+**WQ BRAIN remote** — requires WQ BRAIN credentials for platform simulation; formal submit still follows the current preflight/override gate:
 
 ```python
-# Debt-momentum composite — BRAIN submitted, Fitness 1.26, Sharpe 1.77
+# Debt-momentum composite — BRAIN validated, Fitness 1.26, Sharpe 1.77
 -1 * rank(ts_av_diff(close, 10)) + rank(debt / enterprise_value)
 
-# VWAP decay reversal — BRAIN submitted, Fitness 1.07, Sharpe 1.69
+# VWAP decay reversal — BRAIN validated, Fitness 1.07, Sharpe 1.69
 -1 * rank(ts_decay_linear(close / vwap, 10))
 
-# Returns-volume momentum — BRAIN submitted, Fitness 1.03, Sharpe 1.60
+# Returns-volume momentum — BRAIN validated, Fitness 1.03, Sharpe 1.60
 -1 * rank(ts_decay_linear(returns * volume / adv20, 5))
 ```
 
@@ -511,26 +524,32 @@ quantgpt/
 │   ├── backtest.py              # Rank-based group backtest engine
 │   ├── market_data.py           # baostock/akshare → Parquet cache
 │   ├── api_server.py            # FastAPI REST API + SSE
-│   ├── mcp_server.py            # FastMCP server (14 tools — Agent's toolkit)
+│   ├── mcp_server.py            # FastMCP server (29 tools — Agent's toolkit)
 │   ├── iteration.py             # 3-phase evolutionary iteration
 │   ├── mutation_engine.py       # 8 directed mutation strategies
 │   ├── crossover_engine.py      # High-score factor crossover
 │   ├── meta_evolution.py        # Adaptive strategy selector
 │   ├── trajectory_analyzer.py   # Trajectory quality metrics
+│   ├── strategy/                # StrategySpec v0/v1 framework
+│   ├── validation/              # OOS split, scoring, promotion gates
+│   ├── data_quality.py          # Base OHLCV data-quality gate
 │   ├── anti_overfit.py          # 4 statistical anti-overfit tests
 │   ├── rolling_validator.py     # Walk-forward validation
 │   ├── wq_simulate.py           # WQ BRAIN dollar-neutral simulator
 │   ├── wq_brain_client.py       # WQ BRAIN API integration
+│   ├── wq_submission_guard.py   # Formal submit preflight / override policy
 │   ├── neutralize.py            # Industry & cap neutralization
 │   ├── daily_summary.py         # LLM-powered daily market report
 │   └── routes/                  # API route modules
+├── engine/                      # Rust acceleration engine
+│   └── src/                     # expression and backtest kernels
 ├── frontend/                    # React 18 + TypeScript + Tailwind CSS 4
-│   └── src/components/          # Monitoring dashboard
+│   └── src/components/          # Factor, strategy, WQ, task, and report UI
 ├── scripts/
 │   └── factor_miner.py          # Batch factor evaluation toolkit
-├── tests/                       # 74 tests (parser + backtest + WQ simulate)
+├── tests/                       # 600+ collected pytest cases
 ├── example_factor/              # BRAIN validation screenshots
-└── docs/                        # Architecture, API, MCP, Mining guides
+└── docs/                        # Architecture, API, MCP, StrategySpec, knowledge guides
 ```
 
 ---
@@ -538,7 +557,7 @@ quantgpt/
 ## Limitations
 
 - **Daily frequency only** — no intraday backtesting
-- **A-share market only** — China mainland equities
+- **Local backtesting is A-share focused** — WQ BRAIN integration runs remote platform simulations/submissions for supported BRAIN regions and universes
 - **Agent quality depends on LLM** — better models produce better factors
 
 ---

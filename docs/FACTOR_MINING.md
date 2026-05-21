@@ -17,9 +17,9 @@ The core tooling lives in [`scripts/factor_miner.py`](../scripts/factor_miner.py
 ### Phase 0: Environment Check & Context Loading
 
 1. Verify the backtest server is healthy
-2. Load the target research notebook (e.g., `research_notes/archive/factor-mine-reversal.md`)
+2. Load the target research notebook (for example, a project-local or external note for the current direction)
 3. Review: current baseline (expression + metrics), key findings, completed experiments (avoid repeats), next directions
-4. Load the knowledge base (`research_notes/knowledge/INDEX.md`): rules (must follow), findings (reference), failures (do not repeat)
+4. Load the knowledge base (`docs/knowledge/INDEX.md`): rules (must follow), findings (reference), failures (do not repeat)
 5. Identify starting point: first uncompleted direction
 
 ### Phase 1: Factor Design
@@ -91,9 +91,9 @@ results = batch_evaluate(
 3. Update key findings if cross-experiment insights emerge
 4. Mark completed directions (strikethrough)
 5. Update knowledge base for cross-session insights:
-   - Stable rules → `knowledge/rules/`
-   - Empirical findings → `knowledge/findings/`
-   - Disproven paths → `knowledge/failures/`
+   - Stable rules → `docs/knowledge/rules/`
+   - Empirical findings → `docs/knowledge/findings/`
+   - Disproven paths → `docs/knowledge/failures/`
 
 ### Phase 5: Continue or Stop
 
@@ -124,7 +124,8 @@ Output all A/B-rated factors, key findings, new knowledge base entries, and sugg
 
 ### WQ BRAIN Compatible Operators
 
-These operators produce expressions that can be directly submitted to WorldQuant BRAIN for independent validation.
+These operators produce expressions that can be sent to WorldQuant BRAIN for remote simulation and independent validation.
+Formal submission still follows the local preflight/override policy described in the WQ BRAIN tools and API docs.
 
 | Category | Operators |
 |----------|-----------|
@@ -190,9 +191,8 @@ Fitness = Sharpe × sqrt(|Returns| / max(Turnover, 0.125))
 | Path | Purpose |
 |------|---------|
 | `scripts/factor_miner.py` | Submission/polling/parsing utility library |
-| `research_notes/TEMPLATE.md` | Research notebook template |
-| `research_notes/knowledge/` | Cross-session knowledge base (rules, findings, failures) |
-| `research_notes/archive/*.md` | Per-direction research notebooks |
+| `docs/knowledge/` | Cross-session knowledge base (rules, findings, failures) |
+| project/external research notes | Per-direction research notebooks; keep them linked to `docs/knowledge/` updates |
 
 ---
 
