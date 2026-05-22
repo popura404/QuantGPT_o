@@ -18,7 +18,7 @@ def _validation_provenance() -> dict:
             "test": {"metrics": {"long_short_sharpe": 0.8, "direction_adjusted_rank_ic_mean": 0.02}},
         },
         oos_score={"decision": "candidate", "score": 80},
-        data_quality={"enabled": True, "after_rows": 100, "after_stocks": 10},
+        data_quality={"enabled": True, "after_rows": 100, "after_stocks": 10, "data_snapshot_id": "ds_strategy"},
         rolling_validation={"score": 70, "windows": [{"window_index": 0}]},
         placebo_test={"passed": True, "details": {"perm_pass": True, "decay_ok": True, "shift_ics": {"5": 0.01}}},
     )
@@ -57,6 +57,16 @@ async def test_mcp_run_score_report_strategy_flow(monkeypatch, tmp_path):
         "cash_weights": [{"trade_date": "2024-01-02", "cash_weight": 0.5}],
         "turnover_by_rebalance": [],
         "cost_by_rebalance": [],
+        "experiment_id": "exp_strategy",
+        "factor_hash": "fh_strategy",
+        "data_snapshot_id": "ds_strategy",
+        "direction_policy": "train_fixed",
+        "oos_result": {
+            "direction_policy": "train_fixed",
+            "train": {"period": ["2024-01-02", "2024-01-10"], "metrics": {"sharpe": 1.0}},
+            "valid": {"period": ["2024-01-11", "2024-01-20"], "metrics": {"sharpe": 0.9}},
+            "test": {"period": ["2024-01-21", "2024-02-02"], "metrics": {"sharpe": 0.8}},
+        },
         "validation_provenance": _validation_provenance(),
     }
 
@@ -82,6 +92,7 @@ async def test_mcp_run_score_report_strategy_flow(monkeypatch, tmp_path):
     assert backtest["latest_holdings"][0]["stock_code"] == "A"
     assert 0 <= score["score"] <= 100
     assert report["summary_json_path"].endswith("summary.json")
+    assert export["schema_version"] == "strategy_signal.v1"
     assert export["signals"][0]["stock_code"] == "A"
     assert "diagnoses" in diagnosis
     assert anti["type"] == "strategy_anti_overfit"

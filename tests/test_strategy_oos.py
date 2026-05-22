@@ -125,7 +125,10 @@ def test_strategy_backtest_returns_oos_result_and_json_safe_payload():
     assert result.validation_mode == "train_valid_test"
     assert payload["direction_policy"] == "train_fixed"
     assert payload["data_quality"]["enabled"] is True
+    assert payload["data_snapshot_id"].startswith("ds_")
+    assert payload["data_quality"]["data_snapshot_id"] == payload["data_snapshot_id"]
     assert payload["oos_result"]["train"]["period"]
+    assert payload["oos_result"]["data_snapshot_id"] == payload["data_snapshot_id"]
     assert payload["oos_result"]["test"]["metrics"]["turnover_source"] == "turnover_by_rebalance_eval_window"
     assert payload["oos_summary"]["decision"] in {"candidate", "watchlist", "reject"}
     assert payload["oos_score"]["metrics_scope"] == "oos_train_valid_test"

@@ -68,6 +68,18 @@ export default function TaskResultSummary({ task }: Props) {
             </div>
           ))}
         </div>
+        <MetricList
+          title="Provenance"
+          metrics={{
+            experiment_id: strategy.experiment_id,
+            factor_hash: strategy.factor_hash,
+            data_snapshot_id: strategy.data_snapshot_id,
+            promotion_state: strategy.promotion_state,
+          }}
+        />
+        {Array.isArray(strategy.promotion_blockers) && strategy.promotion_blockers.length > 0 && (
+          <JsonBlock title="Promotion Blockers" value={strategy.promotion_blockers} />
+        )}
         {isObject(strategy.oos_result) && <JsonBlock title="OOS" value={strategy.oos_result} />}
         {isObject(strategy.data_quality) && <JsonBlock title="Data Quality" value={strategy.data_quality} />}
         {holdings.length > 0 && <JsonBlock title="Latest Holdings" value={holdings.slice(0, 8)} />}
@@ -128,6 +140,19 @@ export default function TaskResultSummary({ task }: Props) {
             wq_fitness: summary.wq_fitness,
           }}
         />
+        <MetricList
+          title="Provenance"
+          metrics={{
+            experiment_id: result.experiment_id,
+            factor_hash: result.factor_hash,
+            data_snapshot_id: result.data_snapshot_id,
+            data_source: result.data_source,
+            promotion_state: result.promotion_state,
+          }}
+        />
+        {Array.isArray(result.promotion_blockers) && result.promotion_blockers.length > 0 && (
+          <JsonBlock title="Promotion Blockers" value={result.promotion_blockers} />
+        )}
         {result.oos_result && <JsonBlock title="OOS / Data Quality" value={{ oos_result: result.oos_result, data_quality: result.data_quality }} />}
         {result.report_url && <ReportLink href={result.report_url} />}
       </div>

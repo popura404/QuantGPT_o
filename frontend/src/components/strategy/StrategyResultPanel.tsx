@@ -58,12 +58,39 @@ export default function StrategyResultPanel({ result, exportPayload, exporting, 
           ))}
         </div>
       )}
+      {strategy && (
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+          {[
+            ["experiment", strategy.experiment_id],
+            ["factor_hash", strategy.factor_hash],
+            ["snapshot", strategy.data_snapshot_id],
+            ["promotion", strategy.promotion_state],
+          ].map(([label, value]) => (
+            <Metric key={String(label)} label={String(label)} value={value} />
+          ))}
+        </div>
+      )}
+      {strategy?.promotion_blockers && strategy.promotion_blockers.length > 0 && (
+        <JsonBlock title="Promotion blockers" value={strategy.promotion_blockers} />
+      )}
       {strategy?.oos_result && <JsonBlock title="OOS summary" value={strategy.oos_result} />}
       {strategy?.data_quality && <JsonBlock title="Data quality" value={strategy.data_quality} />}
       {holdings.length > 0 && <JsonBlock title="Latest holdings" value={holdings.slice(0, 12)} />}
       {validationIssues.length > 0 && <JsonBlock title="Validation issues" value={validationIssues} />}
       {riskLogs.length > 0 && <JsonBlock title="Risk logs" value={riskLogs} />}
-      {exportPayload && <JsonBlock title="Candidate export" value={{ notice: exportPayload.notice, signals: exportPayload.signals.slice(0, 12) }} />}
+      {exportPayload && (
+        <JsonBlock
+          title="Candidate export"
+          value={{
+            schema_version: exportPayload.schema_version,
+            experiment_id: exportPayload.experiment_id,
+            factor_hash: exportPayload.factor_hash,
+            notice: exportPayload.notice,
+            validation_summary: exportPayload.validation_summary,
+            signals: exportPayload.signals.slice(0, 12),
+          }}
+        />
+      )}
     </section>
   );
 }

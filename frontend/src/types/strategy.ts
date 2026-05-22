@@ -101,6 +101,15 @@ export interface StrategyBacktestResultPayload {
   validation_mode?: string;
   direction_policy?: string;
   data_quality?: Record<string, unknown>;
+  data_snapshot_id?: string;
+  data_source?: string;
+  data_source_metadata?: Record<string, unknown>;
+  experiment_id?: string;
+  factor_hash?: string;
+  config_hash?: string;
+  promotion_state?: string;
+  promotion_blockers?: string[];
+  validation_provenance?: Record<string, unknown>;
   oos_summary?: Record<string, unknown>;
   oos_score?: StrategyScore;
   oos_result?: {
@@ -114,6 +123,8 @@ export interface StrategyBacktestResultPayload {
     test?: { period?: string[]; metrics?: Record<string, number | string | null> };
     decay?: Record<string, number | null>;
     warnings?: string[];
+    data_snapshot_id?: string;
+    data_source?: string;
     data_quality?: Record<string, unknown>;
   };
   strategy_returns?: Record<string, unknown>[];
@@ -135,17 +146,32 @@ export interface StrategyExportSignal {
   trade_date: string;
   stock_code: string;
   target_weight: number;
-  action_hint: string;
+  rank?: number;
   constraint_reasons: string[];
   notice: string;
 }
 
 export interface StrategyExportPayload {
+  schema_version?: "strategy_signal.v1" | string;
+  strategy_id?: string;
   strategy_name: string;
+  strategy_version?: string;
   spec_version: string;
+  experiment_id?: string;
+  factor_hash?: string;
+  created_at?: string;
+  as_of?: string;
   market: string;
+  asset_class?: string;
+  universe?: string;
+  rebalance_frequency?: string;
+  holding_period?: number;
+  signal_type?: string;
   data_end: string;
   notice: string;
+  validation_summary?: Record<string, unknown>;
+  risk_constraints?: Record<string, unknown>;
+  validation_provenance?: Record<string, unknown>;
   signals: StrategyExportSignal[];
   json_path?: string;
   csv_path?: string;

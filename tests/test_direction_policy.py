@@ -5,6 +5,15 @@ import pandas as pd
 import pytest
 
 from quantgpt.backtest import run_factor_backtest
+from quantgpt.validation.policy import (
+    BIASED_DIRECTION_MODE,
+    FINAL_TEST_REQUIRED_FOR_PROMOTION,
+    FORMAL_FINAL,
+    FORMAL_SELECTION,
+    OOS_SUMMARY_REQUIRED,
+    classify_research_mode,
+    formal_policy_blockers,
+)
 
 
 @pytest.fixture
@@ -142,3 +151,39 @@ def test_direction_adjusted_ic_and_factor_artifact_follow_selected_direction(low
     raw_factor = result["_factor_df"]["factor_value"].reset_index(drop=True)
     adjusted_factor = result["_direction_adjusted_factor_df"]["factor_value"].reset_index(drop=True)
     pd.testing.assert_series_equal(adjusted_factor, -raw_factor, check_names=False)
+
+
+def test_classify_oos_selection_as_formal_train_fixed_with_withheld_test():
+    policy = classify_research_mode({
+        "oos_enabled": True,
+        "validation_stage": "selection",
+        "direction_mode": "auto_full",
+    })
+
+    assert policy["research_mode"] == FORMAL_SELECTION
+    assert policy["direction_policy"] == "train_fixed"
+    assert policy["formal_safe"] is True
+    assert policy["final_test_policy"] == "withheld_until_validation_stage_final"
+    assert policy["policy_blockers"] == [FINAL_TEST_REQUIRED_FOR_PROMOTION]
+
+
+def test_classify_oos_final_as_formal_final_without_policy_blockers():
+    policy = classify_research_mode({"oos_enabled": True, "validation_stage": "final"})
+
+    assert policy["research_mode"] == FORMAL_FINAL
+    assert policy["direction_policy"] == "train_fixed"
+    assert policy["formal_safe"] is True
+    assert policy["final_test_policy"] == "executed"
+    assert policy["policy_blockers"] == []
+
+
+def test_formal_policy_blocks_auto_full_and_missing_oos_for_promotion_boundary():
+    blockers = formal_policy_blockers({
+        "params": {
+            "oos_enabled": False,
+            "direction_mode": "auto_full",
+            "validation_stage": "selection",
+        }
+    }, "export")
+
+    assert blockers == [BIASED_DIRECTION_MODE, OOS_SUMMARY_REQUIRED, FINAL_TEST_REQUIRED_FOR_PROMOTION]

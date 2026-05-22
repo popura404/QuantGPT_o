@@ -1,12 +1,16 @@
 """Tests for backtest task routes — health, stats, task CRUD."""
 
+import asyncio
 import time
 from concurrent.futures import Future
 
 import pandas as pd
 import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from quantgpt.auth import GUEST_USER_ID, create_guest_token
+from quantgpt.models import Experiment
 from quantgpt.task_store import tasks, tasks_lock
 
 pytestmark = pytest.mark.asyncio
@@ -390,9 +394,17 @@ class TestAutoBacktestOOSResults:
             assert key in result
         assert "oos_result" not in result
         assert "data_quality" not in result
+        assert result["research_mode"] == "exploratory"
+        assert result["direction_policy"] == "auto_full"
+        assert result["formal_safe"] is False
+        assert result["final_test_policy"] == "not_run"
         assert result["promotion_state"] == "research_only"
         assert "AUTO_FULL_NOT_PROMOTABLE" in result["promotion_blockers"]
+        assert "BIASED_DIRECTION_MODE" in result["promotion_blockers"]
+        assert "OOS_SUMMARY_REQUIRED" in result["promotion_blockers"]
         assert result["params"]["rebalance_anchor"] == "2024-01-02"
+        assert result["data_snapshot_id"].startswith("ds_")
+        assert result["params"]["data_snapshot_id"] == result["data_snapshot_id"]
 
     async def test_default_auto_backtest_uses_oos_selection_and_withholds_test(
         self, client, test_user, auth_headers, auto_backtest_fakes
@@ -404,8 +416,13 @@ class TestAutoBacktestOOSResults:
         assert resp.status_code == 202
         result = tasks[resp.json()["task_id"]]["result"]
         assert result["direction_policy"] == "train_fixed"
+        assert result["research_mode"] == "formal_selection"
+        assert result["formal_safe"] is True
+        assert result["final_test_policy"] == "withheld_until_validation_stage_final"
         assert result["data_quality"]["enabled"] is True
+        assert result["data_quality"]["data_snapshot_id"] == result["data_snapshot_id"]
         assert result["oos_result"]["report_scope"] == "oos_train_valid_selection"
+        assert result["oos_result"]["data_snapshot_id"] == result["data_snapshot_id"]
         assert result["oos_result"]["test"]["status"] == "withheld"
         assert result["selection_score"]["metrics_scope"] == "oos_train_valid_selection"
         assert "FINAL_TEST_NOT_RUN" in result["promotion_blockers"]
@@ -423,9 +440,14 @@ class TestAutoBacktestOOSResults:
         assert resp.status_code == 202
         result = tasks[resp.json()["task_id"]]["result"]
         assert result["direction_policy"] == "train_fixed"
+        assert result["research_mode"] == "formal_final"
+        assert result["formal_safe"] is True
+        assert result["final_test_policy"] == "executed"
         assert result["report_scope"] == "oos_train_valid_test"
         assert result["data_quality"]["enabled"] is True
+        assert result["data_quality"]["data_snapshot_id"] == result["data_snapshot_id"]
         assert result["oos_result"]["report_scope"] == "oos_train_valid_test"
+        assert result["oos_result"]["data_snapshot_id"] == result["data_snapshot_id"]
         assert "status" not in result["oos_result"]["test"]
         assert "_private" not in result["oos_result"]
         assert result["backtest_summary"]["metrics_scope"] == "legacy_compat_single_run"
@@ -445,3 +467,55 @@ class TestAutoBacktestOOSResults:
         result = tasks[resp.json()["task_id"]]["result"]
         assert result["data_quality"]["enabled"] is True
         assert "oos_result" not in result
+
+
+async def test_auto_backtest_ledger_helper_links_result_to_experiment(monkeypatch, engine, test_user):
+    import quantgpt.db as db_mod
+    import quantgpt.routes.backtest_tasks as route
+
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(db_mod, "_session_factory", factory)
+    payload = {
+        "report_url": "/api/v1/reports/backtest_report_test.html",
+        "metrics": {"sharpe": 1.0},
+        "backtest_summary": {"long_short_sharpe": 1.2},
+        "scoring": {"score": 80, "grade": "B", "decision": "candidate"},
+        "promotion_state": "research_only",
+        "promotion_blockers": ["FINAL_TEST_REQUIRED_FOR_PROMOTION"],
+        "direction_policy": "train_fixed",
+        "research_mode": "formal_final",
+        "params": {
+            "expression": "rank(close)",
+            "universe": "hs300",
+            "holding_period": 5,
+            "data_snapshot_id": "ds_test",
+            "oos_enabled": True,
+            "validation_stage": "final",
+            "direction_policy": "train_fixed",
+            "research_mode": "formal_final",
+        },
+        "oos_result": {
+            "train": {"period": ["2024-01-02", "2024-01-03"]},
+            "valid": {"period": ["2024-01-04", "2024-01-05"]},
+            "test": {"period": ["2024-01-08", "2024-01-09"]},
+        },
+    }
+
+    await asyncio.to_thread(
+        route._record_auto_backtest_experiment,
+        "task-rest",
+        str(test_user.id),
+        "rank(close)",
+        payload,
+    )
+
+    async with factory() as session:
+        experiment = (
+            await session.execute(select(Experiment).where(Experiment.experiment_id == payload["experiment_id"]))
+        ).scalar_one()
+
+    assert payload["factor_hash"] == experiment.factor_hash
+    assert experiment.task_id == "task-rest"
+    assert experiment.user_id == test_user.id
+    assert experiment.status == "validated_oos"
+    assert experiment.data_snapshot_id == "ds_test"

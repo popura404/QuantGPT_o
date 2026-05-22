@@ -220,6 +220,170 @@ class FactorSearchAttempt(Base):
     )
 
 
+class Experiment(Base):
+    __tablename__ = "experiments"
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    experiment_id = Column(String(80), nullable=False, unique=True, index=True)
+    run_id = Column(String(80), nullable=True, index=True)
+    parent_run_id = Column(String(80), nullable=True, index=True)
+    user_id = Column(Uuid, ForeignKey("users.id"), nullable=True, index=True)
+    task_id = Column(String(12), ForeignKey("tasks.id"), nullable=True, index=True)
+    parent_experiment_id = Column(String(80), nullable=True, index=True)
+    factor_id = Column(String(80), nullable=True, index=True)
+    factor_hash = Column(String(80), nullable=False, index=True)
+    expression = Column(Text, nullable=False)
+    expression_normalized = Column(Text, nullable=False)
+    strategy_spec_version = Column(String(60), nullable=True)
+    strategy_id = Column(Uuid, ForeignKey("strategies.id"), nullable=True, index=True)
+    strategy_run_id = Column(Uuid, ForeignKey("strategy_runs.id"), nullable=True, index=True)
+    universe = Column(String(80), nullable=True)
+    market = Column(String(60), nullable=True)
+    asset_class = Column(String(60), nullable=True)
+    data_source = Column(String(120), nullable=True)
+    data_version = Column(String(120), nullable=True)
+    data_snapshot_id = Column(String(120), nullable=True, index=True)
+    adjustment_type = Column(String(40), nullable=True)
+    industry_neutralization = Column(Boolean, nullable=True)
+    size_neutralization = Column(Boolean, nullable=True)
+    cost_model = Column(JSON, nullable=True)
+    rebalance_frequency = Column(String(40), nullable=True)
+    holding_period = Column(Integer, nullable=True)
+    train_period = Column(JSON, nullable=True)
+    validation_period = Column(JSON, nullable=True)
+    test_period = Column(JSON, nullable=True)
+    direction_mode = Column(String(40), nullable=True)
+    direction_policy = Column(String(60), nullable=True)
+    research_mode = Column(String(60), nullable=True)
+    random_seed = Column(Integer, nullable=True)
+    status = Column(String(40), nullable=False, default="draft", index=True)
+    promotion_stage = Column(String(40), nullable=True)
+    created_by = Column(String(80), nullable=True)
+    git_commit = Column(String(80), nullable=True)
+    config_hash = Column(String(80), nullable=True, index=True)
+    result_summary = Column(JSON, nullable=True)
+    failure_reason = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
+
+    user = relationship("User")
+    task = relationship("Task")
+    results = relationship("ExperimentResult", back_populates="experiment", lazy="selectin")
+    artifacts = relationship("ExperimentArtifact", back_populates="experiment", lazy="selectin")
+    promotion_events = relationship("PromotionEvent", back_populates="experiment", lazy="selectin")
+    export_events = relationship("ExportEvent", back_populates="experiment", lazy="selectin")
+
+    __table_args__ = (
+        Index("ix_experiments_user_created", "user_id", "created_at"),
+        Index("ix_experiments_factor_status", "factor_hash", "status"),
+    )
+
+
+class ExperimentResult(Base):
+    __tablename__ = "experiment_results"
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    experiment_id = Column(String(80), ForeignKey("experiments.experiment_id"), nullable=False, index=True)
+    stage = Column(String(40), nullable=False)
+    validation_stage = Column(String(40), nullable=True)
+    train_period = Column(JSON, nullable=True)
+    validation_period = Column(JSON, nullable=True)
+    test_period = Column(JSON, nullable=True)
+    direction_policy = Column(String(60), nullable=True)
+    metrics = Column(JSON, nullable=True)
+    oos_score = Column(JSON, nullable=True)
+    data_quality = Column(JSON, nullable=True)
+    failure_reason = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    experiment = relationship("Experiment", back_populates="results")
+
+    __table_args__ = (
+        Index("ix_experiment_results_experiment_stage", "experiment_id", "stage"),
+    )
+
+
+class ExperimentArtifact(Base):
+    __tablename__ = "experiment_artifacts"
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    experiment_id = Column(String(80), ForeignKey("experiments.experiment_id"), nullable=False, index=True)
+    artifact_type = Column(String(60), nullable=False)
+    uri = Column(String(500), nullable=False)
+    content_hash = Column(String(80), nullable=True, index=True)
+    artifact_metadata = Column("metadata", JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    experiment = relationship("Experiment", back_populates="artifacts")
+
+
+class FactorRegistry(Base):
+    __tablename__ = "factor_registry"
+
+    factor_hash = Column(String(80), primary_key=True)
+    expression_normalized = Column(Text, nullable=False)
+    family_key = Column(Text, nullable=True, index=True)
+    operator_family = Column(String(120), nullable=True)
+    first_experiment_id = Column(String(80), nullable=True)
+    latest_experiment_id = Column(String(80), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
+
+
+class DataSnapshot(Base):
+    __tablename__ = "data_snapshots"
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    snapshot_id = Column(String(120), nullable=False, unique=True, index=True)
+    vendor = Column(String(120), nullable=True)
+    source_kind = Column(String(80), nullable=True)
+    cache_path = Column(String(500), nullable=True)
+    query_params = Column(JSON, nullable=True)
+    field_schema = Column(JSON, nullable=True)
+    row_count = Column(Integer, nullable=True)
+    date_min = Column(String(10), nullable=True)
+    date_max = Column(String(10), nullable=True)
+    content_hash = Column(String(80), nullable=True, index=True)
+    download_time = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+
+class PromotionEvent(Base):
+    __tablename__ = "promotion_events"
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    experiment_id = Column(String(80), ForeignKey("experiments.experiment_id"), nullable=False, index=True)
+    boundary = Column(String(40), nullable=False)
+    decision = Column(String(40), nullable=False)
+    blockers = Column(JSON, nullable=True)
+    provenance = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    experiment = relationship("Experiment", back_populates="promotion_events")
+
+    __table_args__ = (
+        Index("ix_promotion_events_experiment_boundary", "experiment_id", "boundary"),
+    )
+
+
+class ExportEvent(Base):
+    __tablename__ = "export_events"
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    experiment_id = Column(String(80), ForeignKey("experiments.experiment_id"), nullable=False, index=True)
+    schema_version = Column(String(60), nullable=False)
+    export_path = Column(String(500), nullable=True)
+    payload_hash = Column(String(80), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+    experiment = relationship("Experiment", back_populates="export_events")
+
+    __table_args__ = (
+        Index("ix_export_events_experiment_schema", "experiment_id", "schema_version"),
+    )
+
+
 class DailySummary(Base):
     __tablename__ = "daily_summaries"
 

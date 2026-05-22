@@ -189,8 +189,9 @@ Post-MVP strategy capabilities:
   `direction_policy="train_fixed"` and optional base market-data quality gates.
   OOS strategy results expose `validation_mode="train_valid_test"`,
   `direction_policy`, `data_quality`, `oos_result`, `oos_summary`, and
-  `oos_score`; OOS scoring uses train/valid/test metrics rather than the legacy
-  single-period factor score.
+  `oos_score`; they also expose `data_snapshot_id`, `data_source`, and
+  `data_source_metadata` for export provenance. OOS scoring uses
+  train/valid/test metrics rather than the legacy single-period factor score.
 - REST and MCP both expose strategy validation, async backtest, scoring,
   report generation, diagnosis, strategy-level validation summaries, candidate
   SignalExport, templates, optimization, and persistence endpoints.
@@ -199,8 +200,10 @@ Post-MVP strategy capabilities:
   holdings, open the generated HTML report, and export candidate signals.
 - `summary_json` is a server-side artifact path. Frontend clients should use
   `strategy_result` for on-page summaries and `report_url` for report access.
-- SignalExport is a research candidate format. It is not an order protocol and
-  still contains no broker, account, API key, execution, or real-money fields.
+- SignalExport is `strategy_signal.v1`, a research candidate format requiring
+  promotion-ready provenance, `experiment_id`, `factor_hash`, and
+  `data_snapshot_id`. It is not an order protocol and still contains no broker,
+  account, API key, execution, or real-money fields.
 
 ## Backtest Request Example
 

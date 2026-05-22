@@ -105,6 +105,13 @@ MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先�
 | `diagnose_factor` | 诊断因子问题，推荐改进策略 |
 | `run_anti_overfit` | 反过拟合检测 (4 项测试) |
 | `run_rolling_validation` | 滚动验证 (Walk-Forward) |
+| `list_experiments` / `get_experiment` | 查询实验 ledger |
+| `compare_experiments` / `show_factor_lineage` | 对比实验和查看因子 lineage |
+| `summarize_trial_counts` | 汇总项目、股票池、因子族和 factor hash 试验次数 |
+| `find_similar_factors` | 检查表达式、信号和收益相似度 |
+| `run_multiple_testing_check` | 写入 trial-aware 多重检验结果 |
+| `promote_experiment` / `reject_experiment` | 写入 promotion/rejection event |
+| `export_experiment_report` | 导出轻量实验 JSON/Markdown 报告 |
 | `wq_brain_submit` | 调用 WorldQuant BRAIN 远程模拟；正式 submit 受 preflight/override 约束 |
 | `ask_deepseek` | 调用 DeepSeek LLM 进行研究评审（独立 MCP） |
 
@@ -186,9 +193,13 @@ candidate 的最终验收。显式传 `oos_enabled=false` 会回到 legacy 单�
 data-quality 会优先使用免费行情源可取得的 A 股元数据：`is_st`、`trade_status` / `suspended`、
 `pre_close`、`limit_up` / `limit_down`。可用时默认过滤 ST/*ST、停牌、新股窗口和一字涨跌停，
 并报告 `close/pre_close` 与 `pct_change` 的复权一致性问题；旧缓存缺少字段时会降级为 warning。
+`run_backtest` 和 `score_factor` 的正式结果会携带 `data_snapshot_id`、`data_source`、
+`data_source_metadata`，并把 `data_snapshot_id` 同步进 `params`、`data_quality` 和
+`oos_result`，用于 ledger hash、promotion gate 和 export 追溯。
 
 candidate / submit / export 边界统一要求 `validation_provenance.suite_version="factor_validation/v1"`，
-且必须同时通过 data-quality gate、train/valid/test、rolling window、placebo test 和 time-shift test。
+且必须同时具备 `data_snapshot_id`，并通过 data-quality gate、train/valid/test、rolling window、
+placebo test 和 time-shift test。
 缺少该证明的 `allowed=true` preflight 会被降级为 blocked。
 
 WQ BRAIN 远程模拟本身不强制本地 OOS/data-quality，因为 WQ-only 字段和算子可能无法在本地执行。

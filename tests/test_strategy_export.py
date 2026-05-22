@@ -15,7 +15,7 @@ def _validation_provenance() -> dict:
             "test": {"metrics": {"long_short_sharpe": 0.8, "direction_adjusted_rank_ic_mean": 0.02}},
         },
         oos_score={"decision": "candidate", "score": 80, "grade": "A", "overfit_risk": "low"},
-        data_quality={"enabled": True, "after_rows": 100, "after_stocks": 10},
+        data_quality={"enabled": True, "after_rows": 100, "after_stocks": 10, "data_snapshot_id": "ds_test"},
         rolling_validation={"score": 70, "windows": [{"window_index": 0}]},
         placebo_test={"passed": True, "details": {"perm_pass": True, "decay_ok": True, "shift_ics": {"5": 0.01}}},
     )
@@ -40,6 +40,16 @@ def _result_payload():
         "cash_weights": [{"trade_date": "2024-01-02", "cash_weight": 0.0}],
         "turnover_by_rebalance": [],
         "cost_by_rebalance": [],
+        "experiment_id": "exp_test",
+        "factor_hash": "fh_test",
+        "data_snapshot_id": "ds_test",
+        "direction_policy": "train_fixed",
+        "oos_result": {
+            "direction_policy": "train_fixed",
+            "train": {"period": ["2024-01-02", "2024-01-10"], "metrics": {"sharpe": 1.0}},
+            "valid": {"period": ["2024-01-11", "2024-01-20"], "metrics": {"sharpe": 0.9}},
+            "test": {"period": ["2024-01-21", "2024-02-02"], "metrics": {"sharpe": 0.8}},
+        },
         "validation_provenance": _validation_provenance(),
     }
 
@@ -57,9 +67,15 @@ def _walk(value):
 def test_export_strategy_candidate_has_review_signal_schema_without_execution_fields():
     payload = export_strategy_candidate_payload(_result_payload())
 
+    assert payload["schema_version"] == "strategy_signal.v1"
+    assert payload["experiment_id"] == "exp_test"
+    assert payload["factor_hash"] == "fh_test"
+    assert payload["validation_summary"]["data_snapshot_id"] == "ds_test"
+    assert payload["notice"] == "Candidate signal only. Not an order or automated trading instruction."
     assert payload["spec_version"] == "strategy_spec/v1"
     assert len(payload["signals"]) == 2
-    assert payload["signals"][0]["action_hint"] == "buy"
+    assert payload["signals"][0]["rank"] == 1
+    assert "action_hint" not in payload["signals"][0]
     assert payload["validation_provenance"]["promotion_state"] == "promotion_ready"
     assert all(not (FORBIDDEN_EXPORT_KEYS & set(item)) for item in _walk(payload))
 
@@ -74,3 +90,27 @@ def test_export_strategy_candidate_rejects_missing_validation_provenance():
         assert "VALIDATION_PROVENANCE_REQUIRED" in str(exc)
     else:
         raise AssertionError("export should require validation provenance")
+
+
+def test_export_strategy_candidate_rejects_missing_experiment_linkage():
+    result = _result_payload()
+    result.pop("experiment_id")
+
+    try:
+        export_strategy_candidate_payload(result)
+    except ValueError as exc:
+        assert "experiment_id" in str(exc)
+    else:
+        raise AssertionError("export should require experiment_id")
+
+
+def test_export_strategy_candidate_rejects_missing_data_snapshot():
+    result = _result_payload()
+    result.pop("data_snapshot_id")
+
+    try:
+        export_strategy_candidate_payload(result)
+    except ValueError as exc:
+        assert "data_snapshot_id" in str(exc)
+    else:
+        raise AssertionError("export should require data_snapshot_id")

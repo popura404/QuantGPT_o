@@ -23,6 +23,34 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from .data_quality import DataQualityConfig, run_data_quality_gate
+from .data_snapshots import ensure_market_frame_snapshot, persist_data_snapshot, snapshot_result_fields
+from .experiment_ledger import (
+    get_experiment as _ledger_get_experiment,
+)
+from .experiment_ledger import (
+    list_experiments as _ledger_list_experiments,
+)
+from .experiment_ledger import (
+    record_experiment as _ledger_record_experiment,
+)
+from .experiment_ledger import (
+    record_experiment_artifact as _ledger_record_experiment_artifact,
+)
+from .experiment_ledger import (
+    record_experiment_result as _ledger_record_experiment_result,
+)
+from .experiment_ledger import (
+    record_export_event as _ledger_record_export_event,
+)
+from .experiment_ledger import (
+    record_promotion_event as _ledger_record_promotion_event,
+)
+from .experiment_ledger import (
+    summarize_trial_counts as _ledger_summarize_trial_counts,
+)
+from .experiment_ledger import (
+    transition_status as _ledger_transition_status,
+)
 from .expression_parser import __doc__ as _expr_module_doc
 from .expression_parser import parse_expression
 from .factor_values import compute_factor_values_payload as _compute_factor_values_payload
@@ -30,6 +58,8 @@ from .fundamental_data import ALL_FUNDAMENTAL_NAMES
 from .market_data import BENCHMARK_CODES, UNIVERSES, MarketDataFetcher, fetch_benchmark_returns, get_universe
 from .mcp_task_helper import complete_mcp_task, start_mcp_task
 from .report import generate_report
+from .statistics.factor_similarity import factor_similarity_report as _factor_similarity_report
+from .statistics.multiple_testing import multiple_testing_report as _multiple_testing_report
 from .strategy.service import (
     diagnose_strategy_payload as _diagnose_strategy_payload,
 )
@@ -83,7 +113,13 @@ from .validation.oos_score import (
     compute_oos_selection_score,
     withhold_final_test,
 )
-from .validation.promotion import AUTO_FULL_NOT_PROMOTABLE, research_only_provenance
+from .validation.policy import (
+    BIASED_DIRECTION_MODE,
+    FINAL_TEST_REQUIRED_FOR_PROMOTION,
+    OOS_SUMMARY_REQUIRED,
+    classify_research_mode,
+)
+from .validation.promotion import AUTO_FULL_NOT_PROMOTABLE, evaluate_promotion_provenance, research_only_provenance
 from .validation.split import OOSConfig
 from .wq_brain_service import (
     run_batch_simulation,
@@ -132,6 +168,41 @@ def _fetch_benchmark_for_market(benchmark: str, start_date: str, end_date: str):
     return fetch_benchmark_returns(benchmark, start_date, end_date)
 
 
+def _market_data_provenance_fields(
+    market_df: pd.DataFrame,
+    *,
+    universe: str,
+    start_date: str,
+    end_date: str,
+    stock_codes: list[str],
+    endpoint: str,
+) -> dict:
+    source_metadata = market_df.attrs.get("source_metadata")
+    if not isinstance(source_metadata, dict):
+        source_metadata = {}
+    snapshot = ensure_market_frame_snapshot(
+        market_df,
+        vendor=str(market_df.attrs.get("data_source") or source_metadata.get("vendor") or "in_memory_frame"),
+        source_kind=str(source_metadata.get("source_kind") or "market_dataframe_snapshot"),
+        endpoint=endpoint,
+        query_params={
+            "universe": universe,
+            "start_date": start_date,
+            "end_date": end_date,
+            "stock_codes": stock_codes,
+        },
+        source_metadata=source_metadata,
+    )
+    return snapshot_result_fields(snapshot, source_metadata=source_metadata)
+
+
+def _annotate_data_provenance(report: dict | None, provenance: dict) -> None:
+    if report is None:
+        return
+    report.setdefault("data_snapshot_id", provenance["data_snapshot_id"])
+    report.setdefault("data_source", provenance.get("data_source"))
+
+
 def _score_oos_for_stage(oos_result: dict, data_quality_report: dict | None, validation_stage: str) -> dict:
     if validation_stage == "selection":
         return compute_oos_selection_score(oos_result, data_quality=data_quality_report)
@@ -140,8 +211,284 @@ def _score_oos_for_stage(oos_result: dict, data_quality_report: dict | None, val
 
 def _oos_blockers_for_stage(validation_stage: str) -> list[str]:
     if validation_stage == "selection":
-        return [FINAL_TEST_NOT_RUN, "FULL_VALIDATION_SUITE_NOT_RUN"]
+        return [FINAL_TEST_REQUIRED_FOR_PROMOTION, FINAL_TEST_NOT_RUN, "FULL_VALIDATION_SUITE_NOT_RUN"]
     return ["FULL_VALIDATION_SUITE_NOT_RUN"]
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if value))
+
+
+def _research_only_blockers(params: dict) -> list[str]:
+    policy = classify_research_mode(params)
+    blockers = list(policy.get("policy_blockers") or [])
+    if not params.get("oos_enabled"):
+        if policy.get("direction_policy") == "auto_full":
+            blockers.extend([BIASED_DIRECTION_MODE, AUTO_FULL_NOT_PROMOTABLE])
+        blockers.extend([OOS_SUMMARY_REQUIRED, "OOS_TRAIN_VALID_TEST_NOT_RUN"])
+    return _dedupe(blockers)
+
+
+def _attach_policy_metadata(payload: dict) -> dict:
+    policy = classify_research_mode(payload.get("params"))
+    payload["research_mode"] = policy["research_mode"]
+    payload["direction_policy"] = policy["direction_policy"]
+    payload["formal_safe"] = policy["formal_safe"]
+    payload["final_test_policy"] = policy["final_test_policy"]
+    return policy
+
+
+def _get_ledger_session_factory():
+    from .db import _get_session_factory
+
+    return _get_session_factory()
+
+
+def _run_ledger_sync(coro_factory):
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro_factory())
+    logger.warning("Synchronous MCP ledger write skipped inside running event loop")
+    return None
+
+
+def _experiment_exists_sync(experiment_id: str) -> bool | None:
+    async def _exists() -> bool:
+        factory = _get_ledger_session_factory()
+        async with factory() as session:
+            return await _ledger_get_experiment(session, experiment_id) is not None
+
+    return _run_ledger_sync(_exists)
+
+
+def _record_strategy_export_event_sync(result_payload: dict, export_payload: dict) -> None:
+    experiment_id = result_payload.get("experiment_id") or export_payload.get("experiment_id")
+    if not isinstance(experiment_id, str) or not experiment_id:
+        return
+
+    async def _record() -> None:
+        factory = _get_ledger_session_factory()
+        async with factory() as session:
+            row = await _ledger_get_experiment(session, experiment_id)
+            if row is None:
+                return
+            await _ledger_record_export_event(
+                session,
+                experiment_id=experiment_id,
+                schema_version=str(export_payload.get("schema_version") or "strategy_signal.v1"),
+                export_path=export_payload.get("json_path"),
+                payload=export_payload,
+            )
+            if row.status == "candidate":
+                await _ledger_transition_status(session, experiment_id, "exported")
+            await session.commit()
+
+    _run_ledger_sync(_record)
+
+
+async def _record_mcp_experiment_result(
+    *,
+    tool_name: str,
+    task_id: str | None,
+    expression: str,
+    payload: dict,
+    status: str | None = None,
+    failure_reason: str | None = None,
+) -> None:
+    """Best-effort MCP ledger write; never fail the tool response."""
+    try:
+        params = dict(payload.get("params") or {})
+        params.setdefault("source", "mcp")
+        params.setdefault("direction_policy", payload.get("direction_policy"))
+        params.setdefault("research_mode", payload.get("research_mode"))
+        status = status or ("validated_oos" if params.get("oos_enabled") else "backtested_train")
+        factory = _get_ledger_session_factory()
+        async with factory() as session:
+            snapshot = payload.get("data_source_metadata")
+            if isinstance(snapshot, dict) and snapshot.get("snapshot_id"):
+                await persist_data_snapshot(session, snapshot)
+            experiment = await _ledger_record_experiment(
+                session,
+                expression=expression,
+                params=params,
+                status=status,
+                task_id=task_id,
+                parent_experiment_id=params.get("parent_experiment_id"),
+                created_by=f"mcp:{tool_name}",
+                result_summary=_ledger_result_summary(payload),
+                failure_reason=failure_reason,
+            )
+            await _ledger_record_experiment_result(
+                session,
+                experiment_id=experiment.experiment_id,
+                stage=status,
+                validation_stage=params.get("validation_stage"),
+                train_period=_period_for(payload, "train"),
+                validation_period=_period_for(payload, "valid"),
+                test_period=_period_for(payload, "test"),
+                direction_policy=payload.get("direction_policy"),
+                metrics=_ledger_metrics(payload),
+                oos_score=payload.get("oos_score") or payload.get("selection_score") or payload.get("final_oos_score"),
+                data_quality=payload.get("data_quality"),
+                failure_reason=failure_reason,
+            )
+            report_path = payload.get("report_path")
+            if isinstance(report_path, str) and report_path:
+                await _ledger_record_experiment_artifact(
+                    session,
+                    experiment_id=experiment.experiment_id,
+                    artifact_type="report",
+                    uri=report_path,
+                    metadata={"tool": tool_name},
+                )
+            artifact_type = payload.get("artifact_type")
+            artifact_uri = payload.get("artifact_uri")
+            if isinstance(artifact_type, str) and isinstance(artifact_uri, str):
+                await _ledger_record_experiment_artifact(
+                    session,
+                    experiment_id=experiment.experiment_id,
+                    artifact_type=artifact_type,
+                    uri=artifact_uri,
+                    metadata=payload.get("artifact_metadata") if isinstance(payload.get("artifact_metadata"), dict) else None,
+                )
+            payload["experiment_id"] = experiment.experiment_id
+            payload["factor_hash"] = experiment.factor_hash
+            payload["config_hash"] = experiment.config_hash
+            await session.commit()
+    except Exception as exc:
+        logger.warning("MCP experiment ledger write failed: %s", exc)
+
+
+async def _record_mcp_experiment_failure(
+    *,
+    tool_name: str,
+    task_id: str,
+    expression: str,
+    params: dict,
+    status: str,
+    failure_reason: str,
+) -> dict:
+    payload = {
+        "params": dict(params),
+        "research_mode": classify_research_mode(params).get("research_mode"),
+        "direction_policy": classify_research_mode(params).get("direction_policy"),
+        "formal_safe": False,
+        "failure_reason": failure_reason,
+    }
+    await _record_mcp_experiment_result(
+        tool_name=tool_name,
+        task_id=task_id,
+        expression=expression,
+        payload=payload,
+        status=status,
+        failure_reason=failure_reason,
+    )
+    return {
+        "experiment_id": payload.get("experiment_id"),
+        "factor_hash": payload.get("factor_hash"),
+    }
+
+
+def _ledger_result_summary(payload: dict) -> dict:
+    return {
+        "score": payload.get("score") or (payload.get("scoring") or {}).get("score"),
+        "grade": payload.get("grade") or (payload.get("scoring") or {}).get("grade"),
+        "decision": payload.get("decision") or (payload.get("scoring") or {}).get("decision"),
+        "promotion_state": payload.get("promotion_state"),
+        "promotion_blockers": payload.get("promotion_blockers"),
+        "report_scope": payload.get("report_scope"),
+    }
+
+
+def _ledger_metrics(payload: dict) -> dict:
+    if isinstance(payload.get("key_metrics"), dict):
+        return payload["key_metrics"]
+    metrics = {}
+    if isinstance(payload.get("metrics"), dict):
+        metrics["report_metrics"] = payload["metrics"]
+    if isinstance(payload.get("backtest_summary"), dict):
+        metrics["backtest_summary"] = payload["backtest_summary"]
+    return metrics
+
+
+def _period_for(payload: dict, stage: str) -> list | None:
+    oos_result = payload.get("oos_result")
+    if not isinstance(oos_result, dict):
+        return None
+    stage_payload = oos_result.get(stage)
+    if not isinstance(stage_payload, dict):
+        return None
+    period = stage_payload.get("period")
+    return period if isinstance(period, list) else None
+
+
+def _serialize_experiment(row) -> dict:
+    return {
+        "experiment_id": row.experiment_id,
+        "factor_hash": row.factor_hash,
+        "expression": row.expression,
+        "expression_normalized": row.expression_normalized,
+        "status": row.status,
+        "universe": row.universe,
+        "market": row.market,
+        "asset_class": row.asset_class,
+        "data_snapshot_id": row.data_snapshot_id,
+        "direction_policy": row.direction_policy,
+        "research_mode": row.research_mode,
+        "task_id": row.task_id,
+        "parent_experiment_id": row.parent_experiment_id,
+        "result_summary": row.result_summary,
+        "failure_reason": row.failure_reason,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+def _serialize_experiment_detail(row) -> dict:
+    payload = _serialize_experiment(row)
+    payload["results"] = [
+        {
+            "stage": result.stage,
+            "validation_stage": result.validation_stage,
+            "direction_policy": result.direction_policy,
+            "metrics": result.metrics,
+            "oos_score": result.oos_score,
+            "data_quality": result.data_quality,
+            "failure_reason": result.failure_reason,
+            "created_at": result.created_at.isoformat() if result.created_at else None,
+        }
+        for result in row.results
+    ]
+    payload["artifacts"] = [
+        {
+            "artifact_type": artifact.artifact_type,
+            "uri": artifact.uri,
+            "content_hash": artifact.content_hash,
+            "metadata": artifact.artifact_metadata,
+            "created_at": artifact.created_at.isoformat() if artifact.created_at else None,
+        }
+        for artifact in row.artifacts
+    ]
+    payload["promotion_events"] = [
+        {
+            "boundary": event.boundary,
+            "decision": event.decision,
+            "blockers": event.blockers,
+            "provenance": event.provenance,
+            "created_at": event.created_at.isoformat() if event.created_at else None,
+        }
+        for event in row.promotion_events
+    ]
+    payload["export_events"] = [
+        {
+            "schema_version": event.schema_version,
+            "export_path": event.export_path,
+            "payload_hash": event.payload_hash,
+            "created_at": event.created_at.isoformat() if event.created_at else None,
+        }
+        for event in row.export_events
+    ]
+    return payload
 
 
 # Dummy DataFrame for expression validation (includes fundamental columns)
@@ -271,7 +618,9 @@ async def generate_strategy_report(result: dict) -> str:
 def export_strategy_candidate(result: dict) -> str:
     """导出候选调仓信号 JSON/CSV 友好的结构，不包含下单或券商字段。"""
     try:
-        return _strategy_dumps(_export_strategy_candidate_payload(result))
+        payload = _export_strategy_candidate_payload(result)
+        _record_strategy_export_event_sync(result, payload)
+        return _strategy_dumps(payload)
     except Exception as e:
         return _strategy_dumps({"error_code": "STRATEGY_EXPORT_FAILED", "hint": str(e)})
 
@@ -313,7 +662,7 @@ def optimize_strategy_candidate(signals: list[dict], spec: dict) -> str:
 
 
 @mcp.tool()
-def validate_expression(expression: str, mode: str = "local") -> str:
+async def validate_expression(expression: str, mode: str = "local") -> str:
     """验证因子表达式语法是否正确。返回 OK 或错误信息。
 
     Args:
@@ -321,25 +670,69 @@ def validate_expression(expression: str, mode: str = "local") -> str:
         mode: "local"（本地回测验证，默认）或 "wq"（WQ BRAIN 提交验证，放宽字段/算子限制）
     """
 
-    depth = 0
-    for i, ch in enumerate(expression):
-        if ch == '(':
-            depth += 1
-        elif ch == ')':
-            depth -= 1
-            if depth < 0:
-                return f"ERROR: 括号不平衡：位置 {i} 处多余的右括号 ')'"
-    if depth > 0:
-        return f"ERROR: 括号不平衡：缺少 {depth} 个右括号 ')'"
-
+    task_id = await start_mcp_task("validate_expression", expression, {"mode": mode})
+    result_text = ""
+    error_text = None
+    params = {"mode": mode, "source": "mcp"}
     try:
-        func = parse_expression(expression, mode=mode)
-        if mode == "wq":
-            return "OK: expression is valid for WQ BRAIN submission"
-        func(_VALIDATION_DUMMY)
-        return "OK: expression is valid"
-    except Exception as e:
-        return f"ERROR: {e}"
+        depth = 0
+        for i, ch in enumerate(expression):
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+                if depth < 0:
+                    error_text = f"括号不平衡：位置 {i} 处多余的右括号 ')'"
+                    await _record_mcp_experiment_failure(
+                        tool_name="validate_expression",
+                        task_id=task_id,
+                        expression=expression,
+                        params=params,
+                        status="parse_failed",
+                        failure_reason=error_text,
+                    )
+                    return f"ERROR: {error_text}"
+        if depth > 0:
+            error_text = f"括号不平衡：缺少 {depth} 个右括号 ')'"
+            await _record_mcp_experiment_failure(
+                tool_name="validate_expression",
+                task_id=task_id,
+                expression=expression,
+                params=params,
+                status="parse_failed",
+                failure_reason=error_text,
+            )
+            return f"ERROR: {error_text}"
+
+        try:
+            func = parse_expression(expression, mode=mode)
+            if mode == "wq":
+                result_text = "OK: expression is valid for WQ BRAIN submission"
+            else:
+                func(_VALIDATION_DUMMY)
+                result_text = "OK: expression is valid"
+            await _record_mcp_experiment_result(
+                tool_name="validate_expression",
+                task_id=task_id,
+                expression=expression,
+                payload={"params": params, "result_summary": {"validation": "parsed"}},
+                status="parsed",
+            )
+            return result_text
+        except Exception as exc:
+            error_text = str(exc)
+            await _record_mcp_experiment_failure(
+                tool_name="validate_expression",
+                task_id=task_id,
+                expression=expression,
+                params=params,
+                status="parse_failed",
+                failure_reason=error_text,
+            )
+            return f"ERROR: {exc}"
+    finally:
+        result_payload = {"message": result_text} if result_text else None
+        await complete_mcp_task(task_id, result_payload, error_text, expression)
 
 
 @mcp.tool()
@@ -386,49 +779,123 @@ async def run_backtest(
     Returns:
         JSON string with report_path, metrics, group_returns, anti_overfit.
     """
-    task_id = await start_mcp_task("backtest", expression, {
+    task_params = {
         "universe": universe, "start_date": start_date, "end_date": end_date,
         "n_groups": n_groups, "holding_period": holding_period, "benchmark": benchmark,
         "neutralize_industry": neutralize_industry, "neutralize_cap": neutralize_cap,
         "rebalance_anchor": rebalance_anchor, "oos_enabled": oos_enabled, "validation_stage": validation_stage,
         "direction_mode": direction_mode, "fixed_direction": fixed_direction,
         "data_quality": data_quality,
-    })
+    }
+    task_id = await start_mcp_task("backtest", expression, task_params)
     _error_msg = None
     _result = None
     try:
         if validation_stage not in {"selection", "final"}:
-            return json.dumps({
+            _result = {
                 "error_code": "INVALID_VALIDATION_STAGE",
                 "hint": "validation_stage must be selection or final",
-            })
+            }
+            _result.update(await _record_mcp_experiment_failure(
+                tool_name="run_backtest",
+                task_id=task_id,
+                expression=expression,
+                params=task_params,
+                status="rejected",
+                failure_reason=_result["error_code"],
+            ))
+            return json.dumps(_result)
         if validation_stage == "final" and not oos_enabled:
-            return json.dumps({
+            _result = {
                 "error_code": "INVALID_VALIDATION_STAGE",
                 "hint": "validation_stage=final requires oos_enabled=true",
-            })
+            }
+            _result.update(await _record_mcp_experiment_failure(
+                tool_name="run_backtest",
+                task_id=task_id,
+                expression=expression,
+                params=task_params,
+                status="rejected",
+                failure_reason=_result["error_code"],
+            ))
+            return json.dumps(_result)
         if direction_mode not in {"auto_full", "fixed"}:
-            return json.dumps({"error_code": "INVALID_DIRECTION_POLICY", "hint": "direction_mode must be auto_full or fixed"})
+            _result = {"error_code": "INVALID_DIRECTION_POLICY", "hint": "direction_mode must be auto_full or fixed"}
+            _result.update(await _record_mcp_experiment_failure(
+                tool_name="run_backtest",
+                task_id=task_id,
+                expression=expression,
+                params=task_params,
+                status="rejected",
+                failure_reason=_result["error_code"],
+            ))
+            return json.dumps(_result)
         if oos_enabled and (direction_mode != "auto_full" or fixed_direction is not None):
-            return json.dumps({
+            _result = {
                 "error_code": "INVALID_OOS_DIRECTION_OVERRIDE",
                 "hint": "oos_enabled=true always uses train_fixed direction; fixed_direction is not allowed",
-            })
+            }
+            _result.update(await _record_mcp_experiment_failure(
+                tool_name="run_backtest",
+                task_id=task_id,
+                expression=expression,
+                params=task_params,
+                status="rejected",
+                failure_reason=_result["error_code"],
+            ))
+            return json.dumps(_result)
         if not oos_enabled and direction_mode == "auto_full" and fixed_direction is not None:
-            return json.dumps({
+            _result = {
                 "error_code": "INVALID_DIRECTION_POLICY",
                 "hint": "fixed_direction must be null when direction_mode=auto_full",
-            })
+            }
+            _result.update(await _record_mcp_experiment_failure(
+                tool_name="run_backtest",
+                task_id=task_id,
+                expression=expression,
+                params=task_params,
+                status="rejected",
+                failure_reason=_result["error_code"],
+            ))
+            return json.dumps(_result)
         if not oos_enabled and direction_mode == "fixed" and fixed_direction not in (1, -1):
-            return json.dumps({
+            _result = {
                 "error_code": "INVALID_DIRECTION_POLICY",
                 "hint": "direction_mode=fixed requires fixed_direction to be 1 or -1",
-            })
+            }
+            _result.update(await _record_mcp_experiment_failure(
+                tool_name="run_backtest",
+                task_id=task_id,
+                expression=expression,
+                params=task_params,
+                status="rejected",
+                failure_reason=_result["error_code"],
+            ))
+            return json.dumps(_result)
 
         logger.info(f"Getting universe: {universe}")
         market_df, stock_codes = await asyncio.to_thread(_fetch_data_for_market, universe, start_date, end_date)
         if market_df is None or len(market_df) == 0:
-            return json.dumps({"error": "No market data available. Check date range and stock codes."})
+            _result = {"error": "No market data available. Check date range and stock codes."}
+            _result.update(await _record_mcp_experiment_failure(
+                tool_name="run_backtest",
+                task_id=task_id,
+                expression=expression,
+                params=task_params,
+                status="data_quality_failed",
+                failure_reason=_result["error"],
+            ))
+            return json.dumps(_result)
+        data_provenance = _market_data_provenance_fields(
+            market_df,
+            universe=universe,
+            start_date=start_date,
+            end_date=end_date,
+            stock_codes=stock_codes,
+            endpoint="mcp.run_backtest",
+        )
+        task_params["data_snapshot_id"] = data_provenance["data_snapshot_id"]
+        task_params["data_source"] = data_provenance.get("data_source")
 
         data_quality_report = None
         dq_enabled = oos_enabled if data_quality is None else data_quality
@@ -448,6 +915,7 @@ async def run_backtest(
                 "issues": [],
                 "warnings": ["OOS validation was run without the data-quality gate because data_quality=false"],
             }
+        _annotate_data_provenance(data_quality_report, data_provenance)
 
         market_df = await asyncio.to_thread(_enrich_with_fundamentals, expression, market_df, stock_codes, start_date, end_date)
 
@@ -548,12 +1016,16 @@ async def run_backtest(
                 "fixed_direction": fixed_direction,
                 "data_quality": data_quality,
                 "stock_count": len(stock_codes),
+                "data_snapshot_id": data_provenance["data_snapshot_id"],
+                "data_source": data_provenance.get("data_source"),
             },
         }
+        _result.update(data_provenance)
+        policy = _attach_policy_metadata(_result)
         promotion_blockers = (
             _oos_blockers_for_stage(validation_stage)
             if oos_enabled
-            else [AUTO_FULL_NOT_PROMOTABLE, "OOS_TRAIN_VALID_TEST_NOT_RUN"]
+            else _research_only_blockers(_result["params"])
         )
         _result["promotion_state"] = "research_only"
         _result["promotion_blockers"] = promotion_blockers
@@ -567,6 +1039,8 @@ async def run_backtest(
             _result["data_quality"] = data_quality_report
         if oos_enabled:
             public_oos = to_public_oos_result(result.get("oos_result", {}))
+            public_oos["data_snapshot_id"] = data_provenance["data_snapshot_id"]
+            public_oos["data_source"] = data_provenance.get("data_source")
             if data_quality_report is not None:
                 public_oos["data_quality"] = data_quality_report
             if validation_stage == "selection":
@@ -574,6 +1048,8 @@ async def run_backtest(
             oos_scoring = _score_oos_for_stage(public_oos, data_quality_report, validation_stage)
             _result["oos_result"] = public_oos
             _result["direction_policy"] = "train_fixed"
+            _result["final_test_policy"] = public_oos.get("final_test_policy", policy["final_test_policy"])
+            _result["formal_safe"] = bool(policy["formal_safe"])
             _result["report_scope"] = public_oos.get("report_scope", result.get("report_scope"))
             _result["compatibility_warning"] = result.get("compatibility_warning")
             _result["scoring"] = oos_scoring
@@ -581,12 +1057,27 @@ async def run_backtest(
                 _result["selection_score"] = oos_scoring
             else:
                 _result["oos_score"] = oos_scoring
+        await _record_mcp_experiment_result(
+            tool_name="run_backtest",
+            task_id=task_id,
+            expression=expression,
+            payload=_result,
+        )
         return json.dumps(_result, ensure_ascii=False, indent=2, default=str)
 
     except Exception as e:
         logger.error(f"Backtest failed: {traceback.format_exc()}")
         _error_msg = str(e)
-        return json.dumps({"error": str(e)})
+        _result = {"error": str(e)}
+        _result.update(await _record_mcp_experiment_failure(
+            tool_name="run_backtest",
+            task_id=task_id,
+            expression=expression,
+            params=task_params,
+            status="rejected",
+            failure_reason=str(e),
+        ))
+        return json.dumps(_result)
     finally:
         await complete_mcp_task(task_id, _result, _error_msg, expression)
 
@@ -635,28 +1126,66 @@ async def score_factor(
     """
     from .iteration import compute_factor_score
 
-    task_id = await start_mcp_task("score", expression, {
+    task_params = {
         "universe": universe, "start_date": start_date, "end_date": end_date,
         "n_groups": n_groups, "holding_period": holding_period, "benchmark": benchmark,
         "rebalance_anchor": rebalance_anchor, "oos_enabled": oos_enabled, "validation_stage": validation_stage,
         "data_quality": data_quality,
-    })
+    }
+    task_id = await start_mcp_task("score", expression, task_params)
     _error_msg = None
     _result = None
     try:
         if validation_stage not in {"selection", "final"}:
-            return json.dumps({
+            _result = {
                 "error_code": "INVALID_VALIDATION_STAGE",
                 "hint": "validation_stage must be selection or final",
-            })
+            }
+            _result.update(await _record_mcp_experiment_failure(
+                tool_name="score_factor",
+                task_id=task_id,
+                expression=expression,
+                params=task_params,
+                status="rejected",
+                failure_reason=_result["error_code"],
+            ))
+            return json.dumps(_result)
         if validation_stage == "final" and not oos_enabled:
-            return json.dumps({
+            _result = {
                 "error_code": "INVALID_VALIDATION_STAGE",
                 "hint": "validation_stage=final requires oos_enabled=true",
-            })
+            }
+            _result.update(await _record_mcp_experiment_failure(
+                tool_name="score_factor",
+                task_id=task_id,
+                expression=expression,
+                params=task_params,
+                status="rejected",
+                failure_reason=_result["error_code"],
+            ))
+            return json.dumps(_result)
         market_df, stock_codes = await asyncio.to_thread(_fetch_data_for_market, universe, start_date, end_date)
         if market_df is None or len(market_df) == 0:
-            return json.dumps({"error": "No market data available."})
+            _result = {"error": "No market data available."}
+            _result.update(await _record_mcp_experiment_failure(
+                tool_name="score_factor",
+                task_id=task_id,
+                expression=expression,
+                params=task_params,
+                status="data_quality_failed",
+                failure_reason=_result["error"],
+            ))
+            return json.dumps(_result)
+        data_provenance = _market_data_provenance_fields(
+            market_df,
+            universe=universe,
+            start_date=start_date,
+            end_date=end_date,
+            stock_codes=stock_codes,
+            endpoint="mcp.score_factor",
+        )
+        task_params["data_snapshot_id"] = data_provenance["data_snapshot_id"]
+        task_params["data_source"] = data_provenance.get("data_source")
 
         data_quality_report = None
         dq_enabled = oos_enabled if data_quality is None else data_quality
@@ -676,6 +1205,7 @@ async def score_factor(
                 "issues": [],
                 "warnings": ["OOS validation was run without the data-quality gate because data_quality=false"],
             }
+        _annotate_data_provenance(data_quality_report, data_provenance)
 
         market_df = await asyncio.to_thread(_enrich_with_fundamentals, expression, market_df, stock_codes, start_date, end_date)
 
@@ -710,6 +1240,8 @@ async def score_factor(
             "validation_stage": validation_stage,
             "data_quality": data_quality,
             "stock_count": len(stock_codes),
+            "data_snapshot_id": data_provenance["data_snapshot_id"],
+            "data_source": data_provenance.get("data_source"),
         }
 
         if oos_enabled:
@@ -748,6 +1280,8 @@ async def score_factor(
                 "compatibility_warning": result.get("compatibility_warning"),
                 "params": params,
             }
+            _result.update(data_provenance)
+            policy = _attach_policy_metadata(_result)
             component_scores = {
                 "train": oos_scoring["train_score"],
                 "valid": oos_scoring["valid_score"],
@@ -772,6 +1306,16 @@ async def score_factor(
             )
             if data_quality_report is not None:
                 _result["data_quality"] = data_quality_report
+            _result["oos_result"]["data_snapshot_id"] = data_provenance["data_snapshot_id"]
+            _result["oos_result"]["data_source"] = data_provenance.get("data_source")
+            _result["final_test_policy"] = public_oos.get("final_test_policy", policy["final_test_policy"])
+            _result["formal_safe"] = bool(policy["formal_safe"])
+            await _record_mcp_experiment_result(
+                tool_name="score_factor",
+                task_id=task_id,
+                expression=expression,
+                payload=_result,
+            )
             return json.dumps(_result, ensure_ascii=False, indent=2, default=str)
 
         bm_returns = None
@@ -817,24 +1361,287 @@ async def score_factor(
             "interpretation": {"rating": scoring["grade"]},
             "params": params,
         }
+        _result.update(data_provenance)
+        _attach_policy_metadata(_result)
         _result["promotion_state"] = "research_only"
-        _result["promotion_blockers"] = [AUTO_FULL_NOT_PROMOTABLE, "OOS_TRAIN_VALID_TEST_NOT_RUN"]
+        _result["promotion_blockers"] = _research_only_blockers(params)
         _result["validation_provenance"] = research_only_provenance(
             source="mcp_score_factor_auto_full",
             reason_code=AUTO_FULL_NOT_PROMOTABLE,
-            blockers=[AUTO_FULL_NOT_PROMOTABLE, "OOS_TRAIN_VALID_TEST_NOT_RUN"],
+            blockers=_result["promotion_blockers"],
             params=params,
         )
         if data_quality_report is not None:
             _result["data_quality"] = data_quality_report
+        await _record_mcp_experiment_result(
+            tool_name="score_factor",
+            task_id=task_id,
+            expression=expression,
+            payload=_result,
+        )
         return json.dumps(_result, ensure_ascii=False, indent=2, default=str)
 
     except Exception as e:
         logger.error(f"Score failed: {traceback.format_exc()}")
         _error_msg = str(e)
-        return json.dumps({"error": str(e)})
+        _result = {"error": str(e)}
+        _result.update(await _record_mcp_experiment_failure(
+            tool_name="score_factor",
+            task_id=task_id,
+            expression=expression,
+            params=task_params,
+            status="rejected",
+            failure_reason=str(e),
+        ))
+        return json.dumps(_result)
     finally:
         await complete_mcp_task(task_id, _result, _error_msg, expression)
+
+
+@mcp.tool()
+async def list_experiments(
+    status: str | None = None,
+    universe: str | None = None,
+    factor_hash: str | None = None,
+    limit: int = 50,
+) -> str:
+    """查询实验 ledger，按状态、universe 或 factor_hash 过滤。"""
+    try:
+        factory = _get_ledger_session_factory()
+        async with factory() as session:
+            rows = await _ledger_list_experiments(
+                session,
+                status=status,
+                universe=universe,
+                factor_hash=factor_hash,
+                limit=max(1, min(int(limit), 200)),
+            )
+            return json.dumps({"experiments": [_serialize_experiment(row) for row in rows]}, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        return json.dumps({"error_code": "EXPERIMENT_LEDGER_UNAVAILABLE", "hint": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def get_experiment(experiment_id: str) -> str:
+    """返回单个实验 ledger 记录及其结果、artifact 和 promotion event。"""
+    try:
+        factory = _get_ledger_session_factory()
+        async with factory() as session:
+            row = await _ledger_get_experiment(session, experiment_id)
+            if row is None:
+                return json.dumps({"error_code": "EXPERIMENT_NOT_FOUND", "experiment_id": experiment_id}, ensure_ascii=False)
+            return json.dumps(_serialize_experiment_detail(row), ensure_ascii=False, indent=2, default=str)
+    except Exception as exc:
+        return json.dumps({"error_code": "EXPERIMENT_LEDGER_UNAVAILABLE", "hint": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def export_experiment_report(experiment_id: str) -> str:
+    """导出单个实验的轻量 JSON/Markdown 报告，不包含大型 artifact 内容。"""
+    try:
+        factory = _get_ledger_session_factory()
+        async with factory() as session:
+            row = await _ledger_get_experiment(session, experiment_id)
+            if row is None:
+                return json.dumps({"error_code": "EXPERIMENT_NOT_FOUND", "experiment_id": experiment_id}, ensure_ascii=False)
+            detail = _serialize_experiment_detail(row)
+            markdown = [
+                f"# Experiment {detail['experiment_id']}",
+                "",
+                f"- status: {detail.get('status')}",
+                f"- factor_hash: {detail.get('factor_hash')}",
+                f"- data_snapshot_id: {detail.get('data_snapshot_id')}",
+                f"- direction_policy: {detail.get('direction_policy')}",
+                f"- result_count: {len(detail.get('results') or [])}",
+                f"- artifact_count: {len(detail.get('artifacts') or [])}",
+                f"- promotion_event_count: {len(detail.get('promotion_events') or [])}",
+                f"- export_event_count: {len(detail.get('export_events') or [])}",
+            ]
+            return json.dumps({
+                "experiment": detail,
+                "report_markdown": "\n".join(markdown),
+            }, ensure_ascii=False, indent=2, default=str)
+    except Exception as exc:
+        return json.dumps({"error_code": "EXPERIMENT_LEDGER_UNAVAILABLE", "hint": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def compare_experiments(left_experiment_id: str, right_experiment_id: str) -> str:
+    """比较两个实验的核心 provenance 和 summary metrics。"""
+    try:
+        factory = _get_ledger_session_factory()
+        async with factory() as session:
+            left = await _ledger_get_experiment(session, left_experiment_id)
+            right = await _ledger_get_experiment(session, right_experiment_id)
+            if left is None or right is None:
+                return json.dumps({
+                    "error_code": "EXPERIMENT_NOT_FOUND",
+                    "missing": [
+                        exp_id for exp_id, row in ((left_experiment_id, left), (right_experiment_id, right)) if row is None
+                    ],
+                }, ensure_ascii=False)
+            return json.dumps({
+                "left": _serialize_experiment(left),
+                "right": _serialize_experiment(right),
+                "same_factor_hash": left.factor_hash == right.factor_hash,
+                "same_universe": left.universe == right.universe,
+                "same_data_snapshot": left.data_snapshot_id == right.data_snapshot_id,
+                "status_transition": [left.status, right.status],
+            }, ensure_ascii=False, indent=2, default=str)
+    except Exception as exc:
+        return json.dumps({"error_code": "EXPERIMENT_LEDGER_UNAVAILABLE", "hint": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def show_factor_lineage(experiment_id: str) -> str:
+    """显示实验 parent chain 和同 factor_hash 的历史尝试。"""
+    try:
+        factory = _get_ledger_session_factory()
+        async with factory() as session:
+            row = await _ledger_get_experiment(session, experiment_id)
+            if row is None:
+                return json.dumps({"error_code": "EXPERIMENT_NOT_FOUND", "experiment_id": experiment_id}, ensure_ascii=False)
+            same_factor = await _ledger_list_experiments(session, factor_hash=row.factor_hash, limit=100)
+            parent = await _ledger_get_experiment(session, row.parent_experiment_id) if row.parent_experiment_id else None
+            return json.dumps({
+                "experiment": _serialize_experiment(row),
+                "parent": _serialize_experiment(parent) if parent is not None else None,
+                "same_factor_attempts": [_serialize_experiment(item) for item in same_factor],
+            }, ensure_ascii=False, indent=2, default=str)
+    except Exception as exc:
+        return json.dumps({"error_code": "EXPERIMENT_LEDGER_UNAVAILABLE", "hint": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def summarize_trial_counts(
+    universe: str | None = None,
+    factor_hash: str | None = None,
+    user_id: str | None = None,
+) -> str:
+    """汇总实验 ledger trial counts，供 multiple-testing gate 使用。"""
+    try:
+        factory = _get_ledger_session_factory()
+        async with factory() as session:
+            counts = await _ledger_summarize_trial_counts(
+                session,
+                user_id=user_id,
+                universe=universe,
+                factor_hash=factor_hash,
+            )
+            return json.dumps(counts, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        return json.dumps({"error_code": "EXPERIMENT_LEDGER_UNAVAILABLE", "hint": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def find_similar_factors(
+    expression: str,
+    limit: int = 20,
+    threshold: float = 0.95,
+) -> str:
+    """按表达式 token/family 相似度查找可能重复的历史实验。"""
+    try:
+        factory = _get_ledger_session_factory()
+        async with factory() as session:
+            rows = await _ledger_list_experiments(session, limit=max(1, min(int(limit), 200)))
+            matches = []
+            for row in rows:
+                report = _factor_similarity_report(expression, row.expression, threshold=threshold)
+                if report["duplicated"] or report["same_family"]:
+                    matches.append({
+                        "experiment": _serialize_experiment(row),
+                        "similarity": report,
+                    })
+            return json.dumps({"matches": matches}, ensure_ascii=False, indent=2, default=str)
+    except Exception as exc:
+        return json.dumps({"error_code": "EXPERIMENT_LEDGER_UNAVAILABLE", "hint": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def run_multiple_testing_check(
+    p_value: float,
+    trial_counts: dict,
+    alpha: float = 0.05,
+    family_p_values: list[float] | None = None,
+    experiment_id: str | None = None,
+) -> str:
+    """计算 trial-aware Bonferroni/FDR 检查，可选写回 experiment ledger。"""
+    report = _multiple_testing_report(
+        p_value=p_value,
+        trial_counts=trial_counts,
+        alpha=alpha,
+        family_p_values=family_p_values,
+    )
+    if experiment_id:
+        try:
+            factory = _get_ledger_session_factory()
+            async with factory() as session:
+                row = await _ledger_get_experiment(session, experiment_id)
+                if row is None:
+                    report["ledger_warning"] = "EXPERIMENT_NOT_FOUND"
+                else:
+                    await _ledger_record_experiment_result(
+                        session,
+                        experiment_id=experiment_id,
+                        stage="multiple_testing_checked",
+                        metrics={"multiple_testing": report},
+                    )
+                    if row.status != "multiple_testing_checked":
+                        try:
+                            await _ledger_transition_status(session, experiment_id, "multiple_testing_checked")
+                        except Exception as exc:
+                            report["ledger_warning"] = str(exc)
+                    await session.commit()
+        except Exception as exc:
+            report["ledger_warning"] = str(exc)
+    return json.dumps(report, ensure_ascii=False, indent=2, default=str)
+
+
+@mcp.tool()
+async def promote_experiment(experiment_id: str, boundary: str = "candidate", provenance: dict | None = None) -> str:
+    """运行 promotion provenance 检查并记录 promotion event。"""
+    try:
+        factory = _get_ledger_session_factory()
+        async with factory() as session:
+            row = await _ledger_get_experiment(session, experiment_id)
+            if row is None:
+                return json.dumps({"error_code": "EXPERIMENT_NOT_FOUND", "experiment_id": experiment_id}, ensure_ascii=False)
+            decision = evaluate_promotion_provenance(provenance, boundary)
+            await _ledger_record_promotion_event(
+                session,
+                experiment_id=experiment_id,
+                boundary=boundary,
+                decision="allowed" if decision["allowed"] else "blocked",
+                blockers=decision["blockers"],
+                provenance=provenance,
+            )
+            if decision["allowed"] and boundary == "candidate":
+                await _ledger_transition_status(session, experiment_id, "candidate", promotion_stage=boundary)
+            await session.commit()
+            return json.dumps(decision, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        return json.dumps({"error_code": "EXPERIMENT_LEDGER_UNAVAILABLE", "hint": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def reject_experiment(experiment_id: str, reason: str) -> str:
+    """将实验标记为 rejected，并保留结构化原因。"""
+    try:
+        factory = _get_ledger_session_factory()
+        async with factory() as session:
+            row = await _ledger_transition_status(session, experiment_id, "rejected", failure_reason=reason)
+            await _ledger_record_promotion_event(
+                session,
+                experiment_id=experiment_id,
+                boundary="manual_review",
+                decision="rejected",
+                blockers=[reason],
+                provenance={"source": "mcp.reject_experiment"},
+            )
+            await session.commit()
+            return json.dumps(_serialize_experiment(row), ensure_ascii=False, indent=2, default=str)
+    except Exception as exc:
+        return json.dumps({"error_code": "EXPERIMENT_LEDGER_UNAVAILABLE", "hint": str(exc)}, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -844,6 +1651,7 @@ def diagnose_factor(
     ic_ir: float = 0.0,
     monotonicity_score: float = 0.0,
     score: float = 50.0,
+    experiment_id: str | None = None,
 ) -> str:
     """诊断因子问题并推荐突变策略。
 
@@ -863,6 +1671,14 @@ def diagnose_factor(
     from .mutation_engine import MutationEngine
 
     try:
+        if experiment_id:
+            exists = _experiment_exists_sync(experiment_id)
+            if exists is False:
+                return json.dumps(
+                    {"error_code": "EXPERIMENT_NOT_FOUND", "experiment_id": experiment_id},
+                    ensure_ascii=False,
+                )
+
         engine = MutationEngine(
             expression=expression,
             metrics={
@@ -882,11 +1698,35 @@ def diagnose_factor(
             "strategy": diagnosis.strategy.value,
             "reason": diagnosis.reason,
             "details": diagnosis.details,
+            "parent_experiment_id": experiment_id,
             "mutation_prompt": {
                 "system": sys_prompt[:500] + "..." if len(sys_prompt) > 500 else sys_prompt,
                 "user": user_prompt,
             },
+            "params": {
+                "source": "mcp.diagnose_factor",
+                "parent_experiment_id": experiment_id,
+                "ic_mean": ic_mean,
+                "ic_ir": ic_ir,
+                "monotonicity_score": monotonicity_score,
+                "score": score,
+            },
+            "key_metrics": {
+                "ic_mean": ic_mean,
+                "ic_ir": ic_ir,
+                "monotonicity_score": monotonicity_score,
+                "score": score,
+            },
+            "artifact_type": "diagnosis",
+            "artifact_uri": f"mcp://diagnose_factor/{experiment_id or 'standalone'}",
         }
+        _run_ledger_sync(lambda: _record_mcp_experiment_result(
+            tool_name="diagnose_factor",
+            task_id=None,
+            expression=expression,
+            payload=output,
+            status="parsed",
+        ))
         return json.dumps(output, ensure_ascii=False, indent=2)
 
     except Exception as e:
@@ -923,16 +1763,40 @@ async def run_anti_overfit(
     """
     from .anti_overfit import run_anti_overfit as _run_ao
 
-    task_id = await start_mcp_task("anti_overfit", expression, {
+    task_params = {
         "universe": universe, "start_date": start_date, "end_date": end_date,
         "holding_period": holding_period,
-    })
+        "neutralize_industry": neutralize_industry,
+        "neutralize_cap": neutralize_cap,
+        "oos_enabled": False,
+        "direction_mode": "auto_full",
+    }
+    task_id = await start_mcp_task("anti_overfit", expression, task_params)
     _error_msg = None
     _result = None
     try:
         market_df, stock_codes = await asyncio.to_thread(_fetch_data_for_market, universe, start_date, end_date)
         if market_df is None or len(market_df) == 0:
-            return json.dumps({"error": "No market data available."})
+            _result = {"error": "No market data available."}
+            _result.update(await _record_mcp_experiment_failure(
+                tool_name="run_anti_overfit",
+                task_id=task_id,
+                expression=expression,
+                params=task_params,
+                status="data_quality_failed",
+                failure_reason=_result["error"],
+            ))
+            return json.dumps(_result)
+        data_provenance = _market_data_provenance_fields(
+            market_df,
+            universe=universe,
+            start_date=start_date,
+            end_date=end_date,
+            stock_codes=stock_codes,
+            endpoint="mcp.run_anti_overfit",
+        )
+        task_params["data_snapshot_id"] = data_provenance["data_snapshot_id"]
+        task_params["data_source"] = data_provenance.get("data_source")
 
         market_df = await asyncio.to_thread(_enrich_with_fundamentals, expression, market_df, stock_codes, start_date, end_date)
 
@@ -945,15 +1809,45 @@ async def run_anti_overfit(
         result = await asyncio.to_thread(future.result, 600)
         factor_df = result.get("_factor_df")
         if factor_df is None or len(factor_df) < 100:
-            return json.dumps({"error": "Insufficient factor data for anti-overfit analysis."})
+            _result = {"error": "Insufficient factor data for anti-overfit analysis."}
+            _result.update(await _record_mcp_experiment_failure(
+                tool_name="run_anti_overfit",
+                task_id=task_id,
+                expression=expression,
+                params=task_params,
+                status="rejected",
+                failure_reason=_result["error"],
+            ))
+            return json.dumps(_result)
 
-        _result = await asyncio.to_thread(_run_ao, factor_df, holding_period)
+        _result = dict(await asyncio.to_thread(_run_ao, factor_df, holding_period))
+        _result["params"] = task_params
+        _result.update(data_provenance)
+        _result["artifact_type"] = "anti_overfit"
+        _result["artifact_uri"] = f"mcp://run_anti_overfit/{task_id}"
+        _attach_policy_metadata(_result)
+        await _record_mcp_experiment_result(
+            tool_name="run_anti_overfit",
+            task_id=task_id,
+            expression=expression,
+            payload=_result,
+            status="anti_overfit_checked",
+        )
         return json.dumps(_result, ensure_ascii=False, indent=2, default=str)
 
     except Exception as e:
         logger.error(f"Anti-overfit failed: {traceback.format_exc()}")
         _error_msg = str(e)
-        return json.dumps({"error": str(e)})
+        _result = {"error": str(e)}
+        _result.update(await _record_mcp_experiment_failure(
+            tool_name="run_anti_overfit",
+            task_id=task_id,
+            expression=expression,
+            params=task_params,
+            status="rejected",
+            failure_reason=str(e),
+        ))
+        return json.dumps(_result)
     finally:
         await complete_mcp_task(task_id, _result, _error_msg, expression)
 
@@ -987,16 +1881,40 @@ async def run_rolling_validation(
     """
     from .rolling_validator import run_rolling_validation as _run_rv
 
-    task_id = await start_mcp_task("rolling_validation", expression, {
+    task_params = {
         "universe": universe, "start_date": start_date, "end_date": end_date,
         "holding_period": holding_period,
-    })
+        "neutralize_industry": neutralize_industry,
+        "neutralize_cap": neutralize_cap,
+        "oos_enabled": False,
+        "direction_mode": "auto_full",
+    }
+    task_id = await start_mcp_task("rolling_validation", expression, task_params)
     _error_msg = None
     _result = None
     try:
         market_df, stock_codes = await asyncio.to_thread(_fetch_data_for_market, universe, start_date, end_date)
         if market_df is None or len(market_df) == 0:
-            return json.dumps({"error": "No market data available."})
+            _result = {"error": "No market data available."}
+            _result.update(await _record_mcp_experiment_failure(
+                tool_name="run_rolling_validation",
+                task_id=task_id,
+                expression=expression,
+                params=task_params,
+                status="data_quality_failed",
+                failure_reason=_result["error"],
+            ))
+            return json.dumps(_result)
+        data_provenance = _market_data_provenance_fields(
+            market_df,
+            universe=universe,
+            start_date=start_date,
+            end_date=end_date,
+            stock_codes=stock_codes,
+            endpoint="mcp.run_rolling_validation",
+        )
+        task_params["data_snapshot_id"] = data_provenance["data_snapshot_id"]
+        task_params["data_source"] = data_provenance.get("data_source")
 
         market_df = await asyncio.to_thread(_enrich_with_fundamentals, expression, market_df, stock_codes, start_date, end_date)
 
@@ -1009,15 +1927,45 @@ async def run_rolling_validation(
         result = await asyncio.to_thread(future.result, 600)
         factor_df = result.get("_factor_df")
         if factor_df is None or len(factor_df) < 100:
-            return json.dumps({"error": "Insufficient factor data for rolling validation."})
+            _result = {"error": "Insufficient factor data for rolling validation."}
+            _result.update(await _record_mcp_experiment_failure(
+                tool_name="run_rolling_validation",
+                task_id=task_id,
+                expression=expression,
+                params=task_params,
+                status="rejected",
+                failure_reason=_result["error"],
+            ))
+            return json.dumps(_result)
 
-        _result = await asyncio.to_thread(_run_rv, factor_df, holding_period)
+        _result = dict(await asyncio.to_thread(_run_rv, factor_df, holding_period))
+        _result["params"] = task_params
+        _result.update(data_provenance)
+        _result["artifact_type"] = "rolling_validation"
+        _result["artifact_uri"] = f"mcp://run_rolling_validation/{task_id}"
+        _attach_policy_metadata(_result)
+        await _record_mcp_experiment_result(
+            tool_name="run_rolling_validation",
+            task_id=task_id,
+            expression=expression,
+            payload=_result,
+            status="rolling_checked",
+        )
         return json.dumps(_result, ensure_ascii=False, indent=2, default=str)
 
     except Exception as e:
         logger.error(f"Rolling validation failed: {traceback.format_exc()}")
         _error_msg = str(e)
-        return json.dumps({"error": str(e)})
+        _result = {"error": str(e)}
+        _result.update(await _record_mcp_experiment_failure(
+            tool_name="run_rolling_validation",
+            task_id=task_id,
+            expression=expression,
+            params=task_params,
+            status="rejected",
+            failure_reason=str(e),
+        ))
+        return json.dumps(_result)
     finally:
         await complete_mcp_task(task_id, _result, _error_msg, expression)
 

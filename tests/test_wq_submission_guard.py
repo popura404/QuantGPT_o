@@ -52,7 +52,14 @@ def _ready_validation_provenance() -> dict:
             "test": {"metrics": {"long_short_sharpe": 0.8, "direction_adjusted_rank_ic_mean": 0.025}},
         },
         oos_score={"decision": "candidate", "score": 82, "grade": "A", "overfit_risk": "low"},
-        data_quality={"enabled": True, "after_rows": 1000, "after_stocks": 100, "warnings": [], "issues": []},
+        data_quality={
+            "enabled": True,
+            "after_rows": 1000,
+            "after_stocks": 100,
+            "warnings": [],
+            "issues": [],
+            "data_snapshot_id": "ds_wq",
+        },
         rolling_validation={"score": 75, "windows": [{"window_index": 0}], "summary": {"n_windows": 1}},
         placebo_test={
             "name": "安慰剂检验",

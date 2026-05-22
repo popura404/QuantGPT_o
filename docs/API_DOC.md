@@ -720,9 +720,12 @@ Example optimizer input:
 ```
 
 Signal export requires promotion-ready `validation_provenance`; missing or
-research-only provenance returns 400. Successful responses contain candidate `target_weight` rows and a
-non-live-trading notice. They do not contain `broker`, `account`, `order`,
-`api_key`, or execution instructions.
+research-only provenance returns 400. Successful responses use
+`schema_version="strategy_signal.v1"` and include `experiment_id`,
+`factor_hash`, `validation_summary.data_snapshot_id`, candidate `target_weight`
+or `rank` rows, and the exact non-execution notice:
+`Candidate signal only. Not an order or automated trading instruction.` They do
+not contain `broker`, `account`, `order`, `api_key`, or execution instructions.
 
 ---
 
@@ -1063,8 +1066,8 @@ QuantGPT 提供 29 个 MCP (Model Context Protocol) 工具，覆盖因子研究�
 | `wq_brain_check_alphas` | 批量检查 alpha 状态 |
 | `wq_brain_finalize_submissions` | 对 pending alpha 做最终状态确认 |
 
-candidate / submit / export 边界要求 `factor_validation/v1` 晋级证明：data-quality gate、
-train/valid/test、rolling window、placebo test、time-shift test 必须全部通过。Agent/结论型
+candidate / submit / export 边界要求 `factor_validation/v1` 晋级证明：`data_snapshot_id`、
+data-quality gate、train/valid/test、rolling window、placebo test、time-shift test 必须全部通过。Agent/结论型
 因子回测默认使用 `oos_enabled=true` 与 `validation_stage="selection"`：train 定方向/参数，
 valid 选候选，test 指标 withheld；只有显式 `validation_stage="final"` 才运行并暴露 test 作为
 frozen candidate 的最终验收。普通 `auto_full` 回测结果会标记为 `research_only`，不能直接选择为

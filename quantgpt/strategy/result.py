@@ -29,6 +29,9 @@ class StrategyBacktestResult:
     validation_mode: str = "single_period"
     direction_policy: str | None = None
     data_quality: dict | None = None
+    data_snapshot_id: str | None = None
+    data_source: str | None = None
+    data_source_metadata: dict | None = None
     oos_result: dict | None = None
     oos_summary: dict | None = None
     oos_score: dict | None = None
@@ -55,6 +58,12 @@ class StrategyBacktestResult:
             payload["direction_policy"] = self.direction_policy
         if self.data_quality is not None:
             payload["data_quality"] = _json_safe(self.data_quality)
+        if self.data_snapshot_id is not None:
+            payload["data_snapshot_id"] = self.data_snapshot_id
+        if self.data_source is not None:
+            payload["data_source"] = self.data_source
+        if self.data_source_metadata is not None:
+            payload["data_source_metadata"] = _json_safe(self.data_source_metadata)
         if self.oos_result is not None:
             payload["oos_result"] = _json_safe(self.oos_result)
         if self.oos_summary is not None:

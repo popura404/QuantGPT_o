@@ -8,6 +8,7 @@ from typing import Callable, Literal
 
 from .anti_overfit import AntiOverfitDetector
 from .data_quality import DataQualityConfig, run_data_quality_gate
+from .data_snapshots import ensure_market_frame_snapshot
 from .fundamental_data import detect_fundamental_vars, enrich_market_data
 from .market_data import MarketDataFetcher, get_universe
 from .rolling_validator import run_rolling_validation
@@ -190,12 +191,30 @@ def run_local_submission_preflight(
                 "preflight_scope": preflight_scope,
                 "params": params,
             }
+        source_metadata = market_df.attrs.get("source_metadata")
+        if not isinstance(source_metadata, dict):
+            source_metadata = {}
+        data_snapshot = ensure_market_frame_snapshot(
+            market_df,
+            vendor=str(market_df.attrs.get("data_source") or source_metadata.get("vendor") or "local_preflight"),
+            source_kind=str(source_metadata.get("source_kind") or "submission_preflight_snapshot"),
+            endpoint="wq_submission_guard.local_preflight",
+            query_params={
+                "universe": universe,
+                "start_date": start_date,
+                "end_date": end_date,
+                "stock_codes": stock_codes,
+            },
+            source_metadata=source_metadata,
+        )
 
         market_df, data_quality_report = run_data_quality_gate(
             market_df,
             DataQualityConfig(enabled=True, mode="filter", adjustment=DEFAULT_ADJUSTMENT),
         )
         data_quality_report["mode"] = "filter"
+        data_quality_report["data_snapshot_id"] = data_snapshot["snapshot_id"]
+        data_quality_report["data_source"] = data_snapshot.get("vendor")
         fund_vars = detect_fundamental_vars(expression)
         if fund_vars:
             market_df = enrich_market_data(market_df, fund_vars, stock_codes, start_date, end_date)
@@ -220,6 +239,8 @@ def run_local_submission_preflight(
             rebalance_anchor=rebalance_anchor,
         )
         public_oos = to_public_oos_result(result.get("oos_result", {}))
+        public_oos["data_snapshot_id"] = data_snapshot["snapshot_id"]
+        public_oos["data_source"] = data_snapshot.get("vendor")
         public_oos["data_quality"] = data_quality_report
         oos_score = compute_oos_score(public_oos, data_quality=data_quality_report)
         factor_df = result.get("_direction_adjusted_factor_df")

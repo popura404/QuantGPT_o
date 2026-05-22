@@ -4,6 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from .policy import (
+    BIASED_DIRECTION_MODE,
+    FINAL_TEST_REQUIRED_FOR_PROMOTION,
+    OOS_SUMMARY_REQUIRED,
+    SAFE_DIRECTION_POLICIES,
+    classify_research_mode,
+)
+
 PROMOTION_SUITE_VERSION = "factor_validation/v1"
 PROMOTION_READY = "promotion_ready"
 RESEARCH_ONLY = "research_only"
@@ -14,6 +22,7 @@ BOUNDARY_EXPORT = "export"
 PROMOTION_BOUNDARIES = (BOUNDARY_CANDIDATE, BOUNDARY_SUBMIT, BOUNDARY_EXPORT)
 
 REQUIRED_CHECKS = (
+    "data_snapshot",
     "data_quality",
     "train_valid_test",
     "rolling_window",
@@ -24,6 +33,13 @@ REQUIRED_CHECKS = (
 AUTO_FULL_NOT_PROMOTABLE = "AUTO_FULL_NOT_PROMOTABLE"
 VALIDATION_PROVENANCE_REQUIRED = "VALIDATION_PROVENANCE_REQUIRED"
 VALIDATION_SUITE_FAILED = "VALIDATION_SUITE_FAILED"
+FAILED_FDR = "FAILED_FDR"
+FAILED_PSR = "FAILED_PSR"
+FAILED_DSR = "FAILED_DSR"
+ROLLING_UNSTABLE = "ROLLING_UNSTABLE"
+DUPLICATED_OR_REDUNDANT_FACTOR = "DUPLICATED_OR_REDUNDANT_FACTOR"
+TRIAL_COUNT_UNAVAILABLE = "TRIAL_COUNT_UNAVAILABLE"
+DATA_SNAPSHOT_REQUIRED = "DATA_SNAPSHOT_REQUIRED"
 ROLLING_WINDOW_MIN_SCORE = 60.0
 
 
@@ -38,7 +54,14 @@ class PromotionGateError(ValueError):
         )
 
 
-def check_payload(name: str, passed: bool, *, details: dict | None = None, error_code: str | None = None) -> dict:
+def check_payload(
+    name: str,
+    passed: bool,
+    *,
+    details: dict | None = None,
+    error_code: str | None = None,
+    error_codes: list[str] | None = None,
+) -> dict:
     payload = {
         "name": name,
         "passed": bool(passed),
@@ -46,6 +69,8 @@ def check_payload(name: str, passed: bool, *, details: dict | None = None, error
     }
     if error_code:
         payload["error_code"] = error_code
+    if error_codes:
+        payload["error_codes"] = error_codes
     return payload
 
 
@@ -72,6 +97,7 @@ def research_only_provenance(
         provenance["scope"] = scope
     if params is not None:
         provenance["params"] = params
+        provenance.update(_policy_metadata(params))
     return provenance
 
 
@@ -82,6 +108,8 @@ def build_factor_validation_provenance(
     data_quality: dict | None,
     rolling_validation: dict | None,
     placebo_test: dict | None,
+    multiple_testing: dict | None = None,
+    similarity: dict | None = None,
     source: str = "validation_suite",
     scope: dict | None = None,
     target_scope: dict | None = None,
@@ -89,17 +117,21 @@ def build_factor_validation_provenance(
 ) -> dict:
     """Build the mandatory validation proof for factor promotion."""
     checks = {
+        "data_snapshot": _data_snapshot_check(oos_result, data_quality),
         "data_quality": _data_quality_check(data_quality),
         "train_valid_test": _train_valid_test_check(oos_result, oos_score),
         "rolling_window": _rolling_window_check(rolling_validation),
         "placebo": _placebo_check(placebo_test),
         "time_shift": _time_shift_check(placebo_test),
     }
-    blockers = [
-        _blocker_for_check(name, check)
-        for name, check in checks.items()
-        if not check.get("passed")
-    ]
+    if multiple_testing is not None:
+        checks["multiple_testing"] = _multiple_testing_check(multiple_testing)
+    if similarity is not None:
+        checks["similarity"] = _similarity_check(similarity)
+    blockers: list[str] = []
+    for name, check in checks.items():
+        if not check.get("passed"):
+            blockers.extend(_blockers_for_check(name, check))
     allowed = not blockers
     provenance = {
         "suite_version": PROMOTION_SUITE_VERSION,
@@ -116,6 +148,7 @@ def build_factor_validation_provenance(
         provenance["target_scope"] = target_scope
     if params is not None:
         provenance["params"] = params
+        provenance.update(_policy_metadata(params))
     return provenance
 
 
@@ -135,11 +168,10 @@ def evaluate_promotion_provenance(provenance: dict | None, boundary: str) -> dic
     raw_checks = provenance.get("checks")
     checks: dict[str, dict] = raw_checks if isinstance(raw_checks, dict) else {}
     missing = [name for name in REQUIRED_CHECKS if name not in checks]
-    failed = [
-        _blocker_for_check(name, checks[name])
-        for name in REQUIRED_CHECKS
-        if name in checks and not checks[name].get("passed")
-    ]
+    failed: list[str] = []
+    for name in REQUIRED_CHECKS:
+        if name in checks and not checks[name].get("passed"):
+            failed.extend(_blockers_for_check(name, checks[name]))
     blockers.extend(missing)
     blockers.extend(failed)
     allowed_boundaries = provenance.get("allowed_boundaries") or []
@@ -206,27 +238,55 @@ def _data_quality_check(data_quality: dict | None) -> dict:
     )
 
 
+def _data_snapshot_check(oos_result: dict | None, data_quality: dict | None) -> dict:
+    oos_snapshot = oos_result.get("data_snapshot_id") if isinstance(oos_result, dict) else None
+    quality_snapshot = data_quality.get("data_snapshot_id") if isinstance(data_quality, dict) else None
+    snapshot_id = oos_snapshot or quality_snapshot
+    passed = isinstance(snapshot_id, str) and bool(snapshot_id)
+    return check_payload(
+        "data_snapshot",
+        passed,
+        details={
+            "data_snapshot_id": snapshot_id,
+            "oos_snapshot_id": oos_snapshot,
+            "data_quality_snapshot_id": quality_snapshot,
+        },
+        error_code=None if passed else DATA_SNAPSHOT_REQUIRED,
+    )
+
+
 def _train_valid_test_check(oos_result: dict, oos_score: dict) -> dict:
     has_windows = all(
         isinstance(oos_result.get(name), dict)
         and isinstance(oos_result[name].get("metrics"), dict)
         for name in ("train", "valid", "test")
     )
-    train_fixed = oos_result.get("direction_policy") == "train_fixed"
+    safe_direction = oos_result.get("direction_policy") in SAFE_DIRECTION_POLICIES
+    final_test = _has_final_test_metrics(oos_result)
     candidate = oos_score.get("decision") == "candidate"
-    passed = has_windows and train_fixed and candidate
+    passed = has_windows and safe_direction and final_test and candidate
+    error_codes: list[str] = []
+    if not has_windows:
+        error_codes.append(OOS_SUMMARY_REQUIRED)
+    if not safe_direction:
+        error_codes.append(BIASED_DIRECTION_MODE)
+    if not final_test:
+        error_codes.append(FINAL_TEST_REQUIRED_FOR_PROMOTION)
+    if not candidate:
+        error_codes.append("TRAIN_VALID_TEST_FAILED")
     return check_payload(
         "train_valid_test",
         passed,
         details={
             "has_train_valid_test": has_windows,
             "direction_policy": oos_result.get("direction_policy"),
+            "final_test_ready": final_test,
             "decision": oos_score.get("decision"),
             "score": oos_score.get("score"),
             "grade": oos_score.get("grade"),
             "overfit_risk": oos_score.get("overfit_risk"),
         },
-        error_code=None if passed else "TRAIN_VALID_TEST_FAILED",
+        error_codes=None if passed else error_codes,
     )
 
 
@@ -246,7 +306,7 @@ def _rolling_window_check(rolling_validation: dict | None) -> dict:
             "summary": rolling_validation.get("summary", {}),
             "decay_analysis": rolling_validation.get("decay_analysis", {}),
         },
-        error_code=None if passed else "ROLLING_WINDOW_FAILED",
+        error_code=None if passed else ROLLING_UNSTABLE,
     )
 
 
@@ -288,8 +348,63 @@ def _time_shift_check(placebo_test: dict | None) -> dict:
     )
 
 
+def _multiple_testing_check(multiple_testing: dict) -> dict:
+    trial_counts = multiple_testing.get("trial_counts")
+    has_trials = isinstance(trial_counts, dict) and int(trial_counts.get("total_trials_in_project") or 0) > 0
+    passed = bool(multiple_testing.get("passed")) and has_trials
+    error_codes: list[str] = []
+    if not has_trials:
+        error_codes.append(TRIAL_COUNT_UNAVAILABLE)
+    if not multiple_testing.get("passed"):
+        error_codes.extend(str(code) for code in multiple_testing.get("blockers") or [FAILED_FDR])
+    return check_payload(
+        "multiple_testing",
+        passed,
+        details=multiple_testing,
+        error_codes=None if passed else list(dict.fromkeys(error_codes)),
+    )
+
+
+def _similarity_check(similarity: dict) -> dict:
+    duplicated = bool(similarity.get("duplicated"))
+    passed = not duplicated
+    blockers = similarity.get("blockers") or [DUPLICATED_OR_REDUNDANT_FACTOR]
+    return check_payload(
+        "similarity",
+        passed,
+        details=similarity,
+        error_codes=None if passed else [str(blocker) for blocker in blockers],
+    )
+
+
 def _blocker_for_check(name: str, check: dict) -> str:
-    return str(check.get("error_code") or f"{name.upper()}_FAILED")
+    blockers = _blockers_for_check(name, check)
+    return blockers[0] if blockers else f"{name.upper()}_FAILED"
+
+
+def _blockers_for_check(name: str, check: dict) -> list[str]:
+    codes = check.get("error_codes")
+    if isinstance(codes, list) and codes:
+        return [str(code) for code in codes if code]
+    return [str(check.get("error_code") or f"{name.upper()}_FAILED")]
+
+
+def _has_final_test_metrics(oos_result: dict) -> bool:
+    test = oos_result.get("test")
+    if not isinstance(test, dict) or test.get("status") == "withheld":
+        return False
+    metrics = test.get("metrics")
+    return isinstance(metrics, dict) and bool(metrics)
+
+
+def _policy_metadata(params: dict) -> dict:
+    policy = classify_research_mode(params)
+    return {
+        "research_mode": policy["research_mode"],
+        "direction_policy": policy["direction_policy"],
+        "formal_safe": policy["formal_safe"],
+        "final_test_policy": policy["final_test_policy"],
+    }
 
 
 def _num(value: Any, default: float = 0.0) -> float:

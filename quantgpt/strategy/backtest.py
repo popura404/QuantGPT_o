@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from ..backtest import _calc_ic_series, _calc_max_drawdown, build_rebalance_dates, compute_factor_values
 from ..data_quality import DataQualityConfig, run_data_quality_gate
+from ..data_snapshots import ensure_market_frame_snapshot, snapshot_result_fields
 from ..fundamental_data import detect_fundamental_vars, enrich_market_data
 from ..neutralize import neutralize_factor
 from ..validation.oos_score import compute_oos_score
@@ -76,11 +77,20 @@ def run_strategy_backtest(
         raise ValueError("No market data available for strategy backtest")
     market_frame = cast(pd.DataFrame, market_df)
     stock_codes = stock_codes or sorted(market_frame["stock_code"].dropna().astype(str).unique().tolist())
+    data_provenance = _strategy_data_provenance_fields(
+        market_frame,
+        universe=req.spec.universe,
+        market=req.spec.market,
+        start_date=req.start_date,
+        end_date=req.end_date,
+        stock_codes=stock_codes,
+    )
 
     data_quality_report = None
     dq_config = _data_quality_config_from_spec(req.spec)
     if dq_config is not None and dq_config.enabled:
         market_frame, data_quality_report = run_data_quality_gate(market_frame, dq_config)
+    _annotate_data_provenance(data_quality_report, data_provenance)
 
     expressions = [factor.expression for factor in req.spec.factors]
     fund_vars = set()
@@ -106,11 +116,12 @@ def run_strategy_backtest(
         market_frame["daily_ret"] = market_frame.groupby("stock_code")["close"].pct_change()
 
     if _strategy_oos_enabled(req.spec):
-        return _run_strategy_oos_backtest(req, market_frame, stock_codes, data_quality_report)
+        return _run_strategy_oos_backtest(req, market_frame, stock_codes, data_quality_report, data_provenance)
 
     result = _run_strategy_single_pass(req, market_frame)
     if data_quality_report is not None:
         result.data_quality = data_quality_report
+    _apply_result_data_provenance(result, data_provenance)
     return result
 
 
@@ -192,6 +203,48 @@ def _strategy_oos_enabled(spec: StrategySpecV0 | StrategySpecV1) -> bool:
     )
 
 
+def _strategy_data_provenance_fields(
+    market_frame: pd.DataFrame,
+    *,
+    universe: str,
+    market: str,
+    start_date: str,
+    end_date: str,
+    stock_codes: list[str],
+) -> dict:
+    source_metadata = market_frame.attrs.get("source_metadata")
+    if not isinstance(source_metadata, dict):
+        source_metadata = {}
+    snapshot = ensure_market_frame_snapshot(
+        market_frame,
+        vendor=str(market_frame.attrs.get("data_source") or source_metadata.get("vendor") or market),
+        source_kind=str(source_metadata.get("source_kind") or "strategy_market_dataframe_snapshot"),
+        endpoint="strategy.run_strategy_backtest",
+        query_params={
+            "market": market,
+            "universe": universe,
+            "start_date": start_date,
+            "end_date": end_date,
+            "stock_codes": stock_codes,
+        },
+        source_metadata=source_metadata,
+    )
+    return snapshot_result_fields(snapshot, source_metadata=source_metadata)
+
+
+def _annotate_data_provenance(report: dict | None, provenance: dict) -> None:
+    if report is None:
+        return
+    report.setdefault("data_snapshot_id", provenance["data_snapshot_id"])
+    report.setdefault("data_source", provenance.get("data_source"))
+
+
+def _apply_result_data_provenance(result: StrategyBacktestResult, provenance: dict) -> None:
+    result.data_snapshot_id = provenance["data_snapshot_id"]
+    result.data_source = provenance.get("data_source")
+    result.data_source_metadata = provenance.get("data_source_metadata")
+
+
 def _data_quality_config_from_spec(spec: StrategySpecV0 | StrategySpecV1) -> DataQualityConfig | None:
     if spec.schema_version != "strategy_spec/v1":
         return None
@@ -228,6 +281,7 @@ def _run_strategy_oos_backtest(
     market_frame: pd.DataFrame,
     stock_codes: list[str],
     data_quality_report: dict | None,
+    data_provenance: dict,
 ) -> StrategyBacktestResult:
     del stock_codes
     config = _oos_config_from_spec(req.spec, req.rebalance_anchor)
@@ -292,6 +346,8 @@ def _run_strategy_oos_backtest(
         "decay": decay,
         "warnings": warnings,
     }
+    oos_result["data_snapshot_id"] = data_provenance["data_snapshot_id"]
+    oos_result["data_source"] = data_provenance.get("data_source")
     if data_quality_report is not None:
         oos_result["data_quality"] = data_quality_report
 
@@ -319,6 +375,7 @@ def _run_strategy_oos_backtest(
     final.validation_mode = "train_valid_test"
     final.direction_policy = "train_fixed"
     final.data_quality = data_quality_report
+    _apply_result_data_provenance(final, data_provenance)
     final.oos_result = oos_result
     final.oos_summary = oos_summary
     final.oos_score = oos_score

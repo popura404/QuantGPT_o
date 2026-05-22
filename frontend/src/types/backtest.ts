@@ -300,6 +300,8 @@ export interface BacktestResult {
     direction_mode?: DirectionMode;
     fixed_direction?: 1 | -1 | null;
     data_quality?: DataQualityRequest | null;
+    data_snapshot_id?: string;
+    data_source?: string;
   };
   llm: {
     prompt: string;
@@ -309,6 +311,15 @@ export interface BacktestResult {
   stock_factor_data?: StockFactorData | null;
   nav_series?: { date: string; value: number }[];
   data_quality?: Record<string, unknown>;
+  data_snapshot_id?: string;
+  data_source?: string;
+  data_source_metadata?: Record<string, unknown>;
+  experiment_id?: string;
+  factor_hash?: string;
+  config_hash?: string;
+  promotion_state?: string;
+  promotion_blockers?: string[];
+  validation_provenance?: Record<string, unknown>;
   direction_policy?: string;
   report_scope?: string;
   oos_result?: {
@@ -320,6 +331,8 @@ export interface BacktestResult {
     test?: { period?: string[]; metrics?: Record<string, number | string | null> };
     decay?: Record<string, number | null>;
     oos_risk?: string;
+    data_snapshot_id?: string;
+    data_source?: string;
     data_quality?: Record<string, unknown>;
     warnings?: string[];
   };

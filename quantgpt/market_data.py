@@ -15,6 +15,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from .data_snapshots import attach_data_snapshot, build_market_frame_snapshot
+
 logger = logging.getLogger(__name__)
 
 _BASE_MARKET_COLUMNS = ["trade_date", "stock_code", "open", "high", "low", "close", "volume", "amount", "pct_change"]
@@ -567,10 +569,12 @@ class MarketDataFetcher:
         """Fetch multiple stocks with caching. rqdatac batch → baostock fallback."""
         all_data: list[pd.DataFrame] = []
         to_fetch: list[str] = []
+        source_events: list[dict] = []
 
         req_start, req_end = pd.Timestamp(start_date), pd.Timestamp(end_date)
 
         for code in stock_codes:
+            normalized_code = self._normalize_stock_code(code)
             cached = self._load_cache(code)
             if cached is not None and len(cached) > 0:
                 cache_min = cached["trade_date"].min()
@@ -581,6 +585,12 @@ class MarketDataFetcher:
                     filtered = cached[(cached["trade_date"] >= req_start) & (cached["trade_date"] <= req_end)]
                     if len(filtered) > 0:
                         all_data.append(filtered)
+                        source_events.append({
+                            "stock_code": normalized_code,
+                            "vendor": "local_cache",
+                            "source_kind": "cache_hit",
+                            "cache_path": self._cache_path(normalized_code),
+                        })
                         continue
             to_fetch.append(code)
 
@@ -605,6 +615,12 @@ class MarketDataFetcher:
                                     filtered = df[(df["trade_date"] >= req_start) & (df["trade_date"] <= req_end)]
                                     if len(filtered) > 0:
                                         all_data.append(filtered)
+                                        source_events.append({
+                                            "stock_code": self._normalize_stock_code(code),
+                                            "vendor": "baostock",
+                                            "source_kind": "free_source_fetch",
+                                            "cache_path": self._cache_path(code),
+                                        })
                                     bs_fetched.add(self._normalize_stock_code(code))
                         finally:
                             _baostock_logout()
@@ -624,12 +640,34 @@ class MarketDataFetcher:
                                 filtered = df[(df["trade_date"] >= req_start) & (df["trade_date"] <= req_end)]
                                 if len(filtered) > 0:
                                     all_data.append(filtered)
+                                    source_events.append({
+                                        "stock_code": self._normalize_stock_code(bs_code),
+                                        "vendor": "rqdatac",
+                                        "source_kind": "optional_paid_fetch",
+                                        "cache_path": self._cache_path(bs_code),
+                                    })
 
         if all_data:
             result = pd.concat(all_data, ignore_index=True)
             if "amount" in result.columns and "volume" in result.columns:
                 raw_vol = result["volume"].replace(0, np.nan)
                 result["vwap"] = result["amount"] / raw_vol
+            source_metadata = _summarize_market_source_events(source_events)
+            snapshot = build_market_frame_snapshot(
+                result,
+                vendor=source_metadata["vendor"],
+                source_kind=source_metadata["source_kind"],
+                endpoint="MarketDataFetcher.fetch_stocks",
+                query_params={
+                    "stock_codes": [self._normalize_stock_code(code) for code in stock_codes],
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "adjustment_type": "qfq",
+                    "frequency": "daily",
+                },
+                source_metadata=source_metadata,
+            )
+            attach_data_snapshot(result, snapshot, source_metadata=source_metadata)
             logger.info(f"Loaded {len(result):,} records for {result['stock_code'].nunique()} stocks")
             return result
         return None
@@ -643,6 +681,46 @@ class MarketDataFetcher:
                 lambda x: x.shift(-p) / x - 1
             )
         return df
+
+
+def _summarize_market_source_events(source_events: list[dict]) -> dict:
+    vendors = sorted({str(event.get("vendor")) for event in source_events if event.get("vendor")})
+    event_kinds = sorted({str(event.get("source_kind")) for event in source_events if event.get("source_kind")})
+    if len(vendors) == 1:
+        vendor = vendors[0]
+    elif vendors:
+        vendor = "mixed"
+    else:
+        vendor = "unknown"
+
+    if event_kinds == ["cache_hit"]:
+        source_kind = "cache_read_snapshot"
+    elif len(vendors) == 1 and event_kinds and "cache_hit" not in event_kinds:
+        source_kind = "remote_fetch_snapshot"
+    else:
+        source_kind = "mixed_source_result"
+
+    source_counts: dict[str, int] = {}
+    cache_paths: set[str] = set()
+    stock_codes: set[str] = set()
+    for event in source_events:
+        key = f"{event.get('vendor', 'unknown')}:{event.get('source_kind', 'unknown')}"
+        source_counts[key] = source_counts.get(key, 0) + 1
+        if event.get("cache_path"):
+            cache_paths.add(str(event["cache_path"]))
+        if event.get("stock_code"):
+            stock_codes.add(str(event["stock_code"]))
+
+    return {
+        "artifact": "ohlcv",
+        "vendor": vendor,
+        "source_kind": source_kind,
+        "source_counts": source_counts,
+        "stock_count": len(stock_codes),
+        "stock_codes_sample": sorted(stock_codes)[:20],
+        "cache_paths_sample": sorted(cache_paths)[:20],
+        "cache_path_count": len(cache_paths),
+    }
 
 
 # --- PLACEHOLDER_BENCHMARK ---

@@ -86,8 +86,25 @@ def generate_strategy_report_payload(result_payload: dict, output_dir: str | Non
 
 def export_strategy_candidate_payload(result_payload: dict, output_dir: str | None = None) -> dict:
     assert_promotion_ready_for_boundary(result_payload.get("validation_provenance"), BOUNDARY_EXPORT)
+    experiment_id = result_payload.get("experiment_id")
+    factor_hash = result_payload.get("factor_hash")
+    data_snapshot_id = result_payload.get("data_snapshot_id")
+    if not experiment_id:
+        raise ValueError("strategy_signal.v1 export requires experiment_id")
+    if not factor_hash:
+        raise ValueError("strategy_signal.v1 export requires factor_hash")
+    if not data_snapshot_id:
+        raise ValueError("strategy_signal.v1 export requires data_snapshot_id")
     result = strategy_result_from_payload(result_payload)
-    payload = export_strategy_candidate(result, output_dir=output_dir)
+    payload = export_strategy_candidate(
+        result,
+        output_dir=output_dir,
+        experiment_id=experiment_id,
+        factor_hash=factor_hash,
+        data_snapshot_id=data_snapshot_id,
+        strategy_id=result_payload.get("strategy_id"),
+        validation_summary=_export_validation_summary(result_payload),
+    )
     payload["validation_provenance"] = result_payload["validation_provenance"]
     return payload
 
@@ -114,6 +131,27 @@ def run_strategy_rolling_validation_payload(result_payload: dict, windows: int =
 def optimize_candidate_weights_payload(signals: list[dict], spec_payload: dict) -> dict:
     spec = parse_strategy_spec(spec_payload)
     return optimize_candidate_weights(signals, spec)
+
+
+def _export_validation_summary(result_payload: dict) -> dict:
+    oos_result = result_payload.get("oos_result") or {}
+    return {
+        "oos_enabled": bool(oos_result),
+        "direction_policy": result_payload.get("direction_policy") or oos_result.get("direction_policy"),
+        "train_period": _oos_period(oos_result, "train"),
+        "validation_period": _oos_period(oos_result, "valid"),
+        "test_period": _oos_period(oos_result, "test"),
+        "promotion_gate_passed": True,
+        "data_snapshot_id": result_payload.get("data_snapshot_id"),
+    }
+
+
+def _oos_period(oos_result: dict, stage: str) -> list | None:
+    payload = oos_result.get(stage)
+    if not isinstance(payload, dict):
+        return None
+    period = payload.get("period")
+    return period if isinstance(period, list) else None
 
 
 def strategy_result_to_payload(result: StrategyBacktestResult) -> dict:
@@ -153,6 +191,9 @@ def strategy_result_from_payload(payload: dict) -> StrategyBacktestResult:
         validation_mode=payload.get("validation_mode", "single_period"),
         direction_policy=payload.get("direction_policy"),
         data_quality=payload.get("data_quality"),
+        data_snapshot_id=payload.get("data_snapshot_id"),
+        data_source=payload.get("data_source"),
+        data_source_metadata=payload.get("data_source_metadata"),
         oos_result=payload.get("oos_result"),
         oos_summary=payload.get("oos_summary"),
         oos_score=payload.get("oos_score") or payload.get("strategy_score"),

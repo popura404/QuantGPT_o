@@ -24,7 +24,7 @@ def _ready_provenance() -> dict:
             "test": {"metrics": {"long_short_sharpe": 0.8, "direction_adjusted_rank_ic_mean": 0.02}},
         },
         oos_score={"decision": "candidate", "score": 80},
-        data_quality={"enabled": True, "after_rows": 100, "after_stocks": 10},
+        data_quality={"enabled": True, "after_rows": 100, "after_stocks": 10, "data_snapshot_id": "ds_iteration"},
         rolling_validation={"score": 70, "windows": [{"window_index": 0}]},
         placebo_test={"passed": True, "details": {"perm_pass": True, "decay_ok": True, "shift_ics": {"5": 0.01}}},
     )

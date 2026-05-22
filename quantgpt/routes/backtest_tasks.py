@@ -21,7 +21,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import GUEST_USER_ID, get_current_user, get_current_user_or_guest, get_optional_user
 from ..data_quality import DataQualityConfig, run_data_quality_gate
+from ..data_snapshots import ensure_market_frame_snapshot, snapshot_result_fields
 from ..db import get_db
+from ..experiment_ledger import record_experiment as _ledger_record_experiment
+from ..experiment_ledger import record_experiment_artifact as _ledger_record_experiment_artifact
+from ..experiment_ledger import record_experiment_result as _ledger_record_experiment_result
 from ..expression_parser import parse_expression
 from ..iteration import compute_factor_score
 from ..llm_service import (
@@ -72,6 +76,12 @@ from ..validation.oos_score import (
     compute_oos_score,
     compute_oos_selection_score,
     withhold_final_test,
+)
+from ..validation.policy import (
+    BIASED_DIRECTION_MODE,
+    FINAL_TEST_REQUIRED_FOR_PROMOTION,
+    OOS_SUMMARY_REQUIRED,
+    classify_research_mode,
 )
 from ..validation.promotion import AUTO_FULL_NOT_PROMOTABLE, research_only_provenance
 from ..validation.split import OOSConfig
@@ -228,8 +238,149 @@ def _score_oos_for_stage(oos_result: dict, data_quality_report: dict | None, val
 
 def _oos_blockers_for_stage(validation_stage: str) -> list[str]:
     if validation_stage == "selection":
-        return [FINAL_TEST_NOT_RUN, "FULL_VALIDATION_SUITE_NOT_RUN"]
+        return [FINAL_TEST_REQUIRED_FOR_PROMOTION, FINAL_TEST_NOT_RUN, "FULL_VALIDATION_SUITE_NOT_RUN"]
     return ["FULL_VALIDATION_SUITE_NOT_RUN"]
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if value))
+
+
+def _research_only_blockers(params: dict) -> list[str]:
+    policy = classify_research_mode(params)
+    blockers = list(policy.get("policy_blockers") or [])
+    if not params.get("oos_enabled"):
+        if policy.get("direction_policy") == "auto_full":
+            blockers.extend([BIASED_DIRECTION_MODE, AUTO_FULL_NOT_PROMOTABLE])
+        blockers.extend([OOS_SUMMARY_REQUIRED, "OOS_TRAIN_VALID_TEST_NOT_RUN"])
+    return _dedupe(blockers)
+
+
+def _attach_policy_metadata(payload: dict) -> dict:
+    policy = classify_research_mode(payload.get("params"))
+    payload["research_mode"] = policy["research_mode"]
+    payload["direction_policy"] = policy["direction_policy"]
+    payload["formal_safe"] = policy["formal_safe"]
+    payload["final_test_policy"] = policy["final_test_policy"]
+    return policy
+
+
+def _record_auto_backtest_experiment(task_id: str, user_id: str, expression: str, payload: dict) -> None:
+    """Best-effort REST task ledger write; mutates payload with experiment identifiers."""
+    async def _record() -> None:
+        from ..db import _get_session_factory
+
+        params = dict(payload.get("params") or {})
+        params.setdefault("source", "rest:auto_backtest")
+        params.setdefault("direction_policy", payload.get("direction_policy"))
+        params.setdefault("research_mode", payload.get("research_mode"))
+        status = "validated_oos" if params.get("oos_enabled") else "backtested_train"
+        factory = _get_session_factory()
+        async with factory() as session:
+            experiment = await _ledger_record_experiment(
+                session,
+                expression=expression,
+                params=params,
+                status=status,
+                user_id=user_id,
+                task_id=task_id,
+                created_by="rest:auto_backtest",
+                result_summary={
+                    "score": (payload.get("scoring") or {}).get("score"),
+                    "grade": (payload.get("scoring") or {}).get("grade"),
+                    "decision": (payload.get("scoring") or {}).get("decision"),
+                    "promotion_state": payload.get("promotion_state"),
+                    "promotion_blockers": payload.get("promotion_blockers"),
+                    "report_scope": payload.get("report_scope"),
+                },
+            )
+            await _ledger_record_experiment_result(
+                session,
+                experiment_id=experiment.experiment_id,
+                stage=status,
+                validation_stage=params.get("validation_stage"),
+                train_period=_oos_period(payload, "train"),
+                validation_period=_oos_period(payload, "valid"),
+                test_period=_oos_period(payload, "test"),
+                direction_policy=payload.get("direction_policy"),
+                metrics={
+                    "report_metrics": payload.get("metrics"),
+                    "backtest_summary": payload.get("backtest_summary"),
+                },
+                oos_score=payload.get("oos_score") or payload.get("selection_score"),
+                data_quality=payload.get("data_quality"),
+            )
+            report_url = payload.get("report_url")
+            if isinstance(report_url, str) and report_url:
+                await _ledger_record_experiment_artifact(
+                    session,
+                    experiment_id=experiment.experiment_id,
+                    artifact_type="report",
+                    uri=report_url,
+                    metadata={"task_id": task_id},
+                )
+            payload["experiment_id"] = experiment.experiment_id
+            payload["factor_hash"] = experiment.factor_hash
+            payload["config_hash"] = experiment.config_hash
+            await session.commit()
+
+    try:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            logger.warning("auto_backtest experiment ledger write skipped inside running event loop")
+            return
+        asyncio.run(_record())
+    except Exception as exc:
+        logger.warning("auto_backtest experiment ledger write failed: %s", exc)
+
+
+def _market_data_provenance_fields(
+    market_df: pd.DataFrame,
+    *,
+    universe: str,
+    start_date: str,
+    end_date: str,
+    stock_codes: list[str],
+    endpoint: str,
+) -> dict:
+    source_metadata = market_df.attrs.get("source_metadata")
+    if not isinstance(source_metadata, dict):
+        source_metadata = {}
+    snapshot = ensure_market_frame_snapshot(
+        market_df,
+        vendor=str(market_df.attrs.get("data_source") or source_metadata.get("vendor") or "in_memory_frame"),
+        source_kind=str(source_metadata.get("source_kind") or "market_dataframe_snapshot"),
+        endpoint=endpoint,
+        query_params={
+            "universe": universe,
+            "start_date": start_date,
+            "end_date": end_date,
+            "stock_codes": stock_codes,
+        },
+        source_metadata=source_metadata,
+    )
+    return snapshot_result_fields(snapshot, source_metadata=source_metadata)
+
+
+def _annotate_data_provenance(report: dict | None, provenance: dict) -> None:
+    if report is None:
+        return
+    report.setdefault("data_snapshot_id", provenance["data_snapshot_id"])
+    report.setdefault("data_source", provenance.get("data_source"))
+
+
+def _oos_period(payload: dict, stage: str) -> list | None:
+    oos_result = payload.get("oos_result")
+    if not isinstance(oos_result, dict):
+        return None
+    stage_payload = oos_result.get(stage)
+    if not isinstance(stage_payload, dict):
+        return None
+    period = stage_payload.get("period")
+    return period if isinstance(period, list) else None
 
 
 def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
@@ -337,6 +488,14 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
             task["status"] = "failed"
             task["error"] = "未获取到行情数据，请检查日期范围"
             return
+        data_provenance = _market_data_provenance_fields(
+            market_df,
+            universe=req.universe,
+            start_date=req.start_date,
+            end_date=req.end_date,
+            stock_codes=stock_codes,
+            endpoint="rest.auto_backtest",
+        )
 
         data_quality_report = None
         if req.data_quality is None:
@@ -354,6 +513,7 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
             data_quality_report = _disabled_data_quality_report(
                 "OOS validation was run without the data-quality gate because data_quality.enabled=false"
             )
+        _annotate_data_provenance(data_quality_report, data_provenance)
 
         from ..fundamental_data import detect_fundamental_vars, enrich_market_data
         fund_vars = detect_fundamental_vars(expression)
@@ -550,17 +710,17 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
                 "direction_mode": req.direction_mode,
                 "fixed_direction": req.fixed_direction,
                 "data_quality": req.data_quality.model_dump() if req.data_quality else None,
+                "data_snapshot_id": data_provenance["data_snapshot_id"],
+                "data_source": data_provenance.get("data_source"),
             },
             "llm": {
                 "prompt": req.prompt,
                 "generated_expression": expression,
             },
         }
-        promotion_blockers = (
-            _oos_blockers_for_stage(req.validation_stage)
-            if req.oos_enabled
-            else [AUTO_FULL_NOT_PROMOTABLE, "OOS_TRAIN_VALID_TEST_NOT_RUN"]
-        )
+        task_result.update(data_provenance)
+        policy = _attach_policy_metadata(task_result)
+        promotion_blockers = _oos_blockers_for_stage(req.validation_stage) if req.oos_enabled else _research_only_blockers(task_result["params"])
         task_result["promotion_state"] = "research_only"
         task_result["promotion_blockers"] = promotion_blockers
         task_result["validation_provenance"] = research_only_provenance(
@@ -573,6 +733,8 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
             task_result["data_quality"] = data_quality_report
         if req.oos_enabled:
             public_oos = to_public_oos_result(result.get("oos_result", {}))
+            public_oos["data_snapshot_id"] = data_provenance["data_snapshot_id"]
+            public_oos["data_source"] = data_provenance.get("data_source")
             if data_quality_report is not None:
                 public_oos["data_quality"] = data_quality_report
             if req.validation_stage == "selection":
@@ -580,6 +742,8 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
             oos_scoring = _score_oos_for_stage(public_oos, data_quality_report, req.validation_stage)
             task_result["oos_result"] = public_oos
             task_result["direction_policy"] = "train_fixed"
+            task_result["final_test_policy"] = public_oos.get("final_test_policy", policy["final_test_policy"])
+            task_result["formal_safe"] = bool(policy["formal_safe"])
             task_result["report_scope"] = public_oos.get("report_scope", result.get("report_scope"))
             task_result["compatibility_warning"] = result.get("compatibility_warning")
             task_result["legacy_scoring"] = task_result["scoring"]
@@ -591,6 +755,8 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
             task_result["interpretation"]["metrics_scope"] = oos_scoring["metrics_scope"]
             task_result["interpretation"]["oos_decision"] = oos_scoring["decision"]
             task_result["interpretation"]["oos_risk"] = oos_scoring["overfit_risk"]
+        if not task.get("is_guest"):
+            _record_auto_backtest_experiment(task_id, user_id, expression, task_result)
         task["result"] = task_result
         logger.info(f"[{task_id}] completed")
         cleanup_reports(user_id)

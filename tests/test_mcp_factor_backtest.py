@@ -139,7 +139,15 @@ async def test_legacy_mcp_run_backtest_omits_oos_and_data_quality_fields(mcp_bac
 
     assert "oos_result" not in result
     assert "data_quality" not in result
+    assert result["research_mode"] == "exploratory"
+    assert result["direction_policy"] == "auto_full"
+    assert result["formal_safe"] is False
+    assert result["final_test_policy"] == "not_run"
+    assert "BIASED_DIRECTION_MODE" in result["promotion_blockers"]
+    assert "OOS_SUMMARY_REQUIRED" in result["promotion_blockers"]
     assert result["params"]["oos_enabled"] is False
+    assert result["data_snapshot_id"].startswith("ds_")
+    assert result["params"]["data_snapshot_id"] == result["data_snapshot_id"]
 
 
 @pytest.mark.asyncio
@@ -147,8 +155,13 @@ async def test_oos_mcp_run_backtest_returns_public_oos_and_data_quality(mcp_back
     result = json.loads(await mcp_server.run_backtest("close", universe="small_scale"))
 
     assert result["direction_policy"] == "train_fixed"
+    assert result["research_mode"] == "formal_selection"
+    assert result["formal_safe"] is True
+    assert result["final_test_policy"] == "withheld_until_validation_stage_final"
     assert result["data_quality"]["enabled"] is True
+    assert result["data_quality"]["data_snapshot_id"] == result["data_snapshot_id"]
     assert result["oos_result"]["report_scope"] == "oos_train_valid_selection"
+    assert result["oos_result"]["data_snapshot_id"] == result["data_snapshot_id"]
     assert result["oos_result"]["test"]["status"] == "withheld"
     assert "_private" not in result["oos_result"]
     assert result["backtest_summary"]["metrics_scope"] == "legacy_compat_single_run"
@@ -166,6 +179,8 @@ async def test_final_mcp_run_backtest_exposes_test_score(mcp_backtest_fakes):
     assert result["oos_result"]["report_scope"] == "oos_train_valid_test"
     assert "status" not in result["oos_result"]["test"]
     assert result["oos_score"]["metrics_scope"] == "oos_train_valid_test"
+    assert result["research_mode"] == "formal_final"
+    assert result["final_test_policy"] == "executed"
 
 
 @pytest.mark.asyncio
@@ -216,8 +231,16 @@ async def test_legacy_score_factor_keeps_oos_and_data_quality_omitted(mcp_backte
 
     assert "oos_result" not in result
     assert "data_quality" not in result
+    assert result["research_mode"] == "exploratory"
+    assert result["direction_policy"] == "auto_full"
+    assert result["formal_safe"] is False
+    assert result["final_test_policy"] == "not_run"
+    assert "BIASED_DIRECTION_MODE" in result["promotion_blockers"]
+    assert "OOS_SUMMARY_REQUIRED" in result["promotion_blockers"]
     assert result["params"]["oos_enabled"] is False
     assert result["params"]["data_quality"] is None
+    assert result["data_snapshot_id"].startswith("ds_")
+    assert result["params"]["data_snapshot_id"] == result["data_snapshot_id"]
     assert "score" in result
     assert "component_scores" in result
 
@@ -231,9 +254,14 @@ async def test_oos_score_factor_returns_oos_first_score_and_data_quality(mcp_bac
     ))
 
     assert result["direction_policy"] == "train_fixed"
+    assert result["research_mode"] == "formal_selection"
+    assert result["formal_safe"] is True
+    assert result["final_test_policy"] == "withheld_until_validation_stage_final"
     assert result["oos_score"]["metrics_scope"] == "oos_train_valid_selection"
     assert result["data_quality"]["enabled"] is True
+    assert result["data_quality"]["data_snapshot_id"] == result["data_snapshot_id"]
     assert result["oos_result"]["data_quality"]["enabled"] is True
+    assert result["oos_result"]["data_snapshot_id"] == result["data_snapshot_id"]
     assert result["oos_result"]["test"]["status"] == "withheld"
     assert "_private" not in result["oos_result"]
     assert "test" not in result["component_scores"]
