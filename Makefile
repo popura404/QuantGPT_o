@@ -1,4 +1,4 @@
-.PHONY: setup run dev test lint check engine-check clean frontend
+.PHONY: setup run dev test test-collect test-smoke lint check check-local engine-check clean frontend
 
 PYTHON := $(shell command -v python3 2>/dev/null || command -v python 2>/dev/null)
 VENV := .venv
@@ -22,11 +22,27 @@ dev:
 test:
 	$(BIN)/pytest tests/ -x -q
 
+test-collect:
+	$(BIN)/pytest --collect-only -q tests
+
+test-smoke:
+	$(BIN)/pytest -x -q \
+		tests/test_auth.py \
+		tests/test_task_store.py \
+		tests/test_task_executor.py \
+		tests/test_routes_backtest.py \
+		tests/test_routes_strategy.py \
+		tests/test_strategy_spec.py \
+		tests/test_strategy_backtest.py \
+		tests/test_wq_submission_guard.py
+
 lint:
 	$(BIN)/ruff check quantgpt/ tests/
 	$(BIN)/pyright quantgpt/
 
 check: lint test frontend engine-check
+
+check-local: lint test frontend
 
 engine-check:
 	@if ! command -v cargo >/dev/null 2>&1; then \
