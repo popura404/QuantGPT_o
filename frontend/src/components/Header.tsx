@@ -161,8 +161,8 @@ agent.register_tool(backtest_tool)`;
                   <h3 className={`text-sm font-medium ${isDark ? "text-gray-100" : "text-gray-900"}`}>克隆项目并安装</h3>
                 </div>
                 <div className="relative bg-gray-900 rounded-lg p-3 font-mono text-xs text-gray-100 leading-relaxed">
-                  <CopyButton text={"git clone https://github.com/Miasyster/QuantGPT.git\ncd QuantGPT\npip install -e ."} />
-                  <pre className="whitespace-pre-wrap"><span className="text-green-400">$</span> git clone https://github.com/Miasyster/QuantGPT.git{"\n"}<span className="text-green-400">$</span> cd QuantGPT{"\n"}<span className="text-green-400">$</span> pip install -e .</pre>
+                  <CopyButton text={"git clone https://github.com/popura404/QuantGPT_o.git\ncd QuantGPT_o\npip install -e ."} />
+                  <pre className="whitespace-pre-wrap"><span className="text-green-400">$</span> git clone https://github.com/popura404/QuantGPT_o.git{"\n"}<span className="text-green-400">$</span> cd QuantGPT_o{"\n"}<span className="text-green-400">$</span> pip install -e .</pre>
                 </div>
               </div>
 
@@ -296,7 +296,7 @@ agent.register_tool(backtest_tool)`;
         {/* Footer */}
         <div className={`px-5 py-3 border-t ${isDark ? "border-gray-700" : "border-gray-100"} flex items-center justify-between`}>
           <a
-            href="https://github.com/Miasyster/QuantGPT"
+            href="https://github.com/popura404/QuantGPT_o"
             target="_blank"
             rel="noopener noreferrer"
             className={`flex items-center gap-1.5 text-sm ${isDark ? "text-gray-400 hover:text-gray-300" : "text-gray-500 hover:text-gray-700"} transition-colors`}

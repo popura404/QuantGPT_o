@@ -1030,7 +1030,7 @@ preflight/override 允许时触发正式提交。`alt` 账号只能用于模拟�
 
 ## MCP Tools
 
-QuantGPT 提供 29 个 MCP (Model Context Protocol) 工具，覆盖因子研究、StrategySpec v0/v1
+QuantGPT 提供 39 个 MCP (Model Context Protocol) 工具，覆盖因子研究、StrategySpec v0/v1
 策略工具和 WQ BRAIN 工作流。推荐本机 stdio 模式；如果暴露 HTTP MCP (`/mcp`, `/mcp-sse`)，
 认证开启时必须设置 `QUANTGPT_MCP_HTTP_TOKEN` 并由客户端发送 `Authorization: Bearer <token>`。
 
@@ -1045,6 +1045,16 @@ QuantGPT 提供 29 个 MCP (Model Context Protocol) 工具，覆盖因子研究�
 | `diagnose_factor` | 诊断因子问题,推荐突变策略 (6种) |
 | `run_anti_overfit` | 独立反过拟合检测 (4项测试) |
 | `run_rolling_validation` | Walk-Forward 滚动验证 |
+| `list_experiments` | 查询实验 ledger |
+| `get_experiment` | 读取单个实验详情 |
+| `export_experiment_report` | 导出轻量实验 JSON/Markdown 报告 |
+| `compare_experiments` | 对比两个实验 |
+| `show_factor_lineage` | 查看因子 lineage |
+| `summarize_trial_counts` | 汇总项目、股票池、因子族和 factor hash 试验次数 |
+| `find_similar_factors` | 检查表达式、信号和收益相似度 |
+| `run_multiple_testing_check` | 写入 trial-aware 多重检验结果 |
+| `promote_experiment` | 写入 promotion event |
+| `reject_experiment` | 写入 rejection event |
 | `list_markets` | 返回策略框架支持的市场 |
 | `list_data_fields` | 返回指定市场可用于策略因子表达式的数据字段 |
 | `list_strategy_templates` | 返回可用策略模板和治理边界 |
@@ -1081,7 +1091,7 @@ frozen candidate 的最终验收。普通 `auto_full` 回测结果会标记为 `
     "quantgpt": {
       "command": "python",
       "args": ["-m", "quantgpt"],
-      "cwd": "/path/to/quantgpt"
+      "cwd": "/path/to/QuantGPT_o"
     }
   }
 }

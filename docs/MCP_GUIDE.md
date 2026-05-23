@@ -15,13 +15,13 @@ QuantGPT 提供标准 MCP (Model Context Protocol) 接口，支持因子研究�
       "type": "stdio",
       "command": "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",
       "args": ["-m", "quantgpt"],
-      "cwd": "/absolute/path/to/quantgpt"
+      "cwd": "/absolute/path/to/QuantGPT_o"
     },
     "deepseek": {
       "type": "stdio",
       "command": "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",
       "args": ["scripts/mcp_deepseek.py"],
-      "cwd": "/absolute/path/to/quantgpt"
+      "cwd": "/absolute/path/to/QuantGPT_o"
     }
   }
 }
@@ -52,7 +52,7 @@ QuantGPT 提供标准 MCP (Model Context Protocol) 接口，支持因子研究�
     "quantgpt": {
       "command": "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",
       "args": ["-m", "quantgpt"],
-      "cwd": "/absolute/path/to/quantgpt"
+      "cwd": "/absolute/path/to/QuantGPT_o"
     }
   }
 }
@@ -62,8 +62,8 @@ QuantGPT 提供标准 MCP (Model Context Protocol) 接口，支持因子研究�
 
 ```bash
 # 克隆项目
-git clone https://github.com/Miasyster/QuantGPT.git
-cd QuantGPT
+git clone https://github.com/popura404/QuantGPT_o.git
+cd QuantGPT_o
 
 # 安装依赖
 pip install -e .

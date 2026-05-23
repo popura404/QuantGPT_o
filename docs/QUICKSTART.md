@@ -8,8 +8,8 @@
 ## 1. Clone & Setup
 
 ```bash
-git clone https://github.com/Miasyster/QuantGPT.git
-cd QuantGPT
+git clone https://github.com/popura404/QuantGPT_o.git
+cd QuantGPT_o
 make setup
 ```
 
@@ -36,7 +36,7 @@ Add MCP configuration to Claude Code or Claude Desktop:
       "type": "stdio",
       "command": "python3",
       "args": ["-m", "quantgpt"],
-      "cwd": "/path/to/QuantGPT"
+      "cwd": "/path/to/QuantGPT_o"
     }
   }
 }

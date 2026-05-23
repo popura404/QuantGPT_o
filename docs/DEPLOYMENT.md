@@ -22,8 +22,8 @@
 ### 方式一：Docker 部署（推荐）
 
 ```bash
-git clone https://github.com/Miasyster/QuantGPT.git
-cd QuantGPT
+git clone https://github.com/popura404/QuantGPT_o.git
+cd QuantGPT_o
 
 # 准备配置
 cp .env.example .env
@@ -41,8 +41,8 @@ docker compose logs -f
 ### 方式二：裸机部署
 
 ```bash
-git clone https://github.com/Miasyster/QuantGPT.git
-cd QuantGPT
+git clone https://github.com/popura404/QuantGPT_o.git
+cd QuantGPT_o
 
 python3 -m venv venv
 source venv/bin/activate
@@ -116,7 +116,7 @@ QUANTGPT_CORS_ORIGINS=http://localhost:5173,http://localhost:8003
       "type": "stdio",
       "command": "python3",
       "args": ["-m", "quantgpt"],
-      "cwd": "/你的项目路径/QuantGPT"
+      "cwd": "/你的项目路径/QuantGPT_o"
     }
   }
 }

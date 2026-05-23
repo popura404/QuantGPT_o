@@ -6,7 +6,7 @@
 
 LLM Agent 自治因子挖矿 → 批量回测 → 多维评分 → 反过拟合验证 → WQ BRAIN 模拟与 preflight-gated 提交
 
-[![CI](https://github.com/Miasyster/quantgpt/actions/workflows/ci.yml/badge.svg)](https://github.com/Miasyster/quantgpt/actions/workflows/ci.yml)
+[![CI](https://github.com/popura404/QuantGPT_o/actions/workflows/ci.yml/badge.svg)](https://github.com/popura404/QuantGPT_o/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React_18-TypeScript-61DAFB?logo=react&logoColor=white)](https://react.dev)
@@ -21,7 +21,7 @@ LLM Agent 自治因子挖矿 → 批量回测 → 多维评分 → 反过拟合�
 
 **WeChat / 微信交流群**: Add `quantgpt_ai` on WeChat to join the community
 
-<a href="https://star-history.com/#Miasyster/QuantGPT&Date">
+<a href="https://star-history.com/#popura404/QuantGPT_o&Date">
   <img src="docs/images/star-history.png" width="600" alt="Star History Chart" />
 </a>
 
@@ -38,7 +38,7 @@ The core architecture:
 ```
 LLM Agent (Claude Code / Claude Desktop)
     │
-    ├── MCP Tools (29 个)         ← Agent 的工具箱
+    ├── MCP Tools (39 个)         ← Agent 的工具箱
     │   ├── Factor research        ← 回测、评分、诊断、OOS、因子截面值
     │   ├── StrategySpec workflow  ← 模板、校验、策略回测、报告、导出、优化
     │   └── WQ BRAIN workflow      ← 模拟、查询、检查、preflight-gated 正式提交
@@ -331,7 +331,7 @@ TrajectoryAnalyzer → MetaEvolutionSelector → Strategy Execution
 | **Web UI** | Browser workbench | 单因子、组合、StrategySpec、WQ BRAIN、任务中心、报告查看、因子库管理 |
 
 <details>
-<summary><b>MCP Tools (29 个)</b></summary>
+<summary><b>MCP Tools (39 个)</b></summary>
 
 | Category | Tool | Description |
 |:---------|:-----|:------------|
@@ -344,6 +344,16 @@ TrajectoryAnalyzer → MetaEvolutionSelector → Strategy Execution
 | Factor | `run_anti_overfit` | 4 项反过拟合检验 |
 | Factor | `run_rolling_validation` | Walk-forward 验证 |
 | Factor | `compute_factor_values` | 输出每日全市场截面因子值 |
+| Experiment | `list_experiments` | 查询实验 ledger |
+| Experiment | `get_experiment` | 读取单个实验详情 |
+| Experiment | `export_experiment_report` | 导出轻量实验报告 |
+| Experiment | `compare_experiments` | 对比两个实验 |
+| Experiment | `show_factor_lineage` | 查看因子 lineage |
+| Experiment | `summarize_trial_counts` | 汇总试验次数 |
+| Experiment | `find_similar_factors` | 检查相似因子 |
+| Experiment | `run_multiple_testing_check` | 多重检验审计 |
+| Experiment | `promote_experiment` | 记录实验晋级 |
+| Experiment | `reject_experiment` | 记录实验拒绝 |
 | StrategySpec | `list_markets` | 策略框架支持的市场和能力 |
 | StrategySpec | `list_data_fields` | 指定市场可用数据字段 |
 | StrategySpec | `list_strategy_templates` | StrategySpec 模板列表 |
@@ -379,7 +389,7 @@ TrajectoryAnalyzer → MetaEvolutionSelector → Strategy Execution
 | Knowledge accumulation | Personal notes | None | Lost between sessions | **Structured KB across sessions** |
 | WQ BRAIN integration | -- | -- | -- | **Operator-aligned + preflight-gated submission** |
 | Anti-overfit | -- | -- | -- | **4 statistical tests + walk-forward** |
-| MCP / AI Agent | -- | -- | -- | **29 tools, skill-loop orchestration** |
+| MCP / AI Agent | -- | -- | -- | **39 tools, skill-loop orchestration** |
 | Live trading | Yes | Limited | -- | -- |
 | Intraday data | Yes | Yes | -- | Daily only |
 
@@ -390,7 +400,7 @@ TrajectoryAnalyzer → MetaEvolutionSelector → Strategy Execution
 ### Option 1: Agent Mode (Recommended)
 
 ```bash
-git clone https://github.com/Miasyster/QuantGPT.git && cd QuantGPT
+git clone https://github.com/popura404/QuantGPT_o.git && cd QuantGPT_o
 make setup   # creates venv, installs deps, generates .env
 make run     # starts server at http://localhost:8003
 ```
@@ -432,8 +442,8 @@ Windows 用户不需要 `make` 和 `restart.sh`，手动执行即可：
 
 ```powershell
 # 1. 克隆项目
-git clone https://github.com/Miasyster/QuantGPT.git
-cd QuantGPT
+git clone https://github.com/popura404/QuantGPT_o.git
+cd QuantGPT_o
 
 # 2. 创建虚拟环境并安装依赖
 python -m venv .venv
@@ -524,7 +534,7 @@ quantgpt/
 │   ├── backtest.py              # Rank-based group backtest engine
 │   ├── market_data.py           # baostock/akshare → Parquet cache
 │   ├── api_server.py            # FastAPI REST API + SSE
-│   ├── mcp_server.py            # FastMCP server (29 tools — Agent's toolkit)
+│   ├── mcp_server.py            # FastMCP server (39 tools — Agent's toolkit)
 │   ├── iteration.py             # 3-phase evolutionary iteration
 │   ├── mutation_engine.py       # 8 directed mutation strategies
 │   ├── crossover_engine.py      # High-score factor crossover
@@ -547,7 +557,7 @@ quantgpt/
 │   └── src/components/          # Factor, strategy, WQ, task, and report UI
 ├── scripts/
 │   └── factor_miner.py          # Batch factor evaluation toolkit
-├── tests/                       # 600+ collected pytest cases
+├── tests/                       # 650+ collected pytest cases
 ├── example_factor/              # BRAIN validation screenshots
 └── docs/                        # Architecture, API, MCP, StrategySpec, knowledge guides
 ```
@@ -564,10 +574,10 @@ quantgpt/
 
 ## License
 
-[MIT](LICENSE) — Copyright (c) 2026 Miasyster
+[MIT](LICENSE) — see [NOTICE](NOTICE) for copyright and attribution details.
 
-This repository is the **original source** of the QuantGPT factor research engine.
-Derivative works should retain the copyright notice and comply with the MIT License terms.
+This repository is maintained at `https://github.com/popura404/QuantGPT_o`.
+Derivative works should retain the upstream copyright notice and comply with the MIT License terms.
 See [NOTICE](NOTICE) for details.
 
 <sub>*Past factor performance does not guarantee future returns. This project does not constitute investment advice.*</sub>

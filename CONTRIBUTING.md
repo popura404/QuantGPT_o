@@ -5,8 +5,8 @@
 ## Getting Started
 
 ```bash
-git clone https://github.com/Miasyster/QuantGPT.git
-cd quantgpt
+git clone https://github.com/popura404/QuantGPT_o.git
+cd QuantGPT_o
 make setup      # creates venv, installs deps, copies .env
 make test       # run tests
 make lint       # ruff + pyright
