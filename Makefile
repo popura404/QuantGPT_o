@@ -9,7 +9,12 @@ setup:
 	$(PYTHON) -m venv $(VENV)
 	$(BIN)/pip install --upgrade pip
 	$(BIN)/pip install -e ".[dev]"
-	@if [ ! -f .env ]; then cp .env.example .env && echo "==> Created .env from template (edit as needed)"; fi
+	@if [ ! -f .env ]; then \
+		cp .env.example .env; \
+		sed -i.bak 's/^AUTH_DISABLED=false/AUTH_DISABLED=true/' .env; \
+		rm -f .env.bak; \
+		echo "==> Created .env from template with AUTH_DISABLED=true for local development"; \
+	fi
 	@echo ""
 	@echo "Setup complete! Run: make run"
 

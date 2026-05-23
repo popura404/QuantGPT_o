@@ -1,5 +1,10 @@
 # QuantGPT Frontend Completion Plan
 
+> Status: historical implementation plan. The baseline facts below describe the
+> frontend gap at the time this plan was written; the current repository already
+> includes the shared task components, advanced backtest controls, WQ BRAIN
+> workspace, strategy workflow components, and shared factor/common components.
+
 ## Purpose
 
 This plan converts the current frontend gap review into an executable frontend work package. It covers five frontend completion tracks:

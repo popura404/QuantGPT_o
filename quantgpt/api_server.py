@@ -30,6 +30,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, update
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import task_store
 from .db import close_db, init_db
@@ -173,6 +174,9 @@ async def lifespan(app: FastAPI):
 _DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://localhost:8003,http://127.0.0.1:5173,http://127.0.0.1:8003"
 _cors_origins = os.environ.get("QUANTGPT_CORS_ORIGINS", _DEFAULT_CORS_ORIGINS)
 _cors_list = [o.strip() for o in _cors_origins.split(",") if o.strip()]
+_DEFAULT_ALLOWED_HOSTS = "localhost,127.0.0.1,test,testserver"
+_allowed_hosts = os.environ.get("QUANTGPT_ALLOWED_HOSTS", _DEFAULT_ALLOWED_HOSTS)
+_allowed_host_list = [h.strip() for h in _allowed_hosts.split(",") if h.strip()]
 
 app = FastAPI(
     title="QuantGPT API",
@@ -182,6 +186,12 @@ app = FastAPI(
     redoc_url=None,
     openapi_url="/openapi.json",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=_allowed_host_list,
+    www_redirect=False,
 )
 
 app.add_middleware(
@@ -287,9 +297,14 @@ def _is_http_mcp_path(path: str) -> bool:
     return path in ("/mcp", "/mcp-sse") or path.startswith("/mcp/") or path.startswith("/mcp-sse/")
 
 
+def _request_scope_path(request: Request) -> str:
+    """Use ASGI scope path, not reconstructed URL path from an untrusted Host header."""
+    return str(request.scope.get("path") or "")
+
+
 @app.middleware("http")
 async def _protect_http_mcp(request: Request, call_next):
-    if _is_http_mcp_path(request.url.path) and request.method != "OPTIONS":
+    if _is_http_mcp_path(_request_scope_path(request)) and request.method != "OPTIONS":
         from .auth import is_auth_disabled
 
         if not is_auth_disabled():
@@ -308,7 +323,7 @@ async def _protect_http_mcp(request: Request, call_next):
 
 @app.middleware("http")
 async def _mcp_path_rewrite(request: Request, call_next):
-    if request.url.path == "/mcp":
+    if _request_scope_path(request) == "/mcp":
         request.scope["path"] = "/mcp/"
     return await call_next(request)
 

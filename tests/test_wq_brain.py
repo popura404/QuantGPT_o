@@ -150,6 +150,40 @@ class TestWQBrainSubmitEndpoint:
             assert "task_id" in data
             assert data["status"] == "pending"
 
+    async def test_submit_auto_submit_requires_admin(self, client, test_user, auth_headers):
+        with patch.dict(os.environ, {"WQ_BRAIN_EMAIL": "a@b.com", "WQ_BRAIN_PASSWORD": "pw"}, clear=False):
+            resp = await client.post("/api/v1/wq-brain/submit", json={
+                "expression": "rank(close)",
+                "tag": "test-agent",
+                "auto_submit": True,
+            }, headers=auth_headers)
+
+        assert resp.status_code == 403
+
+    async def test_submit_auto_submit_allows_admin(self, client):
+        admin_headers = {"Authorization": f"Bearer {create_admin_token()}"}
+        with (
+            patch.dict(os.environ, {"WQ_BRAIN_EMAIL": "a@b.com", "WQ_BRAIN_PASSWORD": "pw"}, clear=False),
+            patch("quantgpt.routes.wq_brain._run_wq_brain_task"),
+        ):
+            resp = await client.post("/api/v1/wq-brain/submit", json={
+                "expression": "rank(close)",
+                "tag": "test-agent",
+                "auto_submit": True,
+            }, headers=admin_headers)
+
+        assert resp.status_code == 202
+
+    async def test_submit_override_requires_admin(self, client, test_user, auth_headers):
+        with patch.dict(os.environ, {"WQ_BRAIN_EMAIL": "a@b.com", "WQ_BRAIN_PASSWORD": "pw"}, clear=False):
+            resp = await client.post("/api/v1/wq-brain/submit", json={
+                "expression": "rank(close)",
+                "tag": "test-agent",
+                "submission_override_reason": "manual review",
+            }, headers=auth_headers)
+
+        assert resp.status_code == 403
+
 
 class TestSubmittedAlphasEndpoint:
     async def test_list_requires_auth(self, client):
@@ -178,13 +212,19 @@ class TestWQBrainSharedAccountEndpoints:
 
 
 class TestSubmitAlphaEndpoint:
-    async def test_submit_alpha_requires_auth(self, client):
+    async def test_submit_alpha_requires_admin(self, client):
         resp = await client.post("/api/v1/wq-brain/fake-task/submit-alpha")
         assert resp.status_code in (401, 403)
 
-    async def test_submit_alpha_task_not_found(self, client, test_user, auth_headers):
+    async def test_submit_alpha_user_token_forbidden(self, client, test_user, auth_headers):
         with patch.dict(os.environ, {"WQ_BRAIN_EMAIL": "a@b.com", "WQ_BRAIN_PASSWORD": "pw"}, clear=False):
             resp = await client.post("/api/v1/wq-brain/nonexistent/submit-alpha", headers=auth_headers)
+            assert resp.status_code == 403
+
+    async def test_submit_alpha_task_not_found_for_admin(self, client):
+        admin_headers = {"Authorization": f"Bearer {create_admin_token()}"}
+        with patch.dict(os.environ, {"WQ_BRAIN_EMAIL": "a@b.com", "WQ_BRAIN_PASSWORD": "pw"}, clear=False):
+            resp = await client.post("/api/v1/wq-brain/nonexistent/submit-alpha", headers=admin_headers)
             assert resp.status_code == 404
 
     async def test_direct_submit_by_id_requires_admin(self, client, test_user, auth_headers):

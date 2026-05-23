@@ -28,7 +28,9 @@ Design 1–3 factor expressions based on research context and knowledge base:
 
 - **State hypothesis** (one sentence)
 - **Use valid operators** — 50+ available (see [Operator Reference](#operator-reference) below)
-- **Constraints**: max 300 characters, max 8 nesting levels, no forbidden variable names
+- **Research discipline**: prefer expressions under 300 characters and 8 nesting levels, with no forbidden
+  variable names. The parser hard limit is higher (`MAX_EXPRESSION_LENGTH=1000`, `MAX_DEPTH=100`), but
+  deeper expressions require extra justification.
 - **Design principles**:
   - Ratio > multiplication > addition: `rank(A/(B+eps))` > `rank(A)*rank(B)`
   - Nonlinear compression: `sign_power`, `tanh`, `sigmoid` for extreme values

@@ -7,6 +7,7 @@ import secrets
 import threading
 import time
 import uuid as _uuid_mod
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -34,6 +35,12 @@ _ADMIN_PASSWORD_PLACEHOLDERS = frozenset({
 _DEV_USER_ID = _uuid_mod.UUID("00000000-0000-0000-0000-000000000099")
 ADMIN_SYSTEM_USER_ID = _uuid_mod.UUID("00000000-0000-0000-0000-000000000003")
 ADMIN_SYSTEM_USER_EMAIL = "admin@system.internal"
+
+
+@dataclass(frozen=True)
+class AuthPrincipal:
+    user: User | None
+    is_admin: bool
 
 
 def is_auth_disabled() -> bool:
@@ -283,6 +290,43 @@ async def get_current_user(
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="用户不存在或已禁用")
     return user
+
+
+async def get_current_user_or_admin(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> AuthPrincipal:
+    """Authenticate a regular user/API key or an admin JWT."""
+    if is_auth_disabled():
+        return AuthPrincipal(user=_get_dev_user(), is_admin=True)
+
+    token = _extract_token(request)
+    if token.startswith(_API_KEY_PREFIX):
+        user = await _authenticate_api_key(token, db)
+        if not user or not user.is_active:
+            raise HTTPException(status_code=401, detail="无效的 API Key")
+        return AuthPrincipal(user=user, is_admin=False)
+
+    payload = decode_token(token)
+    token_type = payload.get("type")
+    if token_type == "admin":
+        return AuthPrincipal(user=None, is_admin=True)
+    if token_type != "access":
+        raise HTTPException(status_code=401, detail="无效的 Token 类型")
+
+    user_id_str = payload.get("sub")
+    if not user_id_str:
+        raise HTTPException(status_code=401, detail="无效的 Token")
+    try:
+        user_id = UUID(user_id_str)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=401, detail="无效的 Token")
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="用户不存在或已禁用")
+    return AuthPrincipal(user=user, is_admin=False)
 
 
 GUEST_USER_ID = "00000000-0000-0000-0000-000000000001"

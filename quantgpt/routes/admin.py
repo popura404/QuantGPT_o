@@ -95,18 +95,17 @@ async def admin_overview(db: AsyncSession = Depends(get_db)):
         {"name": row[0], "value": row[1]} for row in status_dist_q.all()
     ]
 
-    # Daily task counts for last 7 days (for trend chart)
+    # Daily task counts for last 7 days (for trend chart). Aggregate in Python
+    # so the default SQLite deployment does not depend on PostgreSQL date_trunc.
     seven_days_ago = (now - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
     daily_q = await db.execute(
-        select(
-            func.date_trunc("day", Task.created_at).label("day"),
-            func.count(Task.id),
-        )
+        select(Task.created_at)
         .where(Task.created_at >= seven_days_ago)
-        .group_by("day")
-        .order_by("day")
     )
-    daily_map = {row[0].strftime("%m-%d"): row[1] for row in daily_q.all()}
+    daily_map: dict[str, int] = {}
+    for (created_at,) in daily_q.all():
+        key = created_at.strftime("%m-%d")
+        daily_map[key] = daily_map.get(key, 0) + 1
     daily_tasks = []
     for i in range(7):
         d = seven_days_ago + timedelta(days=i)
@@ -116,15 +115,13 @@ async def admin_overview(db: AsyncSession = Depends(get_db)):
     # Daily new user registrations for last 30 days (for user trend chart)
     thirty_days_ago = (now - timedelta(days=29)).replace(hour=0, minute=0, second=0, microsecond=0)
     daily_user_q = await db.execute(
-        select(
-            func.date_trunc("day", User.created_at).label("day"),
-            func.count(User.id),
-        )
+        select(User.created_at)
         .where(User.created_at >= thirty_days_ago)
-        .group_by("day")
-        .order_by("day")
     )
-    daily_user_map = {row[0].strftime("%m-%d"): row[1] for row in daily_user_q.all()}
+    daily_user_map: dict[str, int] = {}
+    for (created_at,) in daily_user_q.all():
+        key = created_at.strftime("%m-%d")
+        daily_user_map[key] = daily_user_map.get(key, 0) + 1
 
     # Cumulative user count before the 30-day window
     base_user_q = await db.execute(

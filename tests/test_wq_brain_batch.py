@@ -114,6 +114,40 @@ class TestBatchSubmitCreatesTask:
             data = resp.json()
             assert data["total_combinations"] == 1 * 2 * 1 * 2
 
+    async def test_auto_submit_requires_admin(self, client, test_user, auth_headers):
+        with patch.dict(os.environ, {"WQ_BRAIN_EMAIL": "a@b.com", "WQ_BRAIN_PASSWORD": "pw"}):
+            resp = await client.post("/api/v1/wq-brain/batch-submit", json={
+                "expression": "rank(close)",
+                "tag": "test-agent",
+                "auto_submit": True,
+            }, headers=auth_headers)
+
+        assert resp.status_code == 403
+
+    async def test_auto_submit_allows_admin(self, client):
+        admin_headers = {"Authorization": f"Bearer {create_admin_token()}"}
+        with (
+            patch.dict(os.environ, {"WQ_BRAIN_EMAIL": "a@b.com", "WQ_BRAIN_PASSWORD": "pw"}),
+            patch("quantgpt.routes.wq_brain_batch._run_batch_task"),
+        ):
+            resp = await client.post("/api/v1/wq-brain/batch-submit", json={
+                "expression": "rank(close)",
+                "tag": "test-agent",
+                "auto_submit": True,
+            }, headers=admin_headers)
+
+        assert resp.status_code == 202
+
+    async def test_submission_override_requires_admin(self, client, test_user, auth_headers):
+        with patch.dict(os.environ, {"WQ_BRAIN_EMAIL": "a@b.com", "WQ_BRAIN_PASSWORD": "pw"}):
+            resp = await client.post("/api/v1/wq-brain/batch-submit", json={
+                "expression": "rank(close)",
+                "tag": "test-agent",
+                "submission_override_reason": "manual review",
+            }, headers=auth_headers)
+
+        assert resp.status_code == 403
+
 
 class TestBatchSubmitByIdAuth:
     async def test_batch_submit_by_id_requires_admin(self, client, test_user, auth_headers):
@@ -201,5 +235,4 @@ class TestBatchRequestModel:
 
         assert req.expressions_by_alpha_id == {"alpha-1": "rank(close)"}
         assert req.submission_override_reason == "remote-only expression"
-
 

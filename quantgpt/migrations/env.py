@@ -3,6 +3,7 @@
 import asyncio
 import os
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
 from sqlalchemy import pool
@@ -18,6 +19,14 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 # Override URL from environment if available
+_env_file = Path(__file__).resolve().parents[2] / ".env"
+if _env_file.is_file():
+    for line in _env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, _, val = line.partition("=")
+            os.environ.setdefault(key.strip(), val.strip())
+
 db_url = os.environ.get("DATABASE_URL")
 if db_url:
     config.set_main_option("sqlalchemy.url", db_url)

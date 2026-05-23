@@ -12,8 +12,9 @@ baseline is the commit chain ending at:
 
 ## Authorized Post-MVP Scope
 
-This run is authorized to complete the PMVP execution packages from
-`docs/quantgpt_strategy_framework_plan.md`:
+This document records the PMVP execution packages directly. The earlier planning
+draft `docs/quantgpt_strategy_framework_plan.md` is no longer part of the
+repository; use the table below as the current scope reference:
 
 | Package | Deliverable |
 |---|---|

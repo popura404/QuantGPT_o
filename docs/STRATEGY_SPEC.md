@@ -198,8 +198,10 @@ Post-MVP strategy capabilities:
 - The browser `策略工作台` can instantiate templates, validate JSON, submit a
   strategy task, track status, display `strategy_score`, metrics, latest
   holdings, open the generated HTML report, and export candidate signals.
-- `summary_json` is a server-side artifact path. Frontend clients should use
-  `strategy_result` for on-page summaries and `report_url` for report access.
+- `summary_json` is a server-side artifact path that may be returned for
+  persistence/audit tracking. Frontend clients should use `strategy_result` for
+  on-page summaries and `report_url` for report access, not expose
+  `summary_json` as a primary download link.
 - SignalExport is `strategy_signal.v1`, a research candidate format requiring
   promotion-ready provenance, `experiment_id`, `factor_hash`, and
   `data_snapshot_id`. It is not an order protocol and still contains no broker,
@@ -295,6 +297,7 @@ REST endpoints:
 - `GET /api/v1/strategy/markets`
 - `GET /api/v1/strategy/data-fields?market=a_share`
 - `GET /api/v1/strategy/templates`
+- `GET /api/v1/strategy/templates/{template_id}`
 - `POST /api/v1/strategy/templates/{template_id}/instantiate`
 - `POST /api/v1/strategy/validate`
 - `POST /api/v1/strategy/backtest`
@@ -304,12 +307,15 @@ REST endpoints:
 - `POST /api/v1/strategy/rolling-validation`
 - `POST /api/v1/strategy/optimize`
 - `POST /api/v1/strategy/specs`
+- `GET /api/v1/strategy/specs`
+- `GET /api/v1/strategy/specs/{strategy_id}`
 - `POST /api/v1/strategy/runs`
+- `GET /api/v1/strategy/runs`
 
 REST v0 does not add separate score/report endpoints. The async backtest task
 result contains `strategy_result`, `strategy_score`, and `report_url`.
-`summary_json` remains a server-side artifact path rather than a task-result
-field for frontend clients.
+`summary_json` remains a server-side artifact path for persistence/audit use;
+frontend clients should prefer `strategy_result` and `report_url`.
 
 ## MVP Non-Goals
 

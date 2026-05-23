@@ -48,29 +48,6 @@ def eval_factor_expression(df: pd.DataFrame, expression: str) -> pd.Series:
         except (ValueError, TypeError):
             continue
 
-    # Compute derived columns
-    if "vwap" not in columns and "amount" in columns and "volume" in columns:
-        vol = columns["volume"]
-        amt = columns["amount"]
-        with np.errstate(divide="ignore", invalid="ignore"):
-            columns["vwap"] = np.where(vol > 0, amt / vol, columns.get("close", np.full(len(df), np.nan)))
-
-    if "returns" not in columns and "close" in columns:
-        close = columns["close"]
-        ret = np.empty_like(close)
-        ret[0] = np.nan
-        ret[1:] = (close[1:] - close[:-1]) / close[:-1]
-        columns["returns"] = ret
-
-    # Pass trade_date as numeric column so Rust can build proper
-    # cross-sectional groups (data is sorted by stock_code, not trade_date).
-    if "trade_date" in df.columns:
-        td = df["trade_date"]
-        if hasattr(td.dtype, "name") and "datetime" in td.dtype.name:
-            columns["__date__"] = td.values.astype("int64").astype(np.float64)
-        else:
-            columns["__date__"] = pd.to_datetime(td).values.astype("int64").astype(np.float64)
-
     # Build stock group offsets (data is sorted by stock_code, trade_date)
     stock_offsets = []
     date_offsets = []
@@ -83,6 +60,25 @@ def eval_factor_expression(df: pd.DataFrame, expression: str) -> pd.Series:
                 stock_offsets.append((start, i))
                 start = i
         stock_offsets.append((start, len(sc)))
+
+    # Compute derived columns
+    if "vwap" not in columns and "amount" in columns and "volume" in columns:
+        vol = columns["volume"]
+        amt = columns["amount"]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            columns["vwap"] = np.where(vol > 0, amt / vol, columns.get("close", np.full(len(df), np.nan)))
+
+    if "returns" not in columns and "close" in columns:
+        columns["returns"] = _compute_grouped_returns(columns["close"], stock_offsets)
+
+    # Pass trade_date as numeric column so Rust can build proper
+    # cross-sectional groups (data is sorted by stock_code, not trade_date).
+    if "trade_date" in df.columns:
+        td = df["trade_date"]
+        if hasattr(td.dtype, "name") and "datetime" in td.dtype.name:
+            columns["__date__"] = td.values.astype("int64").astype(np.float64)
+        else:
+            columns["__date__"] = pd.to_datetime(td).values.astype("int64").astype(np.float64)
 
     try:
         result = engine.eval_expression(expression, columns, stock_offsets, date_offsets)
@@ -105,3 +101,17 @@ def compute_metrics_rust(daily_returns: pd.Series, periods_per_year: int = 252) 
         return dict(engine.compute_metrics(rets, float(periods_per_year)))
     except Exception:
         return {}
+
+
+def _compute_grouped_returns(close: np.ndarray, stock_offsets: list[tuple[int, int]]) -> np.ndarray:
+    ret = np.full(len(close), np.nan, dtype=np.float64)
+    groups = stock_offsets or [(0, len(close))]
+    for start, end in groups:
+        if end - start < 2:
+            continue
+        prev = close[start:end - 1]
+        curr = close[start + 1:end]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            values = np.where(prev != 0, (curr - prev) / prev, np.nan)
+        ret[start + 1:end] = values
+    return ret

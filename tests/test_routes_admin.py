@@ -91,7 +91,6 @@ class TestAdminOverview:
         resp = await client.get("/api/v1/admin/overview")
         assert resp.status_code == 401
 
-    @pytest.mark.skip(reason="admin_overview uses date_trunc which is PostgreSQL-only")
     async def test_admin_can_access(self, client, test_user):
         token = create_admin_token()
         headers = {"Authorization": f"Bearer {token}"}

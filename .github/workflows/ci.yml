@@ -44,7 +44,7 @@ jobs:
           vulns = data.get('dependencies', [])
           own_pkgs = {'quantgpt','pandas','numpy','scipy','baostock','quantstats',
                       'mcp','uvicorn','fastapi','openai','sqlalchemy','aiosqlite',
-                      'alembic','pyjwt','bcrypt','aiosmtplib','httpx','akshare',
+                      'alembic','pyjwt','bcrypt','aiosmtplib','httpx','requests','akshare',
                       'apscheduler','starlette','python-multipart'}
           critical = [v for v in vulns if v.get('name','').lower() in own_pkgs and v.get('vulns')]
           if critical:

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth import get_current_user, require_admin
+from ..auth import ADMIN_SYSTEM_USER_ID, AuthPrincipal, get_current_user, get_current_user_or_admin, require_admin
 from ..db import get_db
 from ..models import User
 from ..task_store import (
@@ -31,6 +31,10 @@ router = APIRouter(prefix="/api/v1/wq-brain", tags=["wq_brain"])
 
 _safe_float = safe_float
 _fitness_to_grade = fitness_to_grade
+
+
+def _requires_formal_submit_privilege(auto_submit: bool, override_reason: str | None) -> bool:
+    return bool(auto_submit or (override_reason or "").strip())
 
 
 class WQBrainSubmitRequest(BaseModel):
@@ -157,11 +161,13 @@ async def list_platform_alphas(
 async def wq_brain_submit(
     req: WQBrainSubmitRequest,
     request: Request,
-    user: User = Depends(get_current_user),
+    principal: AuthPrincipal = Depends(get_current_user_or_admin),
 ):
     """提交因子表达式到 WorldQuant BRAIN 平台进行模拟。异步执行，返回 task_id。模拟通常需要 2-5 分钟，用 GET /api/v1/tasks/{task_id} 轮询结果。结果包含 Sharpe、Fitness、Turnover 等 IS 指标。"""
     if not is_configured(req.account):
         raise HTTPException(status_code=503, detail=f"WQ BRAIN 未配置 (account={req.account}) — 请设置对应的环境变量")
+    if _requires_formal_submit_privilege(req.auto_submit, req.submission_override_reason) and not principal.is_admin:
+        raise HTTPException(status_code=403, detail="auto_submit 和 submission_override_reason 仅允许管理员使用")
 
     client_ip = request.client.host if request.client else "unknown"
     if not check_rate_limit(client_ip):
@@ -171,7 +177,7 @@ async def wq_brain_submit(
         raise HTTPException(status_code=503, detail="当前任务已满，请稍后再试")
 
     task_id = uuid.uuid4().hex[:12]
-    user_id = str(user.id)
+    user_id = str(ADMIN_SYSTEM_USER_ID if principal.is_admin or principal.user is None else principal.user.id)
 
     with tasks_lock:
         tasks[task_id] = {
@@ -246,8 +252,9 @@ async def list_submitted_alphas(
 async def submit_alpha_from_task(
     task_id: str,
     submission_override_reason: str | None = None,
-    user: User = Depends(get_current_user),
+    admin: bool = Depends(require_admin),
 ):
+    _ = admin
     if not is_configured():
         raise HTTPException(status_code=503, detail="WQ BRAIN 未配置 — 无可用账号")
 
@@ -255,9 +262,9 @@ async def submit_alpha_from_task(
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
 
-    user_id = str(user.id)
-    if task.get("user_id") != user_id:
-        raise HTTPException(status_code=403, detail="无权操作此任务")
+    user_id = str(task.get("user_id") or "")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="任务缺少用户归属，无法提交")
 
     result = task.get("result", {})
     alpha_id = result.get("alpha_id")

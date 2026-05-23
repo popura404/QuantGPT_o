@@ -29,11 +29,20 @@ fi
 
 # Build frontend (set -e ensures we exit on failure)
 echo "Building frontend..."
-cd frontend && npm run build --silent && cd ..
+cd frontend
+if [ ! -d node_modules ]; then
+  npm ci
+fi
+npm run build --silent
+cd ..
 
 # Start server
 echo "Starting QuantGPT on :8003..."
 mkdir -p logs
-nohup python3 -m quantgpt --transport http > logs/server.log 2>&1 &
+PYTHON_BIN="python3"
+if [ -x ".venv/bin/python" ]; then
+  PYTHON_BIN=".venv/bin/python"
+fi
+nohup "$PYTHON_BIN" -u -m quantgpt --transport http </dev/null > logs/server.log 2>&1 &
 echo "PID: $!"
 echo "Logs: logs/server.log"

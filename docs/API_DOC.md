@@ -35,10 +35,10 @@
 bash restart.sh   # 默认端口 8003
 
 # MCP 服务 (stdio)
-python -m quantgpt
+.venv/bin/python -m quantgpt
 
 # 数据预热
-python -m quantgpt --prefetch hs300 csi500
+.venv/bin/python -m quantgpt --prefetch hs300 csi500
 ```
 
 ### 环境变量
@@ -166,9 +166,22 @@ HTTP MCP 端点不复用用户 JWT。认证开启时，`/mcp` 和 `/mcp-sse` 需
 {
   "id": "uuid",
   "email": "user@example.com",
+  "nickname": "user",
+  "has_password": true,
+  "subscribe_weekly": false,
   "created_at": "2026-01-01T00:00:00"
 }
 ```
+
+### 其他认证端点
+
+| Endpoint | 说明 |
+|---|---|
+| `POST /api/v1/auth/guest-token` | 生成 guest JWT；guest 回测仍受 `QUANTGPT_ALLOW_GUEST_BACKTEST` 控制 |
+| `POST /api/v1/auth/login` | 邮箱 + 密码登录 |
+| `POST /api/v1/auth/set-password` | 已登录用户设置或修改密码 |
+| `POST /api/v1/auth/reset-password` | 使用邮箱验证码重置密码 |
+| `PATCH /api/v1/auth/subscription` | 更新周报订阅开关 |
 
 ---
 
@@ -676,8 +689,9 @@ anonymous 和 guest token 返回 401，且不会创建不可追踪策略任务�
 }
 ```
 
-`summary_json` 是服务端内部产物路径，不会出现在任务结果中。客户端应读取
-`strategy_result` 摘要字段，并通过 `report_url` 访问 HTML 报告。
+`summary_json` 是服务端内部产物路径，当前会随任务结果返回用于后端持久化追踪。
+前端不应把它作为主要下载入口；客户端应读取 `strategy_result` 摘要字段，并通过
+`report_url` 访问 HTML 报告。
 
 ### Post-MVP Strategy Endpoints
 
@@ -1014,14 +1028,19 @@ preflight 通过，或显式提供 `submission_override_reason` 记录豁免理�
 | Endpoint | 认证 | 说明 |
 |----------|------|------|
 | `GET /api/v1/wq-brain/status` | 公开 | 检查 WQ 账号配置和提交阈值 |
+| `GET /api/v1/wq-brain/user-info` | 管理员 | 查询指定 WQ 账号信息 |
 | `POST /api/v1/wq-brain/submit` | 登录 | 提交表达式到 WQ BRAIN 远程模拟；异步返回 `task_id` |
 | `POST /api/v1/wq-brain/batch-submit` | 登录 | 对 region/delay/universe/neutralization 网格做批量远程模拟，组合数上限 36 |
 | `POST /api/v1/wq-brain/{task_id}/submit-alpha` | 登录且任务归属本人 | 将已有模拟任务的 `alpha_id` 正式提交；需要 preflight 或 override |
 | `POST /api/v1/wq-brain/submit-by-id/{alpha_id}` | 管理员 | 按平台 alpha ID 正式提交；需要表达式溯源 preflight 或 override |
 | `POST /api/v1/wq-brain/batch-submit-by-id` | 管理员 | 批量提交已模拟 alpha，最多 50 个；需要 preflight 或 override |
+| `POST /api/v1/wq-brain/batch-alpha-status` | 管理员 | 批量查询平台 alpha 状态 |
+| `POST /api/v1/wq-brain/batch-finalize` | 管理员 | 批量查询提交后的 SC 最终状态 |
 | `GET /api/v1/wq-brain/submitted-alphas` | 登录 | 查询当前用户已记录的正式提交 |
 | `GET /api/v1/wq-brain/platform-alphas` | 管理员 | 查询平台侧 alpha 列表 |
 | `GET /api/v1/wq-brain/alpha-status/{alpha_id}` | 管理员 | 查询平台侧 alpha 状态和 SC 检查结果 |
+| `DELETE /api/v1/wq-brain/alpha/{alpha_id}` | 管理员 | 删除/隐藏平台 alpha |
+| `POST /api/v1/wq-brain/alpha/{alpha_id}/unhide` | 管理员 | 恢复隐藏的 alpha |
 
 `submit` / `batch-submit` 请求体支持 `auto_submit`，但该字段只会在 WQ 检查通过且本地
 preflight/override 允许时触发正式提交。`alt` 账号只能用于模拟，正式提交只允许 `primary`。
@@ -1089,7 +1108,8 @@ frozen candidate 的最终验收。普通 `auto_full` 回测结果会标记为 `
 {
   "mcpServers": {
     "quantgpt": {
-      "command": "python",
+      "type": "stdio",
+      "command": "/path/to/QuantGPT_o/.venv/bin/python",
       "args": ["-m", "quantgpt"],
       "cwd": "/path/to/QuantGPT_o"
     }

@@ -55,6 +55,31 @@ class TestEvalFactorExpression:
         result = eval_factor_expression(df, "close")
         assert list(result.index) == list(df.index)
 
+    def test_derived_returns_do_not_cross_stock_boundaries(self, monkeypatch):
+        from quantgpt import rust_bridge
+
+        class FakeEngine:
+            @staticmethod
+            def eval_expression(expression, columns, stock_offsets, date_offsets):
+                assert stock_offsets == [(0, 3), (3, 6)]
+                return columns["returns"]
+
+        df = pd.DataFrame({
+            "trade_date": pd.to_datetime([
+                "2024-01-01", "2024-01-02", "2024-01-03",
+                "2024-01-01", "2024-01-02", "2024-01-03",
+            ]),
+            "stock_code": ["A", "A", "A", "B", "B", "B"],
+            "close": [10.0, 11.0, 12.1, 100.0, 90.0, 99.0],
+        })
+        monkeypatch.setattr(rust_bridge, "RUST_ENABLED", True)
+        monkeypatch.setattr(rust_bridge, "_engine", FakeEngine())
+
+        result = rust_bridge.eval_factor_expression(df, "returns")
+
+        expected = pd.Series([np.nan, 0.1, 0.1, np.nan, -0.1, 0.1], index=df.index, name="factor_value")
+        pd.testing.assert_series_equal(result, expected)
+
 
 class TestComputeMetricsRust:
     @pytest.mark.skipif(RUST_AVAILABLE, reason="Tests fallback path only")
