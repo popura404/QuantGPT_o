@@ -52,6 +52,17 @@ make test
 Runs the full Python pytest suite with fail-fast behavior.
 
 ```bash
+.venv/bin/pytest tests/ -x -q --cov=quantgpt --cov-report=term-missing --cov-fail-under=33
+```
+
+Runs the CI-style Python suite with coverage reporting. The `--cov-fail-under=33`
+flag is a hard minimum line-coverage gate: CI fails when total measured
+`quantgpt/` line coverage is below 33%. A result such as 59.27% means the suite
+executed 59.27% of measured Python source lines and cleared the CI threshold; it
+does not mean 59.27% of behavior, requirements, branches, external integrations,
+or UI states are fully verified.
+
+```bash
 make lint
 ```
 
@@ -105,8 +116,11 @@ GitHub Actions currently runs the same core gates in separate jobs:
 
 - Ruff and Pyright for Python.
 - `make engine-check` for the Rust engine.
-- `pytest tests/ -x -q --cov=quantgpt` with coverage enforcement.
-- `pip-audit` for direct dependency vulnerabilities.
+- `pytest tests/ -x -q --cov=quantgpt --cov-report=term-missing --cov-fail-under=33`
+  with coverage enforcement.
+- `pip-audit --skip-editable` for direct dependency vulnerabilities. The local
+  `quantgpt` package is installed editable in CI, so it is skipped as a package
+  lookup target while installed third-party dependencies are still audited.
 - `cd frontend && npm ci && npm run build` for the React app.
 
 Before merging broad backend, frontend, or engine changes, prefer `make check`
