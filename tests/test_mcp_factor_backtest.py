@@ -246,6 +246,170 @@ async def test_legacy_score_factor_keeps_oos_and_data_quality_omitted(mcp_backte
 
 
 @pytest.mark.asyncio
+async def test_score_factor_defaults_to_cache_only_market_data(monkeypatch):
+    calls = []
+
+    async def fake_start(*args, **kwargs):
+        return "task-1"
+
+    async def fake_complete(*args, **kwargs):
+        return None
+
+    async def fake_record_failure(*args, **kwargs):
+        return {}
+
+    def fake_fetch(universe, start_date, end_date, allow_remote_fetch=True, universe_date=None):
+        calls.append((allow_remote_fetch, universe_date))
+        return None, []
+
+    monkeypatch.setattr(mcp_server, "start_mcp_task", fake_start)
+    monkeypatch.setattr(mcp_server, "complete_mcp_task", fake_complete)
+    monkeypatch.setattr(mcp_server, "_record_mcp_experiment_failure", fake_record_failure)
+    monkeypatch.setattr(mcp_server, "_fetch_data_for_market", fake_fetch)
+
+    cache_only_result = json.loads(await mcp_server.score_factor("close", universe="small_scale"))
+    remote_result = json.loads(await mcp_server.score_factor(
+        "close",
+        universe="small_scale",
+        allow_remote_fetch=True,
+    ))
+
+    assert calls == [(False, "2023-01-01"), (True, "2023-01-01")]
+    assert cache_only_result["error_code"] == "MARKET_DATA_UNAVAILABLE"
+    assert "allow_remote_fetch=true" in cache_only_result["hint"]
+    assert remote_result["hint"] == "Check the universe/date range and upstream data provider availability."
+
+
+@pytest.mark.asyncio
+async def test_run_backtest_passes_explicit_universe_date(monkeypatch):
+    captured = {}
+
+    async def fake_start(*args, **kwargs):
+        return "task-1"
+
+    async def fake_complete(*args, **kwargs):
+        return None
+
+    async def fake_record_failure(*args, **kwargs):
+        return {}
+
+    def fake_fetch(universe, start_date, end_date, allow_remote_fetch=True, universe_date=None):
+        captured["universe_date"] = universe_date
+        return None, []
+
+    monkeypatch.setattr(mcp_server, "start_mcp_task", fake_start)
+    monkeypatch.setattr(mcp_server, "complete_mcp_task", fake_complete)
+    monkeypatch.setattr(mcp_server, "_record_mcp_experiment_failure", fake_record_failure)
+    monkeypatch.setattr(mcp_server, "_fetch_data_for_market", fake_fetch)
+
+    result = json.loads(await mcp_server.run_backtest(
+        "close",
+        universe="csi500",
+        start_date="2024-01-02",
+        end_date="2024-12-31",
+        universe_date="2024-06-28",
+    ))
+
+    assert captured["universe_date"] == "2024-06-28"
+    assert result["error_code"] == "MARKET_DATA_UNAVAILABLE"
+
+
+def _cache_plan(fetch_required_count: int) -> dict:
+    return {
+        "fetch_required_count": fetch_required_count,
+        "missing_stock_count": fetch_required_count,
+        "partial_stock_count": 0,
+        "fetch_required_stock_codes_sample": ["sh.600000"],
+        "missing_stock_codes_sample": ["sh.600000"],
+        "partial_stock_codes_sample": [],
+    }
+
+
+def test_fetch_data_for_market_blocks_large_remote_prefetch(monkeypatch):
+    monkeypatch.setenv("QUANTGPT_MCP_REMOTE_FETCH_STOCK_LIMIT", "50")
+    monkeypatch.setattr(mcp_server, "get_universe", lambda *args, **kwargs: [f"sh.600{i:03d}" for i in range(51)])
+    monkeypatch.setattr(mcp_server, "plan_stock_cache_fetch", lambda *args, **kwargs: _cache_plan(51))
+    monkeypatch.setattr(mcp_server, "list_universe_cache_months", lambda universe: ["2026-05"])
+
+    class FailFetcher:
+        def fetch_stocks(self, *_args, **_kwargs):
+            raise AssertionError("fetch_stocks should not run when prefetch guard blocks")
+
+    monkeypatch.setattr(mcp_server, "MarketDataFetcher", FailFetcher)
+
+    with pytest.raises(mcp_server._RemotePrefetchRequired) as exc_info:
+        mcp_server._fetch_data_for_market(
+            "csi500",
+            "2024-01-01",
+            "2024-12-31",
+            allow_remote_fetch=True,
+            universe_date="2024-06-28",
+        )
+
+    payload = exc_info.value.payload
+    assert payload["error_code"] == "REMOTE_PREFETCH_REQUIRED"
+    assert payload["remote_fetch_stock_count"] == 51
+    assert payload["threshold"] == 50
+    assert payload["available_cache_months"] == ["2026-05"]
+
+
+def test_fetch_data_for_market_allows_remote_prefetch_within_limit(monkeypatch):
+    calls = {}
+    codes = [f"sh.600{i:03d}" for i in range(50)]
+    monkeypatch.setenv("QUANTGPT_MCP_REMOTE_FETCH_STOCK_LIMIT", "50")
+    monkeypatch.setattr(mcp_server, "get_universe", lambda *args, **kwargs: codes)
+    monkeypatch.setattr(mcp_server, "plan_stock_cache_fetch", lambda *args, **kwargs: _cache_plan(50))
+
+    class FakeFetcher:
+        def fetch_stocks(self, stock_codes, start_date, end_date, cache_only=None):
+            calls["stock_count"] = len(stock_codes)
+            calls["cache_only"] = cache_only
+            return _market_df()
+
+    monkeypatch.setattr(mcp_server, "MarketDataFetcher", FakeFetcher)
+
+    market_df, stock_codes = mcp_server._fetch_data_for_market(
+        "csi500",
+        "2024-01-01",
+        "2024-12-31",
+        allow_remote_fetch=True,
+        universe_date="2024-06-28",
+    )
+
+    assert market_df is not None
+    assert stock_codes == codes
+    assert calls == {"stock_count": 50, "cache_only": False}
+
+
+@pytest.mark.asyncio
+async def test_score_factor_returns_remote_prefetch_required(monkeypatch):
+    async def fake_start(*args, **kwargs):
+        return "task-1"
+
+    async def fake_complete(*args, **kwargs):
+        return None
+
+    async def fake_record_failure(*args, **kwargs):
+        return {}
+
+    monkeypatch.setenv("QUANTGPT_MCP_REMOTE_FETCH_STOCK_LIMIT", "50")
+    monkeypatch.setattr(mcp_server, "start_mcp_task", fake_start)
+    monkeypatch.setattr(mcp_server, "complete_mcp_task", fake_complete)
+    monkeypatch.setattr(mcp_server, "_record_mcp_experiment_failure", fake_record_failure)
+    monkeypatch.setattr(mcp_server, "get_universe", lambda *args, **kwargs: [f"sh.600{i:03d}" for i in range(51)])
+    monkeypatch.setattr(mcp_server, "plan_stock_cache_fetch", lambda *args, **kwargs: _cache_plan(51))
+
+    result = json.loads(await mcp_server.score_factor(
+        "close",
+        universe="csi500",
+        allow_remote_fetch=True,
+    ))
+
+    assert result["error_code"] == "REMOTE_PREFETCH_REQUIRED"
+    assert result["remote_fetch_stock_count"] == 51
+
+
+@pytest.mark.asyncio
 async def test_oos_score_factor_returns_oos_first_score_and_data_quality(mcp_backtest_fakes):
     result = json.loads(await mcp_server.score_factor(
         "close",

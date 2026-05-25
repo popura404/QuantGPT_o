@@ -156,17 +156,17 @@ def get_industry_data(stock_codes: list) -> pd.DataFrame | None:
     except ImportError:
         logger.warning("baostock not installed, cannot fetch industry data")
         return None
+    from .market_data import _baostock_call_guard, _baostock_login, _baostock_logout
 
     results = []
     with _bs_lock:
         try:
-            lg = bs.login()
-            if lg.error_code != "0":
-                return None
+            _baostock_login()
 
             for code in stock_codes:
                 try:
-                    rs = bs.query_stock_industry(code=code)
+                    with _baostock_call_guard():
+                        rs = bs.query_stock_industry(code=code)
                     while rs.error_code == "0" and rs.next():
                         row = rs.get_row_data()
                         if len(row) >= 4:
@@ -179,10 +179,7 @@ def get_industry_data(stock_codes: list) -> pd.DataFrame | None:
                 except Exception:
                     continue
         finally:
-            try:
-                bs.logout()
-            except Exception:
-                pass
+            _baostock_logout()
 
     if not results:
         return None

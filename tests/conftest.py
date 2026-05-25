@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 os.environ["AUTH_DISABLED"] = "false"
 os.environ["QUANTGPT_TASK_BACKEND"] = "thread"
+os.environ.setdefault("QUANTGPT_CACHE_ONLY", "true")
+os.environ.setdefault("QUANTGPT_BAOSTOCK_TIMEOUT", "1")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-for-ci-only-do-not-use-in-production")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite://")
 os.environ.setdefault("QUANTGPT_ADMIN_PASSWORD", "test-admin-pw")

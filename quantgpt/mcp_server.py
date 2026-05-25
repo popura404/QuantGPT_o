@@ -14,8 +14,10 @@ Provides tools for Agent-driven backtest workflow:
 import asyncio
 import json
 import logging
+import os
 import sys
 import traceback
+from datetime import date
 from typing import Literal
 
 import pandas as pd
@@ -54,8 +56,20 @@ from .experiment_ledger import (
 from .expression_parser import __doc__ as _expr_module_doc
 from .expression_parser import parse_expression
 from .factor_values import compute_factor_values_payload as _compute_factor_values_payload
+from .factor_values import validate_factor_values_request as _validate_factor_values_request
 from .fundamental_data import ALL_FUNDAMENTAL_NAMES
-from .market_data import BENCHMARK_CODES, UNIVERSES, MarketDataFetcher, fetch_benchmark_returns, get_universe
+from .market_data import (
+    BENCHMARK_CODES,
+    UNIVERSES,
+    MarketDataFetcher,
+    describe_stock_cache,
+    fetch_benchmark_returns,
+    get_universe,
+    list_universe_cache_months,
+    plan_stock_cache_fetch,
+    read_cached_universe,
+    universe_cache_path,
+)
 from .mcp_task_helper import complete_mcp_task, start_mcp_task
 from .report import generate_report
 from .statistics.factor_similarity import factor_similarity_report as _factor_similarity_report
@@ -137,6 +151,8 @@ mcp = FastMCP(
     "quantgpt",
     instructions=(
         "QuantGPT — A 股因子回测服务。先用 list_operators 了解可用算子。"
+        "单股研究先用 get_stock_history/check_market_cache 读本地缓存，"
+        "不要直接把单股问题升级为全 CSI500 因子回测。"
         "用于研究结论或候选选择时，score_factor/run_backtest 默认走 OOS selection："
         "train 定方向，valid 选候选，test 仅在 validation_stage=final 时最终验收。"
     ),
@@ -155,17 +171,147 @@ def _enrich_with_fundamentals(expression: str, market_df, stock_codes: list, sta
     return enrich_market_data(market_df, fund_vars, stock_codes, start_date, end_date)
 
 
-def _fetch_data_for_market(universe: str, start_date: str, end_date: str):
+def _market_data_unavailable_result(allow_remote_fetch: bool) -> dict:
+    result = {"error_code": "MARKET_DATA_UNAVAILABLE", "error": "No market data available."}
+    if allow_remote_fetch:
+        result["hint"] = "Check the universe/date range and upstream data provider availability."
+    else:
+        result["hint"] = (
+            "MCP factor tools default to local-cache-only data access to avoid long silent agent calls. "
+            "Prewarm data first, choose a cached date range, or pass allow_remote_fetch=true for a blocking remote fetch."
+        )
+    return result
+
+
+class _RemotePrefetchRequired(RuntimeError):
+    def __init__(self, payload: dict):
+        super().__init__(payload.get("error") or payload.get("error_code") or "REMOTE_PREFETCH_REQUIRED")
+        self.payload = payload
+
+
+def _remote_fetch_stock_limit() -> int:
+    raw = os.environ.get("QUANTGPT_MCP_REMOTE_FETCH_STOCK_LIMIT", "50")
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Invalid QUANTGPT_MCP_REMOTE_FETCH_STOCK_LIMIT=%r, using 50", raw)
+        return 50
+    return max(0, value)
+
+
+def _suggest_prewarm_command(universe: str, start_date: str, end_date: str) -> str:
+    return (
+        f".venv/bin/python scripts/prewarm.py --universe {universe} --start {start_date} --end {end_date} "
+        "--skip-fundamentals --skip-dividends --skip-factors"
+    )
+
+
+def _remote_prefetch_required_result(
+    *,
+    universe: str,
+    universe_date: str,
+    start_date: str,
+    end_date: str,
+    plan: dict,
+    threshold: int,
+) -> dict:
+    return {
+        "error_code": "REMOTE_PREFETCH_REQUIRED",
+        "error": (
+            "Remote market-data fetch would require too many stock cache fills for a normal MCP call."
+        ),
+        "hint": (
+            "Run an explicit cache prewarm first, narrow the date range/universe, or raise "
+            "QUANTGPT_MCP_REMOTE_FETCH_STOCK_LIMIT for this environment."
+        ),
+        "universe": universe,
+        "universe_date": universe_date,
+        "start_date": start_date,
+        "end_date": end_date,
+        "remote_fetch_stock_count": plan["fetch_required_count"],
+        "missing_stock_count": plan["missing_stock_count"],
+        "partial_stock_count": plan["partial_stock_count"],
+        "threshold": threshold,
+        "available_cache_months": list_universe_cache_months(universe),
+        "fetch_required_stock_codes_sample": plan["fetch_required_stock_codes_sample"],
+        "missing_stock_codes_sample": plan["missing_stock_codes_sample"],
+        "partial_stock_codes_sample": plan["partial_stock_codes_sample"],
+        "suggested_prewarm_command": _suggest_prewarm_command(universe, start_date, end_date),
+    }
+
+
+def _raise_if_remote_prefetch_required(
+    *,
+    universe: str,
+    universe_date: str,
+    start_date: str,
+    end_date: str,
+    stock_codes: list[str],
+) -> None:
+    threshold = _remote_fetch_stock_limit()
+    plan = plan_stock_cache_fetch(stock_codes, start_date, end_date)
+    if plan["fetch_required_count"] > threshold:
+        raise _RemotePrefetchRequired(_remote_prefetch_required_result(
+            universe=universe,
+            universe_date=universe_date,
+            start_date=start_date,
+            end_date=end_date,
+            plan=plan,
+            threshold=threshold,
+        ))
+
+
+async def _record_market_data_prefetch_required(
+    *,
+    tool_name: str,
+    task_id: str | None,
+    expression: str,
+    params: dict,
+    exc: _RemotePrefetchRequired,
+) -> str:
+    result = dict(exc.payload)
+    result.update(await _record_mcp_experiment_failure(
+        tool_name=tool_name,
+        task_id=task_id,
+        expression=expression,
+        params=params,
+        status="data_prefetch_required",
+        failure_reason=result["error_code"],
+    ))
+    return json.dumps(result, ensure_ascii=False, indent=2, default=str)
+
+
+def _resolve_universe_date(universe_date: str | None, fallback_date: str) -> str:
+    return universe_date or fallback_date
+
+
+def _fetch_data_for_market(
+    universe: str,
+    start_date: str,
+    end_date: str,
+    allow_remote_fetch: bool = True,
+    universe_date: str | None = None,
+):
     """Fetch market data and stock codes. Returns (market_df, stock_codes)."""
-    stock_codes = get_universe(universe, date=start_date)
+    cache_only = not allow_remote_fetch
+    resolved_universe_date = _resolve_universe_date(universe_date, start_date)
+    stock_codes = get_universe(universe, date=resolved_universe_date, cache_only=cache_only)
+    if allow_remote_fetch and stock_codes:
+        _raise_if_remote_prefetch_required(
+            universe=universe,
+            universe_date=resolved_universe_date,
+            start_date=start_date,
+            end_date=end_date,
+            stock_codes=stock_codes,
+        )
     fetcher = MarketDataFetcher()
-    market_df = fetcher.fetch_stocks(stock_codes, start_date, end_date)
+    market_df = fetcher.fetch_stocks(stock_codes, start_date, end_date, cache_only=cache_only)
     return market_df, stock_codes
 
 
-def _fetch_benchmark_for_market(benchmark: str, start_date: str, end_date: str):
+def _fetch_benchmark_for_market(benchmark: str, start_date: str, end_date: str, allow_remote_fetch: bool = True):
     """Fetch benchmark returns."""
-    return fetch_benchmark_returns(benchmark, start_date, end_date)
+    return fetch_benchmark_returns(benchmark, start_date, end_date, cache_only=not allow_remote_fetch)
 
 
 def _market_data_provenance_fields(
@@ -174,6 +320,7 @@ def _market_data_provenance_fields(
     universe: str,
     start_date: str,
     end_date: str,
+    universe_date: str | None = None,
     stock_codes: list[str],
     endpoint: str,
 ) -> dict:
@@ -189,6 +336,7 @@ def _market_data_provenance_fields(
             "universe": universe,
             "start_date": start_date,
             "end_date": end_date,
+            "universe_date": universe_date,
             "stock_codes": stock_codes,
         },
         source_metadata=source_metadata,
@@ -525,6 +673,147 @@ def list_universes() -> str:
     }, ensure_ascii=False, indent=2)
 
 
+def _json_market_value(value):
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, pd.Timestamp):
+        return value.strftime("%Y-%m-%d")
+    if hasattr(value, "item"):
+        value = value.item()
+    return value
+
+
+def _stock_history_payload(stock_code: str, start_date: str = "", end_date: str = "", limit: int = 120) -> dict:
+    fetcher = MarketDataFetcher()
+    normalized_code = fetcher._normalize_stock_code(stock_code)
+    cache_path = fetcher._cache_path(normalized_code)
+    cache_info = describe_stock_cache(normalized_code, start_date, end_date, cache_dir=fetcher.cache_dir)
+    if cache_info["cache_status"] != "hit":
+        return {
+            "error_code": "STOCK_CACHE_MISSING",
+            "cache_status": cache_info["cache_status"],
+            "stock_code": normalized_code,
+            "cache_path": cache_path,
+            "request_range": {
+                "start_date": start_date or None,
+                "end_date": end_date or None,
+            },
+            "hint": (
+                "Single-stock research reads only local data/stocks parquet cache. "
+                "Prewarm this stock before using factor or backtest tools."
+            ),
+        }
+
+    df = fetcher._load_cache(normalized_code)
+    if df is None or df.empty:
+        return {
+            "error_code": "STOCK_CACHE_MISSING",
+            "cache_status": "empty",
+            "stock_code": normalized_code,
+            "cache_path": cache_path,
+        }
+
+    df = df.copy()
+    df["trade_date"] = pd.to_datetime(df["trade_date"])
+    filtered = df
+    if start_date:
+        filtered = filtered[filtered["trade_date"] >= pd.Timestamp(start_date)]
+    if end_date:
+        filtered = filtered[filtered["trade_date"] <= pd.Timestamp(end_date)]
+    filtered = filtered.sort_values("trade_date")
+    limit = max(1, min(int(limit), 500))
+    row_columns = [
+        column
+        for column in ("trade_date", "stock_code", "open", "high", "low", "close", "volume", "amount", "pct_change")
+        if column in filtered.columns
+    ]
+    rows = [
+        {column: _json_market_value(row[column]) for column in row_columns}
+        for _, row in filtered.tail(limit).iterrows()
+    ]
+    latest = df.sort_values("trade_date").iloc[-1]
+    return {
+        "stock_code": normalized_code,
+        "cache_status": "hit",
+        "cache_path": cache_path,
+        "cache_range": {
+            "start_date": cache_info["cache_start_date"],
+            "end_date": cache_info["cache_end_date"],
+            "row_count": cache_info["row_count"],
+        },
+        "request_range": {
+            "start_date": start_date or None,
+            "end_date": end_date or None,
+        },
+        "range_covered": cache_info["range_covered"],
+        "returned_rows": len(rows),
+        "rows": rows,
+        "summary": {
+            "latest_trade_date": _json_market_value(latest.get("trade_date")),
+            "latest_close": _json_market_value(latest.get("close")),
+            "latest_pct_change": _json_market_value(latest.get("pct_change")),
+            "latest_amount": _json_market_value(latest.get("amount")),
+        },
+    }
+
+
+@mcp.tool()
+def get_stock_history(stock_code: str, start_date: str = "", end_date: str = "", limit: int = 120) -> str:
+    """读取单只 A 股本地行情缓存，不触发远程拉取。"""
+    try:
+        return json.dumps(
+            _stock_history_payload(stock_code, start_date=start_date, end_date=end_date, limit=limit),
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        )
+    except Exception as exc:
+        return json.dumps({"error_code": "STOCK_HISTORY_FAILED", "hint": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def check_market_cache(
+    universe: str = "csi500",
+    start_date: str = "",
+    end_date: str = "",
+    stock_code: str = "",
+) -> str:
+    """检查股票池月度缓存和可选单股 parquet 覆盖情况，不触发远程拉取。"""
+    universe_date = start_date or end_date or date.today().isoformat()
+    cache_path = universe_cache_path(universe, universe_date)
+    if universe in UNIVERSES:
+        codes = list(UNIVERSES[universe])
+        cache_status = "static"
+        cache_exists = True
+    else:
+        codes = read_cached_universe(universe, universe_date)
+        cache_status = "hit" if codes else "missing"
+        cache_exists = cache_path.exists()
+
+    payload = {
+        "universe": universe,
+        "universe_date": universe_date,
+        "universe_cache_month": universe_date[:7],
+        "universe_cache_path": str(cache_path),
+        "universe_cache_exists": cache_exists,
+        "universe_cache_status": cache_status,
+        "universe_stock_count": len(codes),
+        "available_cache_months": list_universe_cache_months(universe),
+    }
+    if stock_code:
+        fetcher = MarketDataFetcher()
+        normalized_code = fetcher._normalize_stock_code(stock_code)
+        payload["stock_code"] = normalized_code
+        payload["stock_in_universe"] = normalized_code in codes if codes else False
+        payload["stock_cache"] = describe_stock_cache(
+            normalized_code,
+            start_date=start_date,
+            end_date=end_date,
+            cache_dir=fetcher.cache_dir,
+        )
+    return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+
+
 @mcp.tool()
 def list_markets() -> str:
     """返回策略框架支持的市场和能力描述。"""
@@ -741,6 +1030,7 @@ async def run_backtest(
     universe: str = "hs300",
     start_date: str = "2023-01-01",
     end_date: str = "2025-12-31",
+    universe_date: str | None = None,
     n_groups: int = 5,
     holding_period: int = 5,
     benchmark: str = "hs300",
@@ -756,6 +1046,7 @@ async def run_backtest(
     max_abs_daily_ret: float = 0.25,
     max_missing_ratio_per_stock: float = 0.2,
     adjustment: Literal["qfq", "hfq", "none", "unknown"] = "unknown",
+    allow_remote_fetch: bool = False,
 ) -> str:
     """执行因子回测,生成 QuantStats HTML 报告。
 
@@ -764,6 +1055,7 @@ async def run_backtest(
         universe: 股票池名称 (small_scale/hs300/csi500/csi1000/csi2000)
         start_date: 回测起始日期 YYYY-MM-DD
         end_date: 回测结束日期 YYYY-MM-DD
+        universe_date: 股票池成分股基准日期；默认使用 start_date
         n_groups: 分组数量
         holding_period: 持仓周期(交易日)
         benchmark: 基准 (hs300/zz500/sz50/csi1000)
@@ -775,17 +1067,21 @@ async def run_backtest(
         direction_mode: 非 OOS 回测方向模式，auto_full 或 fixed
         fixed_direction: fixed 模式方向，1=高值做多，-1=低值做多
         data_quality: 是否运行基础行情数据质量门；None 表示兼容默认
+        allow_remote_fetch: 是否允许 MCP 工具在缓存缺失时阻塞式拉取远程行情；默认 False
 
     Returns:
         JSON string with report_path, metrics, group_returns, anti_overfit.
     """
+    resolved_universe_date = _resolve_universe_date(universe_date, start_date)
     task_params = {
         "universe": universe, "start_date": start_date, "end_date": end_date,
+        "universe_date": resolved_universe_date,
         "n_groups": n_groups, "holding_period": holding_period, "benchmark": benchmark,
         "neutralize_industry": neutralize_industry, "neutralize_cap": neutralize_cap,
         "rebalance_anchor": rebalance_anchor, "oos_enabled": oos_enabled, "validation_stage": validation_stage,
         "direction_mode": direction_mode, "fixed_direction": fixed_direction,
         "data_quality": data_quality,
+        "allow_remote_fetch": allow_remote_fetch,
     }
     task_id = await start_mcp_task("backtest", expression, task_params)
     _error_msg = None
@@ -874,16 +1170,28 @@ async def run_backtest(
             return json.dumps(_result)
 
         logger.info(f"Getting universe: {universe}")
-        market_df, stock_codes = await asyncio.to_thread(_fetch_data_for_market, universe, start_date, end_date)
+        try:
+            market_df, stock_codes = await asyncio.to_thread(
+                _fetch_data_for_market, universe, start_date, end_date, allow_remote_fetch, resolved_universe_date
+            )
+        except _RemotePrefetchRequired as exc:
+            _result = exc.payload
+            return await _record_market_data_prefetch_required(
+                tool_name="run_backtest",
+                task_id=task_id,
+                expression=expression,
+                params=task_params,
+                exc=exc,
+            )
         if market_df is None or len(market_df) == 0:
-            _result = {"error": "No market data available. Check date range and stock codes."}
+            _result = _market_data_unavailable_result(allow_remote_fetch)
             _result.update(await _record_mcp_experiment_failure(
                 tool_name="run_backtest",
                 task_id=task_id,
                 expression=expression,
                 params=task_params,
                 status="data_quality_failed",
-                failure_reason=_result["error"],
+                failure_reason=_result["error_code"],
             ))
             return json.dumps(_result)
         data_provenance = _market_data_provenance_fields(
@@ -891,6 +1199,7 @@ async def run_backtest(
             universe=universe,
             start_date=start_date,
             end_date=end_date,
+            universe_date=resolved_universe_date,
             stock_codes=stock_codes,
             endpoint="mcp.run_backtest",
         )
@@ -950,7 +1259,9 @@ async def run_backtest(
 
         bm_returns = None
         try:
-            bm_returns = await asyncio.to_thread(_fetch_benchmark_for_market, benchmark, start_date, end_date)
+            bm_returns = await asyncio.to_thread(
+                _fetch_benchmark_for_market, benchmark, start_date, end_date, allow_remote_fetch
+            )
         except Exception as e:
             logger.warning(f"Benchmark fetch failed: {e}")
 
@@ -1004,6 +1315,7 @@ async def run_backtest(
                 "universe": universe,
                 "start_date": start_date,
                 "end_date": end_date,
+                "universe_date": resolved_universe_date,
                 "n_groups": n_groups,
                 "holding_period": holding_period,
                 "benchmark": benchmark,
@@ -1015,6 +1327,7 @@ async def run_backtest(
                 "direction_mode": direction_mode,
                 "fixed_direction": fixed_direction,
                 "data_quality": data_quality,
+                "allow_remote_fetch": allow_remote_fetch,
                 "stock_count": len(stock_codes),
                 "data_snapshot_id": data_provenance["data_snapshot_id"],
                 "data_source": data_provenance.get("data_source"),
@@ -1088,6 +1401,7 @@ async def score_factor(
     universe: str = "hs300",
     start_date: str = "2023-01-01",
     end_date: str = "2025-12-31",
+    universe_date: str | None = None,
     n_groups: int = 5,
     holding_period: int = 5,
     benchmark: str = "hs300",
@@ -1101,6 +1415,7 @@ async def score_factor(
     max_abs_daily_ret: float = 0.25,
     max_missing_ratio_per_stock: float = 0.2,
     adjustment: Literal["qfq", "hfq", "none", "unknown"] = "unknown",
+    allow_remote_fetch: bool = False,
 ) -> str:
     """执行因子回测并返回综合评分(0-100)和等级(A/B/C/D)。
 
@@ -1111,6 +1426,7 @@ async def score_factor(
         universe: 股票池 (small_scale/hs300/csi500/csi1000/csi2000)
         start_date: 起始日期 YYYY-MM-DD
         end_date: 结束日期 YYYY-MM-DD
+        universe_date: 股票池成分股基准日期；默认使用 start_date
         n_groups: 分组数量
         holding_period: 持仓周期(交易日)
         benchmark: 基准 (hs300/zz500/sz50/csi1000)
@@ -1120,17 +1436,20 @@ async def score_factor(
         oos_enabled: 启用训练/验证/测试样本外评估；默认开启 OOS selection
         validation_stage: selection 只用 train+valid 选候选；final 才运行并暴露 test
         data_quality: 是否运行基础行情数据质量门；None 表示兼容默认
+        allow_remote_fetch: 是否允许 MCP 工具在缓存缺失时阻塞式拉取远程行情；默认 False
 
     Returns:
         JSON with score, grade, component_scores, key metrics.
     """
     from .iteration import compute_factor_score
 
+    resolved_universe_date = _resolve_universe_date(universe_date, start_date)
     task_params = {
         "universe": universe, "start_date": start_date, "end_date": end_date,
+        "universe_date": resolved_universe_date,
         "n_groups": n_groups, "holding_period": holding_period, "benchmark": benchmark,
         "rebalance_anchor": rebalance_anchor, "oos_enabled": oos_enabled, "validation_stage": validation_stage,
-        "data_quality": data_quality,
+        "data_quality": data_quality, "allow_remote_fetch": allow_remote_fetch,
     }
     task_id = await start_mcp_task("score", expression, task_params)
     _error_msg = None
@@ -1164,16 +1483,28 @@ async def score_factor(
                 failure_reason=_result["error_code"],
             ))
             return json.dumps(_result)
-        market_df, stock_codes = await asyncio.to_thread(_fetch_data_for_market, universe, start_date, end_date)
+        try:
+            market_df, stock_codes = await asyncio.to_thread(
+                _fetch_data_for_market, universe, start_date, end_date, allow_remote_fetch, resolved_universe_date
+            )
+        except _RemotePrefetchRequired as exc:
+            _result = exc.payload
+            return await _record_market_data_prefetch_required(
+                tool_name="score_factor",
+                task_id=task_id,
+                expression=expression,
+                params=task_params,
+                exc=exc,
+            )
         if market_df is None or len(market_df) == 0:
-            _result = {"error": "No market data available."}
+            _result = _market_data_unavailable_result(allow_remote_fetch)
             _result.update(await _record_mcp_experiment_failure(
                 tool_name="score_factor",
                 task_id=task_id,
                 expression=expression,
                 params=task_params,
                 status="data_quality_failed",
-                failure_reason=_result["error"],
+                failure_reason=_result["error_code"],
             ))
             return json.dumps(_result)
         data_provenance = _market_data_provenance_fields(
@@ -1181,6 +1512,7 @@ async def score_factor(
             universe=universe,
             start_date=start_date,
             end_date=end_date,
+            universe_date=resolved_universe_date,
             stock_codes=stock_codes,
             endpoint="mcp.score_factor",
         )
@@ -1230,6 +1562,7 @@ async def score_factor(
             "universe": universe,
             "start_date": start_date,
             "end_date": end_date,
+            "universe_date": resolved_universe_date,
             "n_groups": n_groups,
             "holding_period": holding_period,
             "benchmark": benchmark,
@@ -1239,6 +1572,7 @@ async def score_factor(
             "oos_enabled": oos_enabled,
             "validation_stage": validation_stage,
             "data_quality": data_quality,
+            "allow_remote_fetch": allow_remote_fetch,
             "stock_count": len(stock_codes),
             "data_snapshot_id": data_provenance["data_snapshot_id"],
             "data_source": data_provenance.get("data_source"),
@@ -1320,7 +1654,9 @@ async def score_factor(
 
         bm_returns = None
         try:
-            bm_returns = await asyncio.to_thread(_fetch_benchmark_for_market, benchmark, start_date, end_date)
+            bm_returns = await asyncio.to_thread(
+                _fetch_benchmark_for_market, benchmark, start_date, end_date, allow_remote_fetch
+            )
         except Exception:
             pass
 
@@ -1740,9 +2076,11 @@ async def run_anti_overfit(
     universe: str = "hs300",
     start_date: str = "2023-01-01",
     end_date: str = "2025-12-31",
+    universe_date: str | None = None,
     holding_period: int = 5,
     neutralize_industry: bool = True,
     neutralize_cap: bool = True,
+    allow_remote_fetch: bool = False,
 ) -> str:
     """对因子执行反过拟合检测(4项测试)。
 
@@ -1754,37 +2092,54 @@ async def run_anti_overfit(
         universe: 股票池 (small_scale/hs300/csi500/csi1000/csi2000)
         start_date: 起始日期 YYYY-MM-DD
         end_date: 结束日期 YYYY-MM-DD
+        universe_date: 股票池成分股基准日期；默认使用 start_date
         holding_period: 持仓周期(交易日)
         neutralize_industry: 行业中性化(默认开启)
         neutralize_cap: 市值中性化(默认开启)
+        allow_remote_fetch: 是否允许缓存缺失时阻塞式拉取远程行情；默认 False
 
     Returns:
         JSON with score, recommendation, and per-test details.
     """
     from .anti_overfit import run_anti_overfit as _run_ao
 
+    resolved_universe_date = _resolve_universe_date(universe_date, start_date)
     task_params = {
         "universe": universe, "start_date": start_date, "end_date": end_date,
+        "universe_date": resolved_universe_date,
         "holding_period": holding_period,
         "neutralize_industry": neutralize_industry,
         "neutralize_cap": neutralize_cap,
         "oos_enabled": False,
         "direction_mode": "auto_full",
+        "allow_remote_fetch": allow_remote_fetch,
     }
     task_id = await start_mcp_task("anti_overfit", expression, task_params)
     _error_msg = None
     _result = None
     try:
-        market_df, stock_codes = await asyncio.to_thread(_fetch_data_for_market, universe, start_date, end_date)
+        try:
+            market_df, stock_codes = await asyncio.to_thread(
+                _fetch_data_for_market, universe, start_date, end_date, allow_remote_fetch, resolved_universe_date
+            )
+        except _RemotePrefetchRequired as exc:
+            _result = exc.payload
+            return await _record_market_data_prefetch_required(
+                tool_name="run_anti_overfit",
+                task_id=task_id,
+                expression=expression,
+                params=task_params,
+                exc=exc,
+            )
         if market_df is None or len(market_df) == 0:
-            _result = {"error": "No market data available."}
+            _result = _market_data_unavailable_result(allow_remote_fetch)
             _result.update(await _record_mcp_experiment_failure(
                 tool_name="run_anti_overfit",
                 task_id=task_id,
                 expression=expression,
                 params=task_params,
                 status="data_quality_failed",
-                failure_reason=_result["error"],
+                failure_reason=_result["error_code"],
             ))
             return json.dumps(_result)
         data_provenance = _market_data_provenance_fields(
@@ -1792,6 +2147,7 @@ async def run_anti_overfit(
             universe=universe,
             start_date=start_date,
             end_date=end_date,
+            universe_date=resolved_universe_date,
             stock_codes=stock_codes,
             endpoint="mcp.run_anti_overfit",
         )
@@ -1858,9 +2214,11 @@ async def run_rolling_validation(
     universe: str = "hs300",
     start_date: str = "2020-01-01",
     end_date: str = "2025-12-31",
+    universe_date: str | None = None,
     holding_period: int = 5,
     neutralize_industry: bool = True,
     neutralize_cap: bool = True,
+    allow_remote_fetch: bool = False,
 ) -> str:
     """对因子执行滚动验证(Walk-Forward)。
 
@@ -1872,37 +2230,54 @@ async def run_rolling_validation(
         universe: 股票池 (small_scale/hs300/csi500/csi1000/csi2000)
         start_date: 起始日期(建议≥5年数据)
         end_date: 结束日期
+        universe_date: 股票池成分股基准日期；默认使用 start_date
         holding_period: 持仓周期(交易日)
         neutralize_industry: 行业中性化(默认开启)
         neutralize_cap: 市值中性化(默认开启)
+        allow_remote_fetch: 是否允许缓存缺失时阻塞式拉取远程行情；默认 False
 
     Returns:
         JSON with composite score, per-window results, decay analysis.
     """
     from .rolling_validator import run_rolling_validation as _run_rv
 
+    resolved_universe_date = _resolve_universe_date(universe_date, start_date)
     task_params = {
         "universe": universe, "start_date": start_date, "end_date": end_date,
+        "universe_date": resolved_universe_date,
         "holding_period": holding_period,
         "neutralize_industry": neutralize_industry,
         "neutralize_cap": neutralize_cap,
         "oos_enabled": False,
         "direction_mode": "auto_full",
+        "allow_remote_fetch": allow_remote_fetch,
     }
     task_id = await start_mcp_task("rolling_validation", expression, task_params)
     _error_msg = None
     _result = None
     try:
-        market_df, stock_codes = await asyncio.to_thread(_fetch_data_for_market, universe, start_date, end_date)
+        try:
+            market_df, stock_codes = await asyncio.to_thread(
+                _fetch_data_for_market, universe, start_date, end_date, allow_remote_fetch, resolved_universe_date
+            )
+        except _RemotePrefetchRequired as exc:
+            _result = exc.payload
+            return await _record_market_data_prefetch_required(
+                tool_name="run_rolling_validation",
+                task_id=task_id,
+                expression=expression,
+                params=task_params,
+                exc=exc,
+            )
         if market_df is None or len(market_df) == 0:
-            _result = {"error": "No market data available."}
+            _result = _market_data_unavailable_result(allow_remote_fetch)
             _result.update(await _record_mcp_experiment_failure(
                 tool_name="run_rolling_validation",
                 task_id=task_id,
                 expression=expression,
                 params=task_params,
                 status="data_quality_failed",
-                failure_reason=_result["error"],
+                failure_reason=_result["error_code"],
             ))
             return json.dumps(_result)
         data_provenance = _market_data_provenance_fields(
@@ -1910,6 +2285,7 @@ async def run_rolling_validation(
             universe=universe,
             start_date=start_date,
             end_date=end_date,
+            universe_date=resolved_universe_date,
             stock_codes=stock_codes,
             endpoint="mcp.run_rolling_validation",
         )
@@ -2356,6 +2732,8 @@ async def compute_factor_values(
     universe: str = "csi500",
     start_date: str = "",
     end_date: str = "",
+    universe_date: str | None = None,
+    allow_remote_fetch: bool = False,
 ) -> str:
     """计算因子截面值，返回每个交易日所有股票的因子得分。
 
@@ -2364,19 +2742,41 @@ async def compute_factor_values(
         universe: 股票池，支持 small_scale / hs300 / csi500 / csi1000 / csi2000
         start_date: 起始日期 YYYY-MM-DD，默认 end_date 前 365 天
         end_date: 截止日期 YYYY-MM-DD，默认今天
+        universe_date: 股票池成分股基准日期；默认使用 end_date
+        allow_remote_fetch: 是否允许缓存缺失时阻塞式拉取远程行情；默认 False
 
     Returns:
         JSON string with trading_days and data: [{date, values: {symbol: score}, count}].
     """
     try:
+        req = _validate_factor_values_request(expression, universe, start_date, end_date)
+        resolved_universe_date = _resolve_universe_date(universe_date, req.end_date)
+        if allow_remote_fetch:
+            stock_codes = await asyncio.to_thread(
+                get_universe,
+                req.universe,
+                resolved_universe_date,
+                False,
+            )
+            _raise_if_remote_prefetch_required(
+                universe=req.universe,
+                universe_date=resolved_universe_date,
+                start_date=req.fetch_start,
+                end_date=req.end_date,
+                stock_codes=stock_codes,
+            )
         result = await asyncio.to_thread(
             _compute_factor_values_payload,
             expression,
-            universe,
-            start_date,
-            end_date,
+            universe=universe,
+            start_date=start_date,
+            end_date=end_date,
+            allow_remote_fetch=allow_remote_fetch,
+            universe_date=resolved_universe_date,
         )
         return json.dumps(result, ensure_ascii=False, indent=2, default=str)
+    except _RemotePrefetchRequired as exc:
+        return json.dumps(exc.payload, ensure_ascii=False, indent=2, default=str)
     except Exception as e:
         logger.warning(f"compute_factor_values failed: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)

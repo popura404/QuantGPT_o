@@ -39,16 +39,18 @@ def test_validate_factor_values_request_rejects_invalid_inputs(kwargs, match):
 def test_compute_factor_values_payload_groups_finite_values(monkeypatch):
     calls = {}
 
-    def fake_get_universe(universe, date=None):
+    def fake_get_universe(universe, date=None, cache_only=None):
         calls["universe"] = universe
         calls["universe_date"] = date
+        calls["universe_cache_only"] = cache_only
         return ["A", "B"]
 
     class FakeFetcher:
-        def fetch_stocks(self, stocks, start_date, end_date):
+        def fetch_stocks(self, stocks, start_date, end_date, cache_only=None):
             calls["stocks"] = stocks
             calls["fetch_start"] = start_date
             calls["end_date"] = end_date
+            calls["stocks_cache_only"] = cache_only
             return _market_frame()
 
     values = pd.Series([np.nan, 1.2345678, np.inf, -2.0])
@@ -69,13 +71,47 @@ def test_compute_factor_values_payload_groups_finite_values(monkeypatch):
     )
 
     assert calls["universe"] == "csi500"
-    assert calls["universe_date"] == "2024-01-02"
+    assert calls["universe_date"] == "2024-01-03"
+    assert calls["universe_cache_only"] is False
     assert calls["fetch_start"] < "2024-01-02"
     assert calls["end_date"] == "2024-01-03"
+    assert calls["stocks_cache_only"] is False
     assert calls["expression"] == "close"
     assert payload["trading_days"] == 2
+    assert payload["universe_date"] == "2024-01-03"
     assert payload["data"][0] == {"date": "2024-01-02", "values": {"A": 1.234568}, "count": 1}
     assert payload["data"][1] == {"date": "2024-01-03", "values": {"A": -2.0}, "count": 1}
+
+
+def test_compute_factor_values_payload_explicit_universe_date_wins(monkeypatch):
+    calls = {}
+
+    def fake_get_universe(universe, date=None, cache_only=None):
+        calls["universe_date"] = date
+        return ["A"]
+
+    class FakeFetcher:
+        def fetch_stocks(self, stocks, start_date, end_date, cache_only=None):
+            return _market_frame()
+
+    monkeypatch.setattr(factor_values, "get_universe", fake_get_universe)
+    monkeypatch.setattr(factor_values, "MarketDataFetcher", FakeFetcher)
+    monkeypatch.setattr(
+        factor_values,
+        "compute_backtest_factor_values",
+        lambda market_df, expression=None, precomputed_factor=None: pd.Series([1.0] * len(market_df), index=market_df.index),
+    )
+
+    payload = factor_values.compute_factor_values_payload(
+        "close",
+        universe="csi500",
+        start_date="2024-01-02",
+        end_date="2024-01-03",
+        universe_date="2024-01-31",
+    )
+
+    assert calls["universe_date"] == "2024-01-31"
+    assert payload["universe_date"] == "2024-01-31"
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,22 @@ local parquet cache -> baostock free fetch -> optional rqdatac fetch
 `QUANTGPT_CACHE_ONLY=true` disables remote fetches. Cached misses should fail or
 return empty data rather than silently using remote data.
 
+`QUANTGPT_BAOSTOCK_TIMEOUT` bounds baostock socket waits in seconds; `0`
+disables the timeout. The default is `20`.
+
+MCP factor-heavy tools (`run_backtest`, `score_factor`, `compute_factor_values`,
+`run_anti_overfit`, `run_rolling_validation`) default to local-cache-only data
+access. Passing `allow_remote_fetch=true` permits remote fills only after a
+planning check. If the call would need to fill more than
+`QUANTGPT_MCP_REMOTE_FETCH_STOCK_LIMIT` stock parquet files, the tool returns
+`REMOTE_PREFETCH_REQUIRED` and a suggested prewarm command instead of starting a
+large remote batch.
+
+Single-stock research should use `get_stock_history`, which reads only
+`data/stocks/<market>_<code>.parquet`, or `check_market_cache` to inspect the
+monthly universe cache and stock coverage. These diagnostic tools never fetch
+remote data.
+
 Result metadata records the artifact source:
 
 ```json

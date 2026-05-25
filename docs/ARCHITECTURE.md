@@ -7,7 +7,7 @@ QuantGPT 是 Agent-Driven 的因子研究引擎。核心架构分为六层：Age
 ```
 LLM Agent (Claude Code / Claude Desktop)
     │
-    ├── MCP Tools (39 个)            ← Agent 的工具箱
+    ├── MCP Tools (41 个)            ← Agent 的工具箱
     │   ├── 因子研究                 ← 表达式校验、回测、评分、诊断、OOS/rolling、factor_values
     │   ├── StrategySpec 工作流       ← 模板、校验、回测、评分、报告、候选导出、优化
     │   └── WQ BRAIN 工作流          ← 远程模拟、批量扫描、状态检查、preflight-gated 正式提交
@@ -144,8 +144,9 @@ Request
 
 ### MCP Server (`mcp_server.py`)
 
-39 个 MCP 工具，供 Claude Code / AI Agent 直接调用：
+41 个 MCP 工具，供 Claude Code / AI Agent 直接调用：
 - 因子研究：`list_operators` / `list_universes` / `validate_expression` /
+  `get_stock_history` / `check_market_cache` /
   `run_backtest` / `score_factor` / `compute_factor_values` / `diagnose_factor` /
   `run_anti_overfit` / `run_rolling_validation`
 - 实验治理：`list_experiments` / `get_experiment` / `export_experiment_report` /

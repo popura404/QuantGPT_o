@@ -1,5 +1,6 @@
 """Tests for quantgpt.market_data — pure logic and cache behavior."""
 
+import socket
 import sys
 import tempfile
 import types
@@ -12,11 +13,16 @@ from quantgpt.market_data import (
     BENCHMARK_CODES,
     UNIVERSES,
     MarketDataFetcher,
+    _baostock_call_guard,
     _fetch_akshare,
     _from_rq_code,
     _to_rq_code,
     _transform_rq_to_schema,
+    describe_stock_cache,
     get_universe,
+    plan_stock_cache_fetch,
+    read_cached_universe,
+    universe_cache_path,
 )
 
 # ─── Code conversion ─────────────────────────────────────────────
@@ -61,6 +67,11 @@ class TestNormalize:
         assert self.f._normalize_stock_code("sh600519") == "sh.600519"
         assert self.f._normalize_stock_code("sz000001") == "sz.000001"
 
+    def test_raw_and_underscore_codes(self):
+        assert self.f._normalize_stock_code("600487") == "sh.600487"
+        assert self.f._normalize_stock_code("sh_600487") == "sh.600487"
+        assert self.f._normalize_stock_code("000001") == "sz.000001"
+
 
 # ─── Universe ────────────────────────────────────────────────────
 
@@ -76,6 +87,14 @@ class TestUniverse:
     def test_unknown_universe_raises(self):
         with pytest.raises(ValueError, match="Unknown universe"):
             get_universe("nonexistent_pool")
+
+    def test_universe_cache_path_uses_requested_month(self, tmp_path):
+        path = universe_cache_path("csi500", "2024-06-28", cache_dir=tmp_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("sh.600487\nsz.000001\n")
+
+        assert path.name == "csi500_2024-06.txt"
+        assert read_cached_universe("csi500", "2024-06-03", cache_dir=tmp_path) == ["sh.600487", "sz.000001"]
 
 
 # ─── Benchmark codes ─────────────────────────────────────────────
@@ -255,3 +274,62 @@ class TestFetchStocksCacheOnly:
             result = f.fetch_stocks(["sh.600519"], "2024-01-02", "2024-01-31")
             assert result is not None
             assert result["vwap"].iloc[0] == pytest.approx(1800.0)
+
+    def test_cache_only_miss_does_not_attempt_remote_fetch(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as td:
+            f = MarketDataFetcher(cache_dir=td)
+
+            def fail_remote(*_args, **_kwargs):
+                raise AssertionError("remote fetch should not run in cache-only mode")
+
+            monkeypatch.setattr(f, "_fetch_remote_bs", fail_remote)
+            result = f.fetch_stocks(["sh.600519"], "2024-01-02", "2024-01-31", cache_only=True)
+
+            assert result is None
+
+    def test_plan_stock_cache_fetch_counts_full_partial_and_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            f = MarketDataFetcher(cache_dir=td)
+            full_dates = pd.date_range("2024-01-02", "2024-01-31", freq="B")
+            partial_dates = pd.date_range("2024-01-15", "2024-01-31", freq="B")
+            f._save_cache("sh.600001", pd.DataFrame({
+                "trade_date": full_dates,
+                "stock_code": ["sh.600001"] * len(full_dates),
+                "close": 1.0,
+            }))
+            f._save_cache("sh.600002", pd.DataFrame({
+                "trade_date": partial_dates,
+                "stock_code": ["sh.600002"] * len(partial_dates),
+                "close": 1.0,
+            }))
+
+            full = describe_stock_cache("sh.600001", "2024-01-02", "2024-01-31", cache_dir=td, tolerance_days=5)
+            partial = describe_stock_cache("sh.600002", "2024-01-02", "2024-01-31", cache_dir=td, tolerance_days=5)
+            missing = describe_stock_cache("sh.600003", "2024-01-02", "2024-01-31", cache_dir=td, tolerance_days=5)
+            plan = plan_stock_cache_fetch(
+                ["sh.600001", "sh.600002", "sh.600003"],
+                "2024-01-02",
+                "2024-01-31",
+                cache_dir=td,
+            )
+
+            assert full["coverage_status"] == "full"
+            assert partial["coverage_status"] == "partial"
+            assert missing["coverage_status"] == "missing"
+            assert plan["covered_stock_count"] == 1
+            assert plan["partial_stock_count"] == 1
+            assert plan["missing_stock_count"] == 1
+            assert plan["fetch_required_count"] == 2
+
+
+def test_baostock_call_guard_suppresses_stdout_and_restores_socket_timeout(monkeypatch, capsys):
+    previous_timeout = socket.getdefaulttimeout()
+    monkeypatch.setenv("QUANTGPT_BAOSTOCK_TIMEOUT", "0.25")
+
+    with _baostock_call_guard():
+        print("login success!")
+        assert socket.getdefaulttimeout() == pytest.approx(0.25)
+
+    captured = capsys.readouterr()
+    assert "login success!" not in captured.out
+    assert socket.getdefaulttimeout() == previous_timeout

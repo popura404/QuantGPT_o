@@ -167,9 +167,11 @@ class FundamentalDataFetcher:
             import baostock as bs
         except ImportError:
             return None
+        from .market_data import _baostock_call_guard
 
         func = getattr(bs, _API_FUNC_MAP[api_name])
-        rs = func(code=code, year=year, quarter=quarter)
+        with _baostock_call_guard():
+            rs = func(code=code, year=year, quarter=quarter)
         if rs.error_code != "0":
             return None
 
@@ -480,12 +482,15 @@ class FundamentalDataFetcher:
         except ImportError:
             return None
         from datetime import datetime as dt
+
+        from .market_data import _baostock_call_guard
         start_year = dt.strptime(start_date[:10], "%Y-%m-%d").year - 1
         end_year = dt.strptime(end_date[:10], "%Y-%m-%d").year
 
         rows = []
         for year in range(start_year, end_year + 1):
-            rs = bs.query_dividend_data(code=code, year=str(year), yearType="report")
+            with _baostock_call_guard():
+                rs = bs.query_dividend_data(code=code, year=str(year), yearType="report")
             if rs.error_code != "0":
                 continue
             while rs.next():

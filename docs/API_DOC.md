@@ -1,6 +1,6 @@
 # QuantGPT API 完整文档
 
-> 版本: v1 | 基础路径: `/api/v1` | REST 认证: Bearer Token (JWT/API Key)
+> API 文档版本: v1 | 应用版本: 2.8.0 | 基础路径: `/api/v1` | REST 认证: Bearer Token (JWT/API Key)
 
 ---
 
@@ -52,10 +52,13 @@ bash restart.sh   # 默认端口 8003
 | `AUTH_DISABLED` | 否 | `false` | 仅本地开发可设为 `true`；生产必须保持 `false` |
 | `QUANTGPT_ALLOW_GUEST_BACKTEST` | 否 | `false` | 是否允许未登录/guest 提交回测任务；公网或共享环境保持 `false` |
 | `JWT_SECRET_KEY` | 是 | — | JWT 签名密钥；生产使用 `openssl rand -hex 32` 生成 |
-| `QUANTGPT_MCP_HTTP_TOKEN` | 条件必填 | — | `AUTH_DISABLED=false` 且暴露 `/mcp` 或 `/mcp-sse` 时必填 |
+| `QUANTGPT_MCP_HTTP_TOKEN` | 条件必填 | — | `AUTH_DISABLED=false` 且暴露 `/mcp/` 或 `/mcp-sse/` 时必填 |
 | `QUANTGPT_CORS_ORIGINS` | 否 | 本机开发源 | CORS 允许源,逗号分隔；建议只配置内网或可信前端域名 |
+| `QUANTGPT_ALLOWED_HOSTS` | 否 | `localhost,127.0.0.1,test,testserver` | FastAPI Host header allowlist；填写 host 名，不带端口 |
 | `QUANTGPT_ADMIN_PASSWORD` | 是 | — | 管理后台密码；生产必须使用强随机密码 |
 | `QUANTGPT_MAX_ACTIVE_TASKS` | 否 | `100` | 最大并发任务数 |
+| `QUANTGPT_BAOSTOCK_TIMEOUT` | 否 | `20` | baostock socket 超时秒数；设为 `0` 表示不设置超时 |
+| `QUANTGPT_MCP_REMOTE_FETCH_STOCK_LIMIT` | 否 | `50` | MCP 重工具允许一次远程补齐的最大股票缓存数，超过返回 `REMOTE_PREFETCH_REQUIRED` |
 | `QUANTGPT_TASK_TTL` | 否 | `3600` | 内存任务 TTL (秒) |
 | `QUANTGPT_RATE_LIMIT` | 否 | `50` | 每分钟请求限制 |
 | `QUANTGPT_MAX_PROMPT_LEN` | 否 | `500` | Prompt 最大长度 |
@@ -74,7 +77,7 @@ REST API 默认需要 Bearer Token（JWT access token 或 `qgpt_` API Key）。�
 Authorization: Bearer <access_token>
 ```
 
-HTTP MCP 端点不复用用户 JWT。认证开启时，`/mcp` 和 `/mcp-sse` 需要独立的 `Authorization: Bearer <QUANTGPT_MCP_HTTP_TOKEN>`；未配置该变量时 HTTP MCP 返回 503。stdio MCP 不经过 HTTP 暴露面，按本机进程权限控制。
+HTTP MCP 端点不复用用户 JWT。认证开启时，`/mcp/` 和 `/mcp-sse/` 需要独立的 `Authorization: Bearer <QUANTGPT_MCP_HTTP_TOKEN>`；未配置该变量时 HTTP MCP 返回 503。stdio MCP 不经过 HTTP 暴露面，按本机进程权限控制。`/mcp` 会被重写到 `/mcp/`，但文档和客户端配置优先使用带尾斜杠路径。
 
 ### POST /api/v1/auth/send-code
 
@@ -1049,14 +1052,17 @@ preflight/override 允许时触发正式提交。`alt` 账号只能用于模拟�
 
 ## MCP Tools
 
-QuantGPT 提供 39 个 MCP (Model Context Protocol) 工具，覆盖因子研究、StrategySpec v0/v1
-策略工具和 WQ BRAIN 工作流。推荐本机 stdio 模式；如果暴露 HTTP MCP (`/mcp`, `/mcp-sse`)，
+QuantGPT 提供 41 个 MCP (Model Context Protocol) 工具，覆盖因子研究、StrategySpec v0/v1
+策略工具和 WQ BRAIN 工作流。推荐本机 stdio 模式；如果暴露 HTTP MCP (`/mcp/`, `/mcp-sse/`)，
 认证开启时必须设置 `QUANTGPT_MCP_HTTP_TOKEN` 并由客户端发送 `Authorization: Bearer <token>`。
+直接用浏览器或普通 `curl` 访问 `/mcp/` 可能返回 `406 Not Acceptable`；功能验证应使用 MCP streamable-http 客户端，并发送 `Accept: application/json, text/event-stream`。
 
 | Tool | 说明 |
 |------|------|
 | `list_operators` | 返回全部因子表达式算子及用法 |
 | `list_universes` | 返回可用股票池和基准列表 |
+| `get_stock_history` | 读取单只 A 股本地行情缓存 |
+| `check_market_cache` | 检查股票池月份和单股缓存覆盖 |
 | `validate_expression` | 验证表达式语法,返回 OK 或错误 |
 | `run_backtest` | 执行回测,返回完整指标 + 反过拟合检测 + 报告路径 |
 | `score_factor` | 执行回测并返回综合评分 (0-100, A/B/C/D) |
@@ -1101,6 +1107,35 @@ data-quality gate、train/valid/test、rolling window、placebo test、time-shif
 valid 选候选，test 指标 withheld；只有显式 `validation_stage="final"` 才运行并暴露 test 作为
 frozen candidate 的最终验收。普通 `auto_full` 回测结果会标记为 `research_only`，不能直接选择为
 候选、提交或导出。
+
+### 单股与缓存诊断
+
+单股研究不要直接调用全股票池工具。推荐先用：
+
+```text
+get_stock_history(stock_code="600487", start_date="2026-05-01", end_date="2026-05-22")
+check_market_cache(universe="csi500", start_date="2026-05-01", end_date="2026-05-22", stock_code="600487")
+```
+
+`get_stock_history` 支持 `600487` / `sh.600487` / `sh_600487`，只读
+`data/stocks/<market>_<code>.parquet`，不会触发远程行情拉取。缓存缺失返回
+`STOCK_CACHE_MISSING`。`check_market_cache` 会返回当前命中的
+`data/universe/<universe>_YYYY-MM.txt`、成分数量、目标股票是否在池内，以及单股 parquet 覆盖区间。
+
+### 重工具数据参数
+
+`run_backtest`、`score_factor`、`run_anti_overfit`、`run_rolling_validation` 支持：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `universe_date` | `start_date` | 股票池成分股基准日期；用于命中月度 universe cache |
+| `allow_remote_fetch` | `false` | 是否允许缓存缺失时阻塞式远程补数 |
+
+`compute_factor_values` 也支持这两个参数，但 `universe_date` 默认使用 `end_date`，因为该工具通常用于近期截面查询。
+
+当 `allow_remote_fetch=true` 且预计需要补齐的单股 parquet 数量超过
+`QUANTGPT_MCP_REMOTE_FETCH_STOCK_LIMIT`（默认 50）时，工具返回 `REMOTE_PREFETCH_REQUIRED`，并包含
+`suggested_prewarm_command`、缺失数量、阈值和可用 universe 缓存月份。
 
 ### 配置 (.mcp.json)
 

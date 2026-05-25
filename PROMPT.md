@@ -18,6 +18,8 @@
 |------|------|
 | `list_operators` | 查看全部因子表达式算子（50+）及用法说明 |
 | `list_universes` | 查看可用股票池（hs300/csi500/csi1000/csi2000）和基准 |
+| `get_stock_history` | 读取单只 A 股本地行情缓存，不触发远程拉取 |
+| `check_market_cache` | 检查股票池月度缓存和单股 parquet 覆盖情况 |
 | `validate_expression` | 验证表达式语法是否正确 |
 | `run_backtest` | 执行完整回测，生成 HTML 报告 + 分组收益 + IC 分析 |
 | `score_factor` | 因子综合评分（0-100，A/B/C/D 等级），比 run_backtest 更轻量 |
@@ -36,6 +38,9 @@
 ### 第一次使用：熟悉环境
 1. 调用 `list_operators` — 了解有哪些算子可以用
 2. 调用 `list_universes` — 了解股票池和基准
+
+### 单股研究
+如果用户问的是某一只 A 股（如 `600487`），先调用 `get_stock_history`。需要判断该股是否在某股票池或缓存月份是否存在时，再调用 `check_market_cache`。不要把单股问题直接升级成 `compute_factor_values(csi500)` 或 `score_factor(csi500)`。
 
 ### 单因子研究循环
 1. **设计** — 基于投资逻辑设计因子表达式（如动量、反转、量价关系）
@@ -87,6 +92,7 @@
 2. 记录失败实验——失败的因子同样有价值，说明哪些方向不可行
 3. 简洁优于复杂——干净的表达式优于 6 层嵌套
 4. 先评分再回测——用 score_factor 快速筛选，只对 B 级以上跑完整回测
+5. MCP 重工具默认只读本地缓存；遇到 `MARKET_DATA_UNAVAILABLE` / `STOCK_CACHE_MISSING` / `REMOTE_PREFETCH_REQUIRED` 时先换已缓存日期/股票池或要求预热数据，只有确认接受长时间阻塞且补数规模低于阈值时才在工具参数中设置 `allow_remote_fetch=true`
 
 ## 开始研究
 

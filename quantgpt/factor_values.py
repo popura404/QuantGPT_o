@@ -63,17 +63,27 @@ def compute_factor_values_payload(
     universe: str = "csi500",
     start_date: str = "",
     end_date: str = "",
+    allow_remote_fetch: bool = True,
+    universe_date: str | None = None,
 ) -> dict:
     req = validate_factor_values_request(expression, universe, start_date, end_date)
     with api_context():
-        stocks = get_universe(req.universe, date=req.start_date)
+        cache_only = not allow_remote_fetch
+        resolved_universe_date = universe_date or req.end_date
+        stocks = get_universe(req.universe, date=resolved_universe_date, cache_only=cache_only)
         if not stocks:
-            raise ValueError(f"Empty universe: {req.universe}")
+            raise ValueError(
+                f"Empty universe: {req.universe}. "
+                "MCP calls default to local cache; pass allow_remote_fetch=true or prewarm the universe cache."
+            )
 
         fetcher = MarketDataFetcher()
-        market_df = fetcher.fetch_stocks(stocks, req.fetch_start, req.end_date)
+        market_df = fetcher.fetch_stocks(stocks, req.fetch_start, req.end_date, cache_only=cache_only)
         if market_df is None or market_df.empty:
-            raise ValueError("No market data available for this universe/date range")
+            raise ValueError(
+                "No market data available for this universe/date range. "
+                "MCP calls default to local cache; pass allow_remote_fetch=true or prewarm the stock cache."
+            )
 
         market_df = market_df.copy()
         market_df["factor_value"] = compute_backtest_factor_values(market_df, expression=req.expression)
@@ -103,6 +113,7 @@ def compute_factor_values_payload(
             "universe": req.universe,
             "start_date": req.start_date,
             "end_date": req.end_date,
+            "universe_date": resolved_universe_date,
             "trading_days": len(dates_data),
             "data": dates_data,
         }

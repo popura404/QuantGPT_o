@@ -14,6 +14,16 @@ promote_experiment(experiment_id, provenance)
 export_strategy_candidate(result)
 ```
 
+Single-stock research flow:
+
+```text
+get_stock_history(stock_code, start_date, end_date)
+check_market_cache(universe, start_date, end_date, stock_code)
+```
+
+Do not treat a single-stock question as permission to run full-universe
+`compute_factor_values(csi500)` or `score_factor(csi500)`.
+
 Result fields to preserve:
 
 - `experiment_id`
@@ -31,6 +41,8 @@ Common stop conditions:
 - missing snapshot proof
 - failed multiple-testing check
 - duplicate-factor similarity
+- `STOCK_CACHE_MISSING`
+- `REMOTE_PREFETCH_REQUIRED`
 
 Safe usage note: do not reinterpret `research_only` payloads as authorization
 for candidate/export/submit boundaries.

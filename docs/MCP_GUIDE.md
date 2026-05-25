@@ -6,22 +6,37 @@ QuantGPT 提供标准 MCP (Model Context Protocol) 接口，支持因子研究�
 
 ### Claude Code
 
-在项目根目录添加 `.mcp.json`（stdio 模式，已验证可用）：
+在项目根目录添加 `.mcp.json`（stdio 模式，推荐）：
 
 ```json
 {
   "mcpServers": {
     "quantgpt": {
       "type": "stdio",
-      "command": "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",
+      "command": "/absolute/path/to/QuantGPT_o/.venv/bin/python",
       "args": ["-m", "quantgpt"],
       "cwd": "/absolute/path/to/QuantGPT_o"
     },
     "deepseek": {
       "type": "stdio",
-      "command": "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",
+      "command": "/absolute/path/to/QuantGPT_o/.venv/bin/python",
       "args": ["scripts/mcp_deepseek.py"],
       "cwd": "/absolute/path/to/QuantGPT_o"
+    }
+  }
+}
+```
+
+本机执行副本使用同样的配置形态，只需要把路径替换为实际 checkout 的绝对路径。例如：
+
+```json
+{
+  "mcpServers": {
+    "quantgpt": {
+      "type": "stdio",
+      "command": "/absolute/path/to/current-checkout/.venv/bin/python",
+      "args": ["-m", "quantgpt"],
+      "cwd": "/absolute/path/to/current-checkout"
     }
   }
 }
@@ -30,9 +45,11 @@ QuantGPT 提供标准 MCP (Model Context Protocol) 接口，支持因子研究�
 **关键要点：**
 
 1. **必须用 stdio 模式** — Claude Code 对 `streamable-http` / `sse` 类型支持不稳定，stdio 最可靠
-2. **command 必须用 Python 绝对路径** — 如 `/Library/Frameworks/Python.framework/Versions/3.12/bin/python3`，不要用 `python3`（Claude Code 的子进程环境可能找不到）
+2. **command 必须用 Python 绝对路径** — 优先使用项目虚拟环境的 `.venv/bin/python`，不要用 `python3`（Claude Code 的子进程环境可能找不到）
 3. **cwd 必须用绝对路径** — 指向项目根目录，确保 `python3 -m quantgpt` 能找到包
 4. **deepseek MCP 需要 `.env` 中配置 `DEEPSEEK_API_KEY`** — 脚本会自动从 `.env` 读取
+5. **因子重工具默认只读本地缓存** — `score_factor` / `run_backtest` / `compute_factor_values` / 验证类重工具在缓存缺失时会快速返回 `MARKET_DATA_UNAVAILABLE`，避免 Agent 长时间无输出后断流；确认要阻塞式拉取远程行情时再传 `allow_remote_fetch=true`
+6. **单股研究先读单股缓存** — 研究 `600487` 这类单只 A 股时先调用 `get_stock_history` / `check_market_cache`，不要直接调用 `compute_factor_values(csi500)` 或 `score_factor(csi500)`
 
 配置完成后**重启 Claude Code**（退出后重新进入项目目录），验证连接：
 
@@ -50,7 +67,7 @@ QuantGPT 提供标准 MCP (Model Context Protocol) 接口，支持因子研究�
 {
   "mcpServers": {
     "quantgpt": {
-      "command": "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",
+      "command": "/absolute/path/to/QuantGPT_o/.venv/bin/python",
       "args": ["-m", "quantgpt"],
       "cwd": "/absolute/path/to/QuantGPT_o"
     }
@@ -84,9 +101,17 @@ cp .env.example .env
 3. 确认 `pip install -e .` 已执行（quantgpt 包已安装）
 4. 修改 `.mcp.json` 后必须重启 Claude Code
 
+**Q: score_factor / run_backtest 很快返回 MARKET_DATA_UNAVAILABLE？**
+
+MCP 重工具默认使用本地缓存，避免 baostock / akshare 远程拉取在 Agent 工具调用中长时间无输出。先用较小且已缓存的日期范围，或通过 Web/脚本预热 `data/stocks/*.parquet`；如果你接受一次工具调用长时间阻塞，可以显式传 `allow_remote_fetch=true`。
+
+如果显式传了 `allow_remote_fetch=true`，但返回 `REMOTE_PREFETCH_REQUIRED`，说明本次调用需要补齐的单股 parquet 数量超过 `QUANTGPT_MCP_REMOTE_FETCH_STOCK_LIMIT`（默认 50）。按返回的 `suggested_prewarm_command` 先预热，或缩小股票池/日期范围。
+
 **Q: HTTP 模式（streamable-http）能用吗？**
 
-MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先启动 HTTP 服务（`bash restart.sh`），且 `mcp_server.py` 的 `allowed_hosts` 必须包含带端口的 host（如 `localhost:8003`）。stdio 模式无此限制，推荐优先使用。
+MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先启动 HTTP 服务（`bash restart.sh`），且 FastMCP 的 `allowed_hosts` 必须包含带端口的 host（当前代码包含 `localhost:8003` 和 `127.0.0.1:8003`）。如果 `AUTH_DISABLED=false`，客户端还必须发送 `Authorization: Bearer <QUANTGPT_MCP_HTTP_TOKEN>`。stdio 模式无 HTTP 暴露面，推荐优先使用。
+
+直接用浏览器或普通 `curl` 打开 `/mcp/` 可能返回 `406 Not Acceptable`，这不是可用性测试失败。streamable-http 客户端需要发送 `Accept: application/json, text/event-stream` 并执行 `initialize`、`tools/list` 或工具调用。
 
 ---
 
@@ -98,6 +123,8 @@ MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先�
 |------|------|
 | `list_operators` | 返回全部因子表达式算子及用法 |
 | `list_universes` | 返回可用股票池和基准指数 |
+| `get_stock_history` | 读取单只 A 股本地 parquet 行情缓存，不触发远程拉取 |
+| `check_market_cache` | 检查股票池月度缓存和可选单股 parquet 覆盖情况 |
 | `validate_expression` | 验证因子表达式语法 |
 | `run_backtest` | 执行因子回测，生成 HTML 报告 |
 | `score_factor` | 因子综合评分 (0-100, A/B/C/D) |
@@ -113,7 +140,8 @@ MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先�
 | `promote_experiment` / `reject_experiment` | 写入 promotion/rejection event |
 | `export_experiment_report` | 导出轻量实验 JSON/Markdown 报告 |
 | `wq_brain_submit` | 调用 WorldQuant BRAIN 远程模拟；正式 submit 受 preflight/override 约束 |
-| `ask_deepseek` | 调用 DeepSeek LLM 进行研究评审（独立 MCP） |
+
+`ask_deepseek` 由 `scripts/mcp_deepseek.py` 提供，是可选的独立 MCP server，不计入 QuantGPT 的 41 个内置工具。
 
 ### StrategySpec 策略工具
 
@@ -165,6 +193,7 @@ metrics 作为权威结论。
 | `universe` | str | `hs300` | 股票池：`hs300` / `csi500` / `csi1000` / `csi2000` / `small_scale` |
 | `start_date` | str | `2023-01-01` | 回测起始日期 |
 | `end_date` | str | `2025-12-31` | 回测结束日期 |
+| `universe_date` | str \| null | `start_date` | 股票池成分股基准日期；用于命中 `data/universe/<universe>_YYYY-MM.txt` |
 | `n_groups` | int | `5` | 分组数量 |
 | `holding_period` | int | `5` | 持仓周期（交易日） |
 | `benchmark` | str | `hs300` | 基准指数：`hs300` / `zz500` / `sz50` / `csi1000` |
@@ -189,6 +218,7 @@ candidate 的最终验收。显式传 `oos_enabled=false` 会回到 legacy 单�
 | `max_abs_daily_ret` | float | `0.25` | 单股最大绝对日收益阈值 |
 | `max_missing_ratio_per_stock` | float | `0.2` | 单股最大缺失交易日比例 |
 | `adjustment` | str | `unknown` | 复权模式：`qfq` / `hfq` / `none` / `unknown` |
+| `allow_remote_fetch` | bool | `false` | 是否允许缓存缺失时阻塞式远程补数；超过阈值会返回 `REMOTE_PREFETCH_REQUIRED` |
 
 data-quality 会优先使用免费行情源可取得的 A 股元数据：`is_st`、`trade_status` / `suspended`、
 `pre_close`、`limit_up` / `limit_down`。可用时默认过滤 ST/*ST、停牌、新股窗口和一字涨跌停，
@@ -212,6 +242,27 @@ A 股 `a_share` / `hs300` 代理检查，不能直接授权 WQ `USA` / `TOP3000`
 
 ---
 
+### 单股研究推荐流程
+
+研究单只 A 股时，先把问题限定在单股本地缓存，不要直接升级到全股票池因子工具：
+
+1. 调用 `get_stock_history(stock_code="600487", start_date="2026-05-01", end_date="2026-05-22")`
+2. 如果返回 `cache_status="hit"`，基于返回的近期 OHLCV、涨跌幅、成交额做单股分析
+3. 如果要确认全池缓存，再调用 `check_market_cache(universe="csi500", start_date="2026-05-01", end_date="2026-05-22", stock_code="600487")`
+4. 只有当研究目标明确是“该股相对某股票池的截面因子值/排序”时，才考虑 `compute_factor_values`
+
+`get_stock_history` 只读 `data/stocks/<market>_<code>.parquet`，支持 `600487` / `sh.600487` / `sh_600487`。缓存不存在时返回：
+
+```json
+{
+  "error_code": "STOCK_CACHE_MISSING",
+  "stock_code": "sh.600487",
+  "hint": "Single-stock research reads only local data/stocks parquet cache..."
+}
+```
+
+这时正确处理是提示用户预热该股或选择已有缓存日期，不要退回到 `score_factor(csi500)` / `compute_factor_values(csi500)` 盲目触发全池读取。
+
 ### `compute_factor_values`
 
 计算某个因子表达式在指定股票池和日期区间内的每日截面得分。该工具只输出原始因子值，不执行分组回测，也不生成报告。
@@ -224,6 +275,8 @@ A 股 `a_share` / `hs300` 代理检查，不能直接授权 WQ `USA` / `TOP3000`
 | `universe` | str | `csi500` | 股票池：`small_scale` / `hs300` / `csi500` / `csi1000` / `csi2000` |
 | `start_date` | str | `end_date` 前 365 天 | 起始日期 YYYY-MM-DD |
 | `end_date` | str | 今天 | 结束日期 YYYY-MM-DD |
+| `universe_date` | str \| null | `end_date` | 股票池成分股基准日期；用于命中 `data/universe/<universe>_YYYY-MM.txt` |
+| `allow_remote_fetch` | bool | `false` | 是否允许缓存缺失时阻塞式远程补数；超过阈值会返回 `REMOTE_PREFETCH_REQUIRED` |
 
 示例：
 
@@ -232,7 +285,8 @@ A 股 `a_share` / `hs300` 代理检查，不能直接授权 WQ `USA` / `TOP3000`
   "expression": "rank(ts_mean(close/open, 10))",
   "universe": "csi500",
   "start_date": "2025-01-01",
-  "end_date": "2025-12-31"
+  "end_date": "2025-12-31",
+  "universe_date": "2025-12-31"
 }
 ```
 
@@ -244,6 +298,7 @@ A 股 `a_share` / `hs300` 代理检查，不能直接授权 WQ `USA` / `TOP3000`
   "universe": "csi500",
   "start_date": "2025-01-01",
   "end_date": "2025-12-31",
+  "universe_date": "2025-12-31",
   "trading_days": 1,
   "data": [
     {
@@ -371,7 +426,8 @@ rank(ts_delta(roe, 60))
 
 - **akshare / baostock**：免费数据源，回测流程默认使用，自动缓存到 `data/stocks/*.parquet`
 - **rqdatac（米筐）**：仅手动触发（admin 端点 / prewarm 脚本），需在 `.env` 中配置 `RQDATAC_USERNAME` 和 `RQDATAC_PASSWORD`
-- 首次使用会自动下载并缓存数据，后续直接读取
+- REST/Web 回测在非缓存模式下可自动下载并缓存数据，后续直接读取
+- MCP 重工具默认只读本地缓存；需要远程补数时显式传 `allow_remote_fetch=true`
 
 ---
 

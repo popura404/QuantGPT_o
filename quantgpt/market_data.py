@@ -5,8 +5,11 @@ https://github.com/Miasyster/QuantGPT
 baostock + akshare (free) + Parquet caching. rqdatac optional.
 """
 
+import contextlib
+import io
 import logging
 import os
+import socket
 import threading
 import time
 from datetime import datetime, timedelta
@@ -50,6 +53,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Cache-only mode: when set, never fetch from remote, only use cached data
 CACHE_ONLY = os.environ.get("QUANTGPT_CACHE_ONLY", "").lower() in ("1", "true", "yes")
+_DEFAULT_BAOSTOCK_TIMEOUT_SECONDS = 20.0
 
 BENCHMARK_CODES = {
     "hs300":  {"baostock": "sh.000300", "rqdatac": "000300.XSHG", "name": "沪深300"},
@@ -144,13 +148,83 @@ def enable_rqdatac():
 
 # ─── baostock helpers (unchanged) ──────────────────────────────────
 
+def _cache_only_enabled(cache_only: bool | None = None) -> bool:
+    return CACHE_ONLY if cache_only is None else bool(cache_only)
+
+
+def _month_key(value: str | None = None) -> str:
+    if not value:
+        return datetime.now().strftime("%Y-%m")
+    try:
+        return datetime.strptime(value[:10], "%Y-%m-%d").strftime("%Y-%m")
+    except ValueError:
+        return value[:7]
+
+
+def universe_cache_path(name: str, date: str | None = None, cache_dir: str | Path | None = None) -> Path:
+    """Return the monthly local cache path used for dynamic universe constituents."""
+    base_dir = Path(cache_dir) if cache_dir is not None else _PROJECT_ROOT / "data" / "universe"
+    return base_dir / f"{name}_{_month_key(date)}.txt"
+
+
+def list_universe_cache_months(name: str, cache_dir: str | Path | None = None) -> list[str]:
+    """List cached YYYY-MM months for a universe without fetching remote constituents."""
+    base_dir = Path(cache_dir) if cache_dir is not None else _PROJECT_ROOT / "data" / "universe"
+    if not base_dir.exists():
+        return []
+    prefix = f"{name}_"
+    months = []
+    for path in base_dir.glob(f"{prefix}*.txt"):
+        month = path.stem.removeprefix(prefix)
+        if month:
+            months.append(month)
+    return sorted(set(months))
+
+
+def read_cached_universe(name: str, date: str | None = None, cache_dir: str | Path | None = None) -> list[str]:
+    """Read a monthly universe cache file if present; never fetches remote data."""
+    path = universe_cache_path(name, date, cache_dir=cache_dir)
+    if not path.exists():
+        return []
+    return [line.strip() for line in path.read_text().splitlines() if line.strip()]
+
+
+def _baostock_timeout_seconds() -> float | None:
+    raw = os.environ.get("QUANTGPT_BAOSTOCK_TIMEOUT", str(_DEFAULT_BAOSTOCK_TIMEOUT_SECONDS))
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("Invalid QUANTGPT_BAOSTOCK_TIMEOUT=%r, using %.0fs", raw, _DEFAULT_BAOSTOCK_TIMEOUT_SECONDS)
+        return _DEFAULT_BAOSTOCK_TIMEOUT_SECONDS
+    return value if value > 0 else None
+
+
+@contextlib.contextmanager
+def _baostock_call_guard():
+    """Keep baostock's stdout chatter out of stdio MCP and bound socket waits."""
+    previous_timeout = socket.getdefaulttimeout()
+    captured_stdout = io.StringIO()
+    timeout = _baostock_timeout_seconds()
+    try:
+        socket.setdefaulttimeout(timeout)
+        with contextlib.redirect_stdout(captured_stdout):
+            yield
+    finally:
+        socket.setdefaulttimeout(previous_timeout)
+        output = captured_stdout.getvalue().strip()
+        if output:
+            for line in output.splitlines():
+                logger.debug("baostock stdout: %s", line)
+
+
 def _baostock_login():
     """Login to baostock, return True on success. Retries on network errors."""
     if not HAS_BAOSTOCK:
         raise RuntimeError("baostock is not installed")
     for attempt in range(3):
         try:
-            lg = bs.login()
+            with _baostock_call_guard():
+                lg = bs.login()
             if lg.error_code == "0":
                 return True
             if attempt < 2:
@@ -171,14 +245,15 @@ def _baostock_login():
 
 def _baostock_logout():
     try:
-        bs.logout()
+        with _baostock_call_guard():
+            bs.logout()
     except Exception:
         pass
 
 
 # ─── Universe functions ────────────────────────────────────────────
 
-def get_universe(name: str, date: str | None = None) -> list[str]:
+def get_universe(name: str, date: str | None = None, cache_only: bool | None = None) -> list[str]:
     """Return stock code list for a named universe.
 
     Supports: small_scale (static), hs300, csi500/zz500, csi1000, csi2000.
@@ -188,27 +263,26 @@ def get_universe(name: str, date: str | None = None) -> list[str]:
         return UNIVERSES[name]
 
     if name in ("hs300", "csi500", "zz500", "csi1000", "csi2000"):
-        return _fetch_index_constituents(name, date)
+        return _fetch_index_constituents(name, date, cache_only=cache_only)
 
     raise ValueError(f"Unknown universe: {name}. Available: {list(UNIVERSES.keys()) + ['hs300', 'csi500', 'zz500', 'csi1000', 'csi2000']}")
 
 
-def _fetch_index_constituents(name: str, date: str | None = None) -> list[str]:
+def _fetch_index_constituents(name: str, date: str | None = None, cache_only: bool | None = None) -> list[str]:
     """Fetch index constituents: cache → rqdatac → baostock."""
     date = date or datetime.now().strftime("%Y-%m-%d")
 
     # Monthly file cache
-    cache_dir = _PROJECT_ROOT / "data" / "universe"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = cache_dir / f"{name}_{date[:7]}.txt"
+    cache_path = universe_cache_path(name, date)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
 
     if cache_path.exists():
-        codes = cache_path.read_text().strip().split("\n")
+        codes = read_cached_universe(name, date)
         if len(codes) > 10:
             logger.info(f"{name} loaded from cache: {len(codes)} stocks")
             return codes
 
-    if CACHE_ONLY:
+    if _cache_only_enabled(cache_only):
         logger.warning(f"Cache-only mode: {name} constituents not cached for {date[:7]}, returning empty list")
         return []
 
@@ -231,9 +305,9 @@ def _fetch_index_constituents(name: str, date: str | None = None) -> list[str]:
 
     # For csi1000/csi2000 without rqdatac, use derivation
     if name == "csi1000":
-        return _derive_csi1000(date, cache_path)
+        return _derive_csi1000(date, cache_path, cache_only=cache_only)
     if name == "csi2000":
-        return _derive_csi2000(date, cache_path)
+        return _derive_csi2000(date, cache_path, cache_only=cache_only)
 
     return []
 
@@ -244,9 +318,11 @@ def _fetch_index_constituents_bs(name: str, date: str, cache_path: Path) -> list
         _baostock_login()
         try:
             if name == "hs300":
-                rs = bs.query_hs300_stocks(date)
+                with _baostock_call_guard():
+                    rs = bs.query_hs300_stocks(date)
             else:  # csi500 / zz500
-                rs = bs.query_zz500_stocks(date)
+                with _baostock_call_guard():
+                    rs = bs.query_zz500_stocks(date)
 
             codes = []
             while rs.error_code == "0" and rs.next():
@@ -260,13 +336,13 @@ def _fetch_index_constituents_bs(name: str, date: str, cache_path: Path) -> list
             _baostock_logout()
 
 
-def _derive_csi1000(date: str, cache_path: Path) -> list[str]:
+def _derive_csi1000(date: str, cache_path: Path, cache_only: bool | None = None) -> list[str]:
     """Derive CSI 1000 = all A - HS300 - CSI500 (baostock fallback)."""
-    hs300 = set(_fetch_index_constituents("hs300", date))
-    csi500 = set(_fetch_index_constituents("csi500", date))
+    hs300 = set(_fetch_index_constituents("hs300", date, cache_only=cache_only))
+    csi500 = set(_fetch_index_constituents("csi500", date, cache_only=cache_only))
     exclude = hs300 | csi500
 
-    all_stocks = _fetch_all_stock_codes(date)
+    all_stocks = _fetch_all_stock_codes(date, cache_only=cache_only)
     remaining = [c for c in all_stocks if c not in exclude]
     result = remaining[:1000]
     logger.info(f"CSI1000 derived: {len(result)} stocks (all_a={len(all_stocks)}, excluded={len(exclude)})")
@@ -276,14 +352,14 @@ def _derive_csi1000(date: str, cache_path: Path) -> list[str]:
     return result
 
 
-def _derive_csi2000(date: str, cache_path: Path) -> list[str]:
+def _derive_csi2000(date: str, cache_path: Path, cache_only: bool | None = None) -> list[str]:
     """Derive CSI 2000 = all A - HS300 - CSI500 - CSI1000 (baostock fallback)."""
-    csi1000 = set(_fetch_index_constituents("csi1000", date))
-    hs300 = set(_fetch_index_constituents("hs300", date))
-    csi500 = set(_fetch_index_constituents("csi500", date))
+    csi1000 = set(_fetch_index_constituents("csi1000", date, cache_only=cache_only))
+    hs300 = set(_fetch_index_constituents("hs300", date, cache_only=cache_only))
+    csi500 = set(_fetch_index_constituents("csi500", date, cache_only=cache_only))
     exclude = hs300 | csi500 | csi1000
 
-    all_stocks = _fetch_all_stock_codes(date)
+    all_stocks = _fetch_all_stock_codes(date, cache_only=cache_only)
     remaining = [c for c in all_stocks if c not in exclude]
     result = remaining[:2000]
     logger.info(f"CSI2000 derived: {len(result)} stocks (all_a={len(all_stocks)}, excluded={len(exclude)})")
@@ -293,21 +369,20 @@ def _derive_csi2000(date: str, cache_path: Path) -> list[str]:
     return result
 
 
-def _fetch_all_stock_codes(date: str | None = None) -> list[str]:
+def _fetch_all_stock_codes(date: str | None = None, cache_only: bool | None = None) -> list[str]:
     """Fetch all A-share stock codes: rqdatac → baostock."""
     date = date or datetime.now().strftime("%Y-%m-%d")
 
     # Monthly cache
-    cache_dir = _PROJECT_ROOT / "data" / "universe"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = cache_dir / f"all_a_{date[:7]}.txt"
+    cache_path = universe_cache_path("all_a", date)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
 
     if cache_path.exists():
-        codes = cache_path.read_text().strip().split("\n")
+        codes = read_cached_universe("all_a", date)
         if len(codes) > 100:
             return codes
 
-    if CACHE_ONLY:
+    if _cache_only_enabled(cache_only):
         logger.warning("Cache-only mode: all_a stocks not cached, returning empty")
         return []
 
@@ -334,7 +409,8 @@ def _fetch_all_stock_codes(date: str | None = None) -> list[str]:
         try:
             for offset in range(0, 10):
                 try_date = (datetime.strptime(date, "%Y-%m-%d") + timedelta(days=offset)).strftime("%Y-%m-%d")
-                rs = bs.query_all_stock(day=try_date)
+                with _baostock_call_guard():
+                    rs = bs.query_all_stock(day=try_date)
                 codes = []
                 while rs.error_code == "0" and rs.next():
                     row = rs.get_row_data()
@@ -421,15 +497,20 @@ class MarketDataFetcher:
     def _normalize_stock_code(stock_code: str) -> str:
         """Normalize to baostock format: sh.600519 / sz.000001."""
         stock_code = stock_code.strip()
-        if "." in stock_code:
-            parts = stock_code.split(".")
+        dotted = stock_code.replace("_", ".")
+        if "." in dotted:
+            parts = dotted.split(".")
             if len(parts) == 2:
                 if parts[1].upper() in ("SH", "SZ"):
                     return f"{parts[1].lower()}.{parts[0]}"
                 if parts[0].lower() in ("sh", "sz"):
                     return f"{parts[0].lower()}.{parts[1]}"
-        if stock_code[:2].lower() in ("sh", "sz"):
-            return f"{stock_code[:2].lower()}.{stock_code[2:]}"
+        compact = stock_code.replace(".", "").replace("_", "").lower()
+        if compact[:2] in ("sh", "sz"):
+            return f"{compact[:2]}.{compact[2:]}"
+        if compact.isdigit() and len(compact) == 6:
+            prefix = "sh" if compact[0] in {"5", "6", "9"} else "sz"
+            return f"{prefix}.{compact}"
         return stock_code
 
     def _cache_path(self, stock_code: str) -> str:
@@ -500,14 +581,15 @@ class MarketDataFetcher:
                 "date,code,open,high,low,close,volume,amount,pctChg",
             ]
             for query_fields in field_sets:
-                rs = bs.query_history_k_data_plus(
-                    code,
-                    query_fields,
-                    start_date=start_date,
-                    end_date=end_date,
-                    frequency="d",
-                    adjustflag="2",
-                )
+                with _baostock_call_guard():
+                    rs = bs.query_history_k_data_plus(
+                        code,
+                        query_fields,
+                        start_date=start_date,
+                        end_date=end_date,
+                        frequency="d",
+                        adjustflag="2",
+                    )
                 if rs.error_code != "0":
                     logger.warning(f"baostock history query failed for {code}: {rs.error_msg}")
                     continue
@@ -565,6 +647,7 @@ class MarketDataFetcher:
         stock_codes: list[str],
         start_date: str,
         end_date: str,
+        cache_only: bool | None = None,
     ) -> pd.DataFrame | None:
         """Fetch multiple stocks with caching. rqdatac batch → baostock fallback."""
         all_data: list[pd.DataFrame] = []
@@ -595,7 +678,7 @@ class MarketDataFetcher:
             to_fetch.append(code)
 
         if to_fetch:
-            if CACHE_ONLY:
+            if _cache_only_enabled(cache_only):
                 logger.warning(f"Cache-only mode: {len(to_fetch)} stocks not cached, skipping fetch")
             else:
                 # Primary: baostock batch (free, no account needed)
@@ -683,6 +766,145 @@ class MarketDataFetcher:
         return df
 
 
+def normalize_stock_code(stock_code: str) -> str:
+    """Public thin wrapper around the fetcher's stock-code normalizer."""
+    return MarketDataFetcher._normalize_stock_code(stock_code)
+
+
+def stock_cache_path(stock_code: str, cache_dir: str | None = None) -> str:
+    """Return the local parquet cache path for a stock without creating/fetching data."""
+    return MarketDataFetcher(cache_dir=cache_dir)._cache_path(stock_code)
+
+
+def _iso_date(value) -> str | None:
+    if value is None or pd.isna(value):
+        return None
+    return pd.Timestamp(value).strftime("%Y-%m-%d")
+
+
+def _range_covered(
+    cache_start,
+    cache_end,
+    requested_start: pd.Timestamp | None,
+    requested_end: pd.Timestamp | None,
+    *,
+    tolerance_days: int = 0,
+) -> bool:
+    if requested_start is None and requested_end is None:
+        return True
+    tolerance = pd.Timedelta(days=tolerance_days)
+    if requested_start is not None and pd.Timestamp(cache_start) > requested_start + tolerance:
+        return False
+    if requested_end is not None and pd.Timestamp(cache_end) < requested_end - tolerance:
+        return False
+    return True
+
+
+def describe_stock_cache(
+    stock_code: str,
+    start_date: str = "",
+    end_date: str = "",
+    cache_dir: str | None = None,
+    *,
+    tolerance_days: int = 0,
+) -> dict:
+    """Describe local single-stock parquet coverage without fetching remote data."""
+    fetcher = MarketDataFetcher(cache_dir=cache_dir)
+    normalized_code = fetcher._normalize_stock_code(stock_code)
+    path = fetcher._cache_path(normalized_code)
+    requested_start = pd.Timestamp(start_date) if start_date else None
+    requested_end = pd.Timestamp(end_date) if end_date else None
+    result = {
+        "stock_code": normalized_code,
+        "cache_path": path,
+        "cache_status": "missing",
+        "cache_exists": False,
+        "cache_start_date": None,
+        "cache_end_date": None,
+        "row_count": 0,
+        "requested_start_date": _iso_date(requested_start) if requested_start is not None else None,
+        "requested_end_date": _iso_date(requested_end) if requested_end is not None else None,
+        "range_covered": False,
+        "coverage_status": "missing",
+    }
+    if not os.path.exists(path):
+        return result
+
+    result["cache_exists"] = True
+    try:
+        try:
+            df = pd.read_parquet(path, columns=["trade_date"])
+        except Exception:
+            df = pd.read_parquet(path)
+    except Exception as exc:
+        result["cache_status"] = "unreadable"
+        result["coverage_status"] = "unreadable"
+        result["error"] = str(exc)
+        return result
+
+    if df is None or df.empty or "trade_date" not in df.columns:
+        result["cache_status"] = "empty"
+        result["coverage_status"] = "empty"
+        return result
+
+    trade_dates = pd.to_datetime(df["trade_date"], errors="coerce").dropna()
+    if trade_dates.empty:
+        result["cache_status"] = "empty"
+        result["coverage_status"] = "empty"
+        return result
+
+    cache_start = trade_dates.min()
+    cache_end = trade_dates.max()
+    covered = _range_covered(
+        cache_start,
+        cache_end,
+        requested_start,
+        requested_end,
+        tolerance_days=tolerance_days,
+    )
+    result.update({
+        "cache_status": "hit",
+        "cache_start_date": _iso_date(cache_start),
+        "cache_end_date": _iso_date(cache_end),
+        "row_count": int(len(trade_dates)),
+        "range_covered": covered,
+        "coverage_status": "full" if covered else "partial",
+    })
+    return result
+
+
+def plan_stock_cache_fetch(
+    stock_codes: list[str],
+    start_date: str,
+    end_date: str,
+    cache_dir: str | None = None,
+    *,
+    tolerance_days: int = 5,
+    sample_limit: int = 20,
+) -> dict:
+    """Estimate which stock caches would require remote fetch for fetch_stocks()."""
+    details = [
+        describe_stock_cache(code, start_date, end_date, cache_dir=cache_dir, tolerance_days=tolerance_days)
+        for code in stock_codes
+    ]
+    fetch_required = [item for item in details if not item["range_covered"]]
+    missing = [item for item in fetch_required if item["cache_status"] != "hit"]
+    partial = [item for item in fetch_required if item["cache_status"] == "hit"]
+    return {
+        "start_date": start_date,
+        "end_date": end_date,
+        "total_stock_count": len(details),
+        "covered_stock_count": len(details) - len(fetch_required),
+        "fetch_required_count": len(fetch_required),
+        "missing_stock_count": len(missing),
+        "partial_stock_count": len(partial),
+        "fetch_required_stock_codes_sample": [item["stock_code"] for item in fetch_required[:sample_limit]],
+        "missing_stock_codes_sample": [item["stock_code"] for item in missing[:sample_limit]],
+        "partial_stock_codes_sample": [item["stock_code"] for item in partial[:sample_limit]],
+        "details_sample": details[:sample_limit],
+    }
+
+
 def _summarize_market_source_events(source_events: list[dict]) -> dict:
     vendors = sorted({str(event.get("vendor")) for event in source_events if event.get("vendor")})
     event_kinds = sorted({str(event.get("source_kind")) for event in source_events if event.get("source_kind")})
@@ -731,6 +953,7 @@ def fetch_benchmark_returns(
     start_date: str | None = None,
     end_date: str | None = None,
     cache_dir: str | None = None,
+    cache_only: bool | None = None,
 ) -> pd.Series | None:
     """Fetch benchmark index daily returns: cache → rqdatac → baostock."""
     info = BENCHMARK_CODES.get(benchmark, BENCHMARK_CODES["hs300"])
@@ -762,7 +985,7 @@ def fetch_benchmark_returns(
         except Exception:
             pass
 
-    if CACHE_ONLY:
+    if _cache_only_enabled(cache_only):
         logger.warning(f"Cache-only mode: benchmark {benchmark} not cached, returning None")
         return None
 
@@ -802,14 +1025,15 @@ def fetch_benchmark_returns(
     with _bs_lock:
         _baostock_login()
         try:
-            rs = bs.query_history_k_data_plus(
-                bs_code,
-                "date,close",
-                start_date=start_date,
-                end_date=end_date,
-                frequency="d",
-                adjustflag="2",
-            )
+            with _baostock_call_guard():
+                rs = bs.query_history_k_data_plus(
+                    bs_code,
+                    "date,close",
+                    start_date=start_date,
+                    end_date=end_date,
+                    frequency="d",
+                    adjustflag="2",
+                )
             rows = []
             while rs.error_code == "0" and rs.next():
                 rows.append(rs.get_row_data())

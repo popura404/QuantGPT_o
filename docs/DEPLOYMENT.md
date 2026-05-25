@@ -16,7 +16,7 @@
 - FastAPI REST API：`/api/v1/*`
 - React 前端：由后端服务 `frontend/dist`
 - 报告和图表静态资源：`/api/v1/reports/*`、`/charts/*`
-- HTTP MCP：`/mcp`、`/mcp-sse`，生产环境需要独立 Bearer Token
+- HTTP MCP：`/mcp/`、`/mcp-sse/`，生产环境需要独立 Bearer Token
 
 ## 1. 部署前检查
 
@@ -159,14 +159,17 @@ QUANTGPT_ALLOW_GUEST_BACKTEST=false
 
 ```bash
 QUANTGPT_CORS_ORIGINS=http://localhost:5173,http://localhost:8003
+QUANTGPT_ALLOWED_HOSTS=localhost,127.0.0.1
 ```
 
 只填写可信的前端地址。远程访问时建议使用 VPN、零信任隧道或带身份认证的反向代理。
+`QUANTGPT_ALLOWED_HOSTS` 是 FastAPI 的 Host header allowlist，填写 host 名，不带端口。
 
 如果用统一域名反向代理，例如 `https://quantgpt.example.com`，则配置：
 
 ```bash
 QUANTGPT_CORS_ORIGINS=https://quantgpt.example.com
+QUANTGPT_ALLOWED_HOSTS=quantgpt.example.com,localhost,127.0.0.1
 ```
 
 ### 数据库
@@ -252,10 +255,11 @@ QUANTGPT_RUST_ENGINE=1
 }
 ```
 
-HTTP 服务也挂载 `/mcp` 和 `/mcp-sse`。生产环境不要直接公网暴露；如需反向代理访问，保持 `AUTH_DISABLED=false`，配置独立 token：
+HTTP 服务也挂载 `/mcp/` 和 `/mcp-sse/`。生产环境不要直接公网暴露；如需反向代理访问，保持 `AUTH_DISABLED=false`，配置独立 token：
 
 ```bash
 QUANTGPT_MCP_HTTP_TOKEN=<openssl rand -hex 32>
+QUANTGPT_MCP_REMOTE_FETCH_STOCK_LIMIT=50
 ```
 
 客户端请求需带：
@@ -271,6 +275,10 @@ Claude Code 或 Claude Desktop 的配置文件位置：
 | Claude Code | 项目根目录 `.mcp.json` 或全局 MCP 配置 |
 | Claude Desktop macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
 | Claude Desktop Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+
+MCP 重工具默认只读本地行情缓存。单股研究先用 `get_stock_history` / `check_market_cache`；全股票池工具只有显式
+`allow_remote_fetch=true` 时才会尝试远程补数。若预计补齐股票数超过
+`QUANTGPT_MCP_REMOTE_FETCH_STOCK_LIMIT`，工具会返回 `REMOTE_PREFETCH_REQUIRED` 和建议的预热命令。
 
 ## 6. 反向代理边界
 
@@ -303,7 +311,8 @@ server {
 
 - `AUTH_DISABLED=false`
 - `QUANTGPT_CORS_ORIGINS=https://quantgpt.example.com`
-- `/mcp` 和 `/mcp-sse` 不对公网匿名开放
+- `QUANTGPT_ALLOWED_HOSTS` 包含反向代理传入的 Host，例如 `quantgpt.example.com`
+- `/mcp/` 和 `/mcp-sse/` 不对公网匿名开放
 - 管理后台密码、JWT 密钥、WQ BRAIN 凭证不进入前端代码或截图
 - 长任务需要较长 `proxy_read_timeout`，否则 SSE 或任务状态连接可能被中断
 
@@ -383,7 +392,7 @@ docker compose up -d --build
 
 ```bash
 curl -s http://localhost:8003/api/v1/health
-curl -I http://localhost:8003/
+curl http://localhost:8003/
 ```
 
 ## 9. 常见问题
@@ -434,6 +443,7 @@ DATABASE_URL=postgresql+asyncpg://quantgpt:password@host.docker.internal:5432/qu
 ```
 
 HTTP MCP 还需确认 `QUANTGPT_MCP_HTTP_TOKEN` 与请求头一致。
+直接用浏览器或普通 `curl` 打开 `/mcp/` 可能返回 `406 Not Acceptable`；这不等于 MCP 不可用。用支持 streamable-http 的 MCP 客户端，并带上 `Accept: application/json, text/event-stream`。
 
 ### Windows 中文系统启动报 UnicodeDecodeError
 

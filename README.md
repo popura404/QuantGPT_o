@@ -39,7 +39,7 @@ The core architecture:
 ```
 LLM Agent (Claude Code / Claude Desktop)
     │
-    ├── MCP Tools (39 个)         ← Agent 的工具箱
+    ├── MCP Tools (41 个)         ← Agent 的工具箱
     │   ├── Factor research        ← 回测、评分、诊断、OOS、因子截面值
     │   ├── StrategySpec workflow  ← 模板、校验、策略回测、报告、导出、优化
     │   └── WQ BRAIN workflow      ← 模拟、查询、检查、preflight-gated 正式提交
@@ -332,12 +332,14 @@ TrajectoryAnalyzer → MetaEvolutionSelector → Strategy Execution
 | **Web UI** | Browser workbench | 单因子、组合、StrategySpec、WQ BRAIN、任务中心、报告查看、因子库管理 |
 
 <details>
-<summary><b>MCP Tools (39 个)</b></summary>
+<summary><b>MCP Tools (41 个)</b></summary>
 
 | Category | Tool | Description |
 |:---------|:-----|:------------|
 | Factor | `list_operators` | 全部算子文档 |
 | Factor | `list_universes` | 股票池和基准 |
+| Factor | `get_stock_history` | 单只 A 股本地行情缓存 |
+| Factor | `check_market_cache` | 股票池月份和单股缓存诊断 |
 | Factor | `validate_expression` | 语法校验 |
 | Factor | `run_backtest` | 因子回测，默认 OOS selection |
 | Factor | `score_factor` | 评分（0–100, A/B/C/D），支持 OOS/data-quality |
@@ -390,7 +392,7 @@ TrajectoryAnalyzer → MetaEvolutionSelector → Strategy Execution
 | Knowledge accumulation | Personal notes | None | Lost between sessions | **Structured KB across sessions** |
 | WQ BRAIN integration | -- | -- | -- | **Operator-aligned + preflight-gated submission** |
 | Anti-overfit | -- | -- | -- | **4 statistical tests + walk-forward** |
-| MCP / AI Agent | -- | -- | -- | **39 tools, skill-loop orchestration** |
+| MCP / AI Agent | -- | -- | -- | **41 tools, skill-loop orchestration** |
 | Live trading | Yes | Limited | -- | -- |
 | Intraday data | Yes | Yes | -- | Daily only |
 
@@ -432,7 +434,14 @@ Add MCP configuration to Claude Code or Claude Desktop:
 }
 ```
 
+Replace `/absolute/path/to/QuantGPT_o` with the absolute path of the checkout you are running.
+
 Then let the Agent work: *"在沪深300上挖掘高 fitness 的因子，目标 WQ BRAIN 可提交"*
+
+For single-stock questions such as `600487`, use MCP `get_stock_history` first, then `check_market_cache`
+if the Agent needs to inspect universe membership or cache coverage. Full-universe tools default to local
+cache only; if `allow_remote_fetch=true` would fill more than `QUANTGPT_MCP_REMOTE_FETCH_STOCK_LIMIT`
+stock parquet files, they return `REMOTE_PREFETCH_REQUIRED` with a prewarm command.
 
 ### Option 2: Expression Mode (No LLM Required)
 
@@ -548,7 +557,7 @@ quantgpt/
 │   ├── backtest.py              # Rank-based group backtest engine
 │   ├── market_data.py           # baostock/akshare → Parquet cache
 │   ├── api_server.py            # FastAPI REST API + SSE
-│   ├── mcp_server.py            # FastMCP server (39 tools — Agent's toolkit)
+│   ├── mcp_server.py            # FastMCP server (41 tools — Agent's toolkit)
 │   ├── iteration.py             # 3-phase evolutionary iteration
 │   ├── mutation_engine.py       # 8 directed mutation strategies
 │   ├── crossover_engine.py      # High-score factor crossover
@@ -571,7 +580,7 @@ quantgpt/
 │   └── src/components/          # Factor, strategy, WQ, task, and report UI
 ├── scripts/
 │   └── factor_miner.py          # Batch factor evaluation toolkit
-├── tests/                       # 650+ collected pytest cases
+├── tests/                       # 681 collected pytest cases
 ├── example_factor/              # BRAIN validation screenshots
 └── docs/                        # Architecture, API, MCP, StrategySpec, knowledge guides
 ```

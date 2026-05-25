@@ -21,6 +21,8 @@ Use [DEPLOYMENT.md](DEPLOYMENT.md) for Docker, server, reverse-proxy, backup, an
 
 **No API keys needed** for expression-only mode.
 
+For MCP configs, replace `/path/to/QuantGPT_o` with the absolute path of the checkout you are running.
+
 ## 2. Start the Server
 
 ```bash
@@ -51,6 +53,9 @@ Then let the Agent work:
 ```
 在沪深300上挖掘高 fitness 的因子，目标 WQ BRAIN 可提交
 ```
+
+单股问题（例如 `600487`）先让 Agent 调用 `get_stock_history`，需要检查股票池月份或 parquet 覆盖时再调用
+`check_market_cache`。不要把单股问题直接升级为 `compute_factor_values(csi500)` 或 `score_factor(csi500)`。
 
 这里的“可提交”应理解为生成可模拟/可候选的 WQ BRAIN 表达式；正式 submit 仍需要本地
 preflight 通过，或显式提供 `submission_override_reason` 记录豁免理由。
