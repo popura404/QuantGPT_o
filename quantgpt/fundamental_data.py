@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+
+def _as_datetime_ns(values) -> pd.Series:
+    """Normalize pandas/pyarrow datetime units before joins."""
+    return pd.to_datetime(values, errors="coerce").astype("datetime64[ns]")
+
 # ---------------------------------------------------------------------------
 # Variable registry: user-facing name -> (api_name, baostock_field)
 # ---------------------------------------------------------------------------
@@ -145,9 +150,9 @@ class FundamentalDataFetcher:
         try:
             df = pd.read_parquet(path)
             if "pub_date" in df.columns:
-                df["pub_date"] = pd.to_datetime(df["pub_date"])
+                df["pub_date"] = _as_datetime_ns(df["pub_date"])
             if "stat_date" in df.columns:
-                df["stat_date"] = pd.to_datetime(df["stat_date"])
+                df["stat_date"] = _as_datetime_ns(df["stat_date"])
             return df
         except Exception:
             return None
@@ -239,8 +244,8 @@ class FundamentalDataFetcher:
             result[col] = pd.to_numeric(result[col], errors="coerce")
 
         # Parse dates
-        result["pub_date"] = pd.to_datetime(result["pub_date"], errors="coerce")
-        result["stat_date"] = pd.to_datetime(result["stat_date"], errors="coerce")
+        result["pub_date"] = _as_datetime_ns(result["pub_date"])
+        result["stat_date"] = _as_datetime_ns(result["stat_date"])
 
         # Drop rows with no pub_date (unusable)
         result = result.dropna(subset=["pub_date"])
@@ -258,6 +263,7 @@ class FundamentalDataFetcher:
         start_date: str,
         end_date: str,
         needed_vars: set[str],
+        allow_remote_fetch: bool = True,
     ) -> pd.DataFrame | None:
         """Fetch fundamental data for multiple stocks with caching."""
         needed_apis = get_needed_apis(needed_vars)
@@ -293,7 +299,7 @@ class FundamentalDataFetcher:
 
         # Second pass: fetch uncached from baostock (unless cache-only)
         if to_fetch:
-            if CACHE_ONLY:
+            if CACHE_ONLY or not allow_remote_fetch:
                 logger.warning(f"Cache-only mode: {len(to_fetch)} stocks fundamentals not cached, skipping fetch")
             else:
                 with _bs_lock:
@@ -347,11 +353,13 @@ class FundamentalDataFetcher:
         # Filter quarterly_df to needed columns
         keep_cols = ["stock_code", "pub_date"] + [c for c in raw_cols if c in quarterly_df.columns]
         qdf = quarterly_df[keep_cols].copy()
+        qdf["pub_date"] = _as_datetime_ns(qdf["pub_date"])
         qdf = qdf.dropna(subset=["pub_date"])
 
         # merge_asof requires the key column to be sorted.
         # Since we merge by stock_code, do it per-stock to avoid cross-stock sorting issues.
         market_df = market_df.copy()
+        market_df["trade_date"] = _as_datetime_ns(market_df["trade_date"])
         result_parts = []
         for code, mkt_group in market_df.groupby("stock_code", sort=False):
             fund_group = qdf[qdf["stock_code"] == code].sort_values("pub_date")
@@ -526,6 +534,7 @@ class FundamentalDataFetcher:
         stock_codes: list[str],
         start_date: str,
         end_date: str,
+        allow_remote_fetch: bool = True,
     ) -> pd.DataFrame | None:
         """Fetch dividend data for multiple stocks with caching."""
         from .market_data import CACHE_ONLY, _baostock_login, _baostock_logout, _bs_lock
@@ -541,7 +550,7 @@ class FundamentalDataFetcher:
                 to_fetch_codes.append(code)
 
         if to_fetch_codes:
-            if CACHE_ONLY:
+            if CACHE_ONLY or not allow_remote_fetch:
                 logger.warning(f"Cache-only mode: {len(to_fetch_codes)} stocks dividends not cached, skipping fetch")
             else:
                 with _bs_lock:
@@ -679,7 +688,7 @@ def _load_factor_cache(stock_code: str, start_date: str, end_date: str) -> pd.Da
         return None
     try:
         df = pd.read_parquet(path)
-        df["trade_date"] = pd.to_datetime(df["trade_date"])
+        df["trade_date"] = _as_datetime_ns(df["trade_date"])
         cache_min = df["trade_date"].min()
         cache_max = df["trade_date"].max()
         req_start = pd.Timestamp(start_date)
@@ -702,7 +711,7 @@ def _save_factor_cache(stock_code: str, df: pd.DataFrame):
     try:
         if path.exists():
             existing = pd.read_parquet(path)
-            existing["trade_date"] = pd.to_datetime(existing["trade_date"])
+            existing["trade_date"] = _as_datetime_ns(existing["trade_date"])
             # Merge: new data takes precedence
             df = pd.concat([existing, df]).drop_duplicates("trade_date", keep="last").sort_values("trade_date")
         df.to_parquet(path, index=False)
@@ -742,7 +751,7 @@ def _fetch_factors_rq(
 
     df = raw.reset_index()
     df["stock_code"] = df["order_book_id"].apply(_from_rq_code)
-    df["trade_date"] = pd.to_datetime(df["date"])
+    df["trade_date"] = _as_datetime_ns(df["date"])
 
     # Rename rqdatac columns → project variable names (handle one-to-many)
     for rq_name, var_names in _RQ_TO_VARS.items():
@@ -806,12 +815,13 @@ def enrich_with_fundamentals_rq(
     stock_codes: list[str],
     start_date: str,
     end_date: str,
+    allow_remote_fetch: bool = True,
 ) -> pd.DataFrame | None:
     """Enrich market_df with fundamental data: local cache → rqdatac → None.
 
     Returns enriched market_df with fundamental columns added, or None if unavailable.
     """
-    from .market_data import _rqdatac_init
+    from .market_data import CACHE_ONLY, _rqdatac_init
 
     # Determine which rqdatac factors we need
     rq_factors = []
@@ -841,7 +851,12 @@ def enrich_with_fundamentals_rq(
 
     # Step 2: Fetch uncached stocks from rqdatac
     if uncached_codes:
-        if _rqdatac_init():
+        if CACHE_ONLY or not allow_remote_fetch:
+            logger.warning(
+                "Cache-only mode: %s stocks factor cache miss, skipping rqdatac fetch",
+                len(uncached_codes),
+            )
+        elif _rqdatac_init():
             for i in range(0, len(uncached_codes), 200):
                 batch = uncached_codes[i:i + 200]
                 fetched = _fetch_factors_rq(batch, start_date, end_date, rq_factors)
@@ -919,6 +934,7 @@ def enrich_market_data(
     stock_codes: list,
     start_date: str,
     end_date: str,
+    allow_remote_fetch: bool = True,
 ) -> pd.DataFrame:
     """Enrich market_df with fundamental data if fund_vars is non-empty.
 
@@ -927,18 +943,36 @@ def enrich_market_data(
     if not fund_vars:
         return market_df
 
-    rq_result = enrich_with_fundamentals_rq(market_df, fund_vars, stock_codes, start_date, end_date)
+    rq_result = enrich_with_fundamentals_rq(
+        market_df,
+        fund_vars,
+        stock_codes,
+        start_date,
+        end_date,
+        allow_remote_fetch=allow_remote_fetch,
+    )
     if rq_result is not None:
         return rq_result
 
     fetcher = FundamentalDataFetcher()
     non_div_vars = fund_vars - {"dividend_yield"}
     if non_div_vars:
-        qdf = fetcher.fetch_fundamentals(stock_codes, start_date, end_date, non_div_vars)
+        qdf = fetcher.fetch_fundamentals(
+            stock_codes,
+            start_date,
+            end_date,
+            non_div_vars,
+            allow_remote_fetch=allow_remote_fetch,
+        )
         if qdf is not None and len(qdf) > 0:
             market_df = fetcher.align_to_daily(qdf, market_df, non_div_vars)
     if "dividend_yield" in fund_vars:
-        div_df = fetcher.fetch_dividend_data(stock_codes, start_date, end_date)
+        div_df = fetcher.fetch_dividend_data(
+            stock_codes,
+            start_date,
+            end_date,
+            allow_remote_fetch=allow_remote_fetch,
+        )
         if div_df is not None and len(div_df) > 0:
             market_df = fetcher.align_dividends_to_daily(div_df, market_df)
     return market_df

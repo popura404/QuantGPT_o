@@ -164,11 +164,25 @@ mcp = FastMCP(
 )
 
 
-def _enrich_with_fundamentals(expression: str, market_df, stock_codes: list, start_date: str, end_date: str):
+def _enrich_with_fundamentals(
+    expression: str,
+    market_df,
+    stock_codes: list,
+    start_date: str,
+    end_date: str,
+    allow_remote_fetch: bool = True,
+):
     """Conditionally fetch and merge fundamental data if the expression uses fundamental vars."""
     from .fundamental_data import detect_fundamental_vars, enrich_market_data
     fund_vars = detect_fundamental_vars(expression)
-    return enrich_market_data(market_df, fund_vars, stock_codes, start_date, end_date)
+    return enrich_market_data(
+        market_df,
+        fund_vars,
+        stock_codes,
+        start_date,
+        end_date,
+        allow_remote_fetch=allow_remote_fetch,
+    )
 
 
 def _market_data_unavailable_result(allow_remote_fetch: bool) -> dict:
@@ -1226,7 +1240,15 @@ async def run_backtest(
             }
         _annotate_data_provenance(data_quality_report, data_provenance)
 
-        market_df = await asyncio.to_thread(_enrich_with_fundamentals, expression, market_df, stock_codes, start_date, end_date)
+        market_df = await asyncio.to_thread(
+            _enrich_with_fundamentals,
+            expression,
+            market_df,
+            stock_codes,
+            start_date,
+            end_date,
+            allow_remote_fetch,
+        )
 
         logger.info(f"Running backtest: {expression}")
         executor = get_executor()
@@ -1539,7 +1561,15 @@ async def score_factor(
             }
         _annotate_data_provenance(data_quality_report, data_provenance)
 
-        market_df = await asyncio.to_thread(_enrich_with_fundamentals, expression, market_df, stock_codes, start_date, end_date)
+        market_df = await asyncio.to_thread(
+            _enrich_with_fundamentals,
+            expression,
+            market_df,
+            stock_codes,
+            start_date,
+            end_date,
+            allow_remote_fetch,
+        )
 
         executor = get_executor()
         if oos_enabled:
@@ -2154,7 +2184,15 @@ async def run_anti_overfit(
         task_params["data_snapshot_id"] = data_provenance["data_snapshot_id"]
         task_params["data_source"] = data_provenance.get("data_source")
 
-        market_df = await asyncio.to_thread(_enrich_with_fundamentals, expression, market_df, stock_codes, start_date, end_date)
+        market_df = await asyncio.to_thread(
+            _enrich_with_fundamentals,
+            expression,
+            market_df,
+            stock_codes,
+            start_date,
+            end_date,
+            allow_remote_fetch,
+        )
 
         executor = get_executor()
         future = executor.submit_cpu_work(
@@ -2292,7 +2330,15 @@ async def run_rolling_validation(
         task_params["data_snapshot_id"] = data_provenance["data_snapshot_id"]
         task_params["data_source"] = data_provenance.get("data_source")
 
-        market_df = await asyncio.to_thread(_enrich_with_fundamentals, expression, market_df, stock_codes, start_date, end_date)
+        market_df = await asyncio.to_thread(
+            _enrich_with_fundamentals,
+            expression,
+            market_df,
+            stock_codes,
+            start_date,
+            end_date,
+            allow_remote_fetch,
+        )
 
         executor = get_executor()
         future = executor.submit_cpu_work(

@@ -2,12 +2,15 @@
 
 import pandas as pd
 
+from quantgpt import fundamental_data
 from quantgpt.fundamental_data import (
     ALL_FUNDAMENTAL_NAMES,
     DERIVED_VARIABLES,
     FUNDAMENTAL_VARIABLES,
+    FundamentalDataFetcher,
     _quarter_range,
     detect_fundamental_vars,
+    enrich_with_fundamentals_rq,
     enrich_market_data,
     get_needed_apis,
 )
@@ -168,3 +171,68 @@ class TestEnrichMarketData:
         result = enrich_market_data(df, {"roe"}, ["sh.600519"], "2024-01-01", "2024-01-31")
         assert result is not None
         assert len(result) >= 0
+
+    def test_align_to_daily_normalizes_datetime_units(self):
+        market_df = pd.DataFrame({
+            "trade_date": pd.Series(["2024-04-15"], dtype="datetime64[ns]"),
+            "stock_code": ["sh.600519"],
+            "close": [1800.0],
+        })
+        quarterly_df = pd.DataFrame({
+            "stock_code": ["sh.600519"],
+            "pub_date": pd.Series(["2024-04-01"], dtype="datetime64[us]"),
+            "roe": [0.2],
+        })
+
+        result = FundamentalDataFetcher().align_to_daily(quarterly_df, market_df, {"roe"})
+
+        assert result["roe"].iloc[0] == 0.2
+
+    def test_rq_enrichment_cache_only_skips_remote_init(self, monkeypatch):
+        monkeypatch.setattr(fundamental_data, "_load_factor_cache", lambda *args: None)
+        monkeypatch.setattr("quantgpt.market_data.CACHE_ONLY", True)
+
+        def fail_remote_init():
+            raise AssertionError("cache-only enrichment should not initialize rqdatac")
+
+        monkeypatch.setattr("quantgpt.market_data._rqdatac_init", fail_remote_init)
+        market_df = pd.DataFrame({
+            "trade_date": pd.to_datetime(["2024-01-02"]),
+            "stock_code": ["sh.600519"],
+            "close": [1800.0],
+        })
+
+        result = enrich_with_fundamentals_rq(market_df, {"roe"}, ["sh.600519"], "2024-01-01", "2024-01-31")
+
+        assert result is None
+
+    def test_allow_remote_fetch_false_skips_rq_and_baostock(self, monkeypatch):
+        monkeypatch.setattr(fundamental_data, "_load_factor_cache", lambda *args: None)
+        monkeypatch.setattr("quantgpt.market_data.CACHE_ONLY", False)
+
+        def fail_remote_init():
+            raise AssertionError("allow_remote_fetch=false should not initialize rqdatac")
+
+        def fail_baostock_fetch(self, stock_code, start_date, end_date, needed_apis):
+            raise AssertionError("allow_remote_fetch=false should not fetch baostock fundamentals")
+
+        monkeypatch.setattr("quantgpt.market_data._rqdatac_init", fail_remote_init)
+        monkeypatch.setattr(FundamentalDataFetcher, "_load_cache", lambda self, stock_code: None)
+        monkeypatch.setattr(FundamentalDataFetcher, "_fetch_stock", fail_baostock_fetch)
+        market_df = pd.DataFrame({
+            "trade_date": pd.to_datetime(["2024-01-02"]),
+            "stock_code": ["sh.600519"],
+            "close": [1800.0],
+        })
+
+        result = enrich_market_data(
+            market_df,
+            {"roe"},
+            ["sh.600519"],
+            "2024-01-01",
+            "2024-01-31",
+            allow_remote_fetch=False,
+        )
+
+        assert result is not None
+        assert "roe" not in result.columns
