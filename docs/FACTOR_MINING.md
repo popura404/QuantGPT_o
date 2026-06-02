@@ -96,6 +96,8 @@ results = batch_evaluate(
    - Stable rules → `docs/knowledge/rules/`
    - Empirical findings → `docs/knowledge/findings/`
    - Disproven paths → `docs/knowledge/failures/`
+6. Save pool-worthy factors into the factor pool with `status`, `category`, and searchable `tags`; keep rejected or
+   watchlist factors tagged as evidence instead of losing them in free-form notes.
 
 ### Phase 5: Continue or Stop
 

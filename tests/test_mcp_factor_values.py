@@ -7,6 +7,22 @@ import pytest
 from quantgpt import mcp_server
 
 
+@pytest.fixture(autouse=True)
+def mcp_task_fakes(monkeypatch):
+    async def fake_start(*args, **kwargs):
+        return "task-factor-values"
+
+    async def fake_complete(*args, **kwargs):
+        return None
+
+    async def fake_progress(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(mcp_server, "start_mcp_task", fake_start)
+    monkeypatch.setattr(mcp_server, "complete_mcp_task", fake_complete)
+    monkeypatch.setattr(mcp_server, "update_mcp_task_progress", fake_progress)
+
+
 @pytest.mark.asyncio
 async def test_mcp_compute_factor_values_returns_json(monkeypatch):
     calls = {}
@@ -18,6 +34,7 @@ async def test_mcp_compute_factor_values_returns_json(monkeypatch):
         end_date="",
         allow_remote_fetch=False,
         universe_date=None,
+        **kwargs,
     ):
         calls["allow_remote_fetch"] = allow_remote_fetch
         calls["universe_date"] = universe_date
@@ -56,6 +73,7 @@ async def test_mcp_compute_factor_values_returns_error(monkeypatch):
         end_date="",
         allow_remote_fetch=False,
         universe_date=None,
+        **kwargs,
     ):
         raise ValueError("Invalid expression: bad")
 
@@ -77,6 +95,7 @@ async def test_mcp_compute_factor_values_explicit_universe_date_wins(monkeypatch
         end_date="",
         allow_remote_fetch=False,
         universe_date=None,
+        **kwargs,
     ):
         calls["universe_date"] = universe_date
         calls["allow_remote_fetch"] = allow_remote_fetch

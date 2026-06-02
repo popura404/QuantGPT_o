@@ -7,7 +7,7 @@ QuantGPT 是 Agent-Driven 的因子研究引擎。核心架构分为六层：Age
 ```
 LLM Agent (Claude Code / Claude Desktop)
     │
-    ├── MCP Tools (41 个)            ← Agent 的工具箱
+    ├── MCP Tools (49 个)            ← Agent 的工具箱
     │   ├── 因子研究                 ← 表达式校验、回测、评分、诊断、OOS/rolling、factor_values
     │   ├── StrategySpec 工作流       ← 模板、校验、回测、评分、报告、候选导出、优化
     │   └── WQ BRAIN 工作流          ← 远程模拟、批量扫描、状态检查、preflight-gated 正式提交
@@ -144,15 +144,19 @@ Request
 
 ### MCP Server (`mcp_server.py`)
 
-41 个 MCP 工具，供 Claude Code / AI Agent 直接调用：
+49 个 MCP 工具，供 Claude Code / AI Agent 直接调用：
 - 因子研究：`list_operators` / `list_universes` / `validate_expression` /
   `get_stock_history` / `check_market_cache` /
   `run_backtest` / `score_factor` / `compute_factor_values` / `diagnose_factor` /
-  `run_anti_overfit` / `run_rolling_validation`
+  `run_anti_overfit` / `run_rolling_validation` / `get_mcp_task_status` /
+  `cancel_mcp_task`
 - 实验治理：`list_experiments` / `get_experiment` / `export_experiment_report` /
   `compare_experiments` / `show_factor_lineage` / `summarize_trial_counts` /
   `find_similar_factors` / `run_multiple_testing_check` / `promote_experiment` /
   `reject_experiment`
+- 因子池：`save_factor_pool_entry` / `list_factor_pool_entries` /
+  `get_factor_pool_entry` / `update_factor_pool_entry` / `delete_factor_pool_entry` /
+  `list_factor_pool_tags`
 - StrategySpec：`list_markets` / `list_data_fields` / `list_strategy_templates` /
   `get_strategy_template` / `instantiate_strategy_template` / `validate_strategy_spec` /
   `run_strategy_backtest` / `score_strategy` / `generate_strategy_report` /
@@ -179,6 +183,7 @@ SQLAlchemy 2.0 async ORM，支持 SQLite（默认）和 PostgreSQL。
 - `tasks` — 回测任务（状态机：pending → running → completed/failed）
 - `reports` — HTML 报告文件记录
 - `saved_factors` — 用户保存的因子
+- `factor_pool_entries` — 研究因子池条目，主要通过 tags/category/status 查询和维护
 - `submitted_alphas` — WQ BRAIN 已提交 alpha 记录
 - `factor_search_attempts` — 因子搜索尝试的不可变审计记录
 - `strategies` / `strategy_runs` — StrategySpec 和策略回测运行记录

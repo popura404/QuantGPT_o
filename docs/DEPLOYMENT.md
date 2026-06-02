@@ -280,6 +280,11 @@ MCP 重工具默认只读本地行情缓存。单股研究先用 `get_stock_hist
 `allow_remote_fetch=true` 时才会尝试远程补数。若预计补齐股票数超过
 `QUANTGPT_MCP_REMOTE_FETCH_STOCK_LIMIT`，工具会返回 `REMOTE_PREFETCH_REQUIRED` 和建议的预热命令。
 
+长时间运行的因子工具建议使用异步模式：对 `run_backtest`、`score_factor`、`compute_factor_values`、
+`run_anti_overfit`、`run_rolling_validation` 传入 `submit_only=true`，再用 `get_mcp_task_status(task_id)`
+轮询进度；需要停止时调用 `cancel_mcp_task(task_id)`。取消是协作式的：工具会在批次边界、股票循环或
+数据补齐步骤之间尽快停止，但已进入的 baostock/rqdatac/socket 调用仍需等待返回或超时。
+
 ## 6. 反向代理边界
 
 最小 Nginx 示例：

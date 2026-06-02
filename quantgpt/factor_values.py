@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
+from typing import Callable
 
 import numpy as np
 import pandas as pd
@@ -65,6 +66,8 @@ def compute_factor_values_payload(
     end_date: str = "",
     allow_remote_fetch: bool = True,
     universe_date: str | None = None,
+    cancel_check: Callable[[], None] | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> dict:
     req = validate_factor_values_request(expression, universe, start_date, end_date)
     with api_context():
@@ -78,7 +81,18 @@ def compute_factor_values_payload(
             )
 
         fetcher = MarketDataFetcher()
-        market_df = fetcher.fetch_stocks(stocks, req.fetch_start, req.end_date, cache_only=cache_only)
+        if cancel_check:
+            cancel_check()
+        market_df = fetcher.fetch_stocks(
+            stocks,
+            req.fetch_start,
+            req.end_date,
+            cache_only=cache_only,
+            cancel_check=cancel_check,
+            progress_callback=progress_callback,
+        )
+        if cancel_check:
+            cancel_check()
         if market_df is None or market_df.empty:
             raise ValueError(
                 "No market data available for this universe/date range. "

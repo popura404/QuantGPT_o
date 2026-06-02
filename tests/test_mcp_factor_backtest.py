@@ -258,7 +258,15 @@ async def test_score_factor_defaults_to_cache_only_market_data(monkeypatch):
     async def fake_record_failure(*args, **kwargs):
         return {}
 
-    def fake_fetch(universe, start_date, end_date, allow_remote_fetch=True, universe_date=None):
+    def fake_fetch(
+        universe,
+        start_date,
+        end_date,
+        allow_remote_fetch=True,
+        universe_date=None,
+        cancel_check=None,
+        progress_callback=None,
+    ):
         calls.append((allow_remote_fetch, universe_date))
         return None, []
 
@@ -293,7 +301,15 @@ async def test_run_backtest_passes_explicit_universe_date(monkeypatch):
     async def fake_record_failure(*args, **kwargs):
         return {}
 
-    def fake_fetch(universe, start_date, end_date, allow_remote_fetch=True, universe_date=None):
+    def fake_fetch(
+        universe,
+        start_date,
+        end_date,
+        allow_remote_fetch=True,
+        universe_date=None,
+        cancel_check=None,
+        progress_callback=None,
+    ):
         captured["universe_date"] = universe_date
         return None, []
 
@@ -361,7 +377,15 @@ def test_fetch_data_for_market_allows_remote_prefetch_within_limit(monkeypatch):
     monkeypatch.setattr(mcp_server, "plan_stock_cache_fetch", lambda *args, **kwargs: _cache_plan(50))
 
     class FakeFetcher:
-        def fetch_stocks(self, stock_codes, start_date, end_date, cache_only=None):
+        def fetch_stocks(
+            self,
+            stock_codes,
+            start_date,
+            end_date,
+            cache_only=None,
+            cancel_check=None,
+            progress_callback=None,
+        ):
             calls["stock_count"] = len(stock_codes)
             calls["cache_only"] = cache_only
             return _market_df()

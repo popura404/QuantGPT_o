@@ -11,18 +11,19 @@
 3. [会话管理](#会话管理)
 4. [回测](#回测)
 5. [因子截面值](#因子截面值)
-6. [策略框架](#策略框架)
-7. [实时推送 (SSE)](#实时推送-sse)
-8. [迭代优化](#迭代优化)
-9. [报告](#报告)
-10. [反馈](#反馈)
-11. [管理后台](#管理后台)
-12. [WQ BRAIN](#wq-brain)
-13. [MCP Tools](#mcp-tools)
-14. [健康检查](#健康检查)
-15. [错误码](#错误码)
-16. [股票池与基准](#股票池与基准)
-17. [因子表达式语法](#因子表达式语法)
+6. [因子池](#因子池)
+7. [策略框架](#策略框架)
+8. [实时推送 (SSE)](#实时推送-sse)
+9. [迭代优化](#迭代优化)
+10. [报告](#报告)
+11. [反馈](#反馈)
+12. [管理后台](#管理后台)
+13. [WQ BRAIN](#wq-brain)
+14. [MCP Tools](#mcp-tools)
+15. [健康检查](#健康检查)
+16. [错误码](#错误码)
+17. [股票池与基准](#股票池与基准)
+18. [因子表达式语法](#因子表达式语法)
 
 ---
 
@@ -509,6 +510,48 @@ pending → iterating → iteration_completed / failed
 ```
 
 **错误:** 400 (表达式为空/过长、日期格式错误、日期跨度过大、无行情数据), 401 (未认证)
+
+---
+
+## 因子池
+
+因子池是独立于旧 `/api/v1/factor-library` 的研究池，用 tags 作为主要分类机制。
+主分类始终保存为 `category:<name>` tag，同时同步到 `category_tag` 索引用于过滤。
+`pool_status` 只表示研究池状态，不会触发 experiment ledger promotion。
+
+状态枚举：`accepted` / `watchlist` / `rejected` / `insufficient_data` / `runtime_failed`。
+
+### POST /api/v1/factor-pool
+
+保存或 upsert 因子池条目。同一用户下优先按 `factor_hash` 更新；否则按规范化表达式、股票池和持仓周期匹配。
+
+```json
+{
+  "expression": "rank(close)",
+  "name": "Close rank",
+  "category": "momentum",
+  "tags": ["quality", "short horizon"],
+  "pool_status": "watchlist",
+  "universe": "csi500",
+  "holding_period": 10,
+  "metrics": {"score": 81}
+}
+```
+
+响应包含 `entry` 和 `created`。`created=false` 表示命中已有条目并更新。
+
+### GET /api/v1/factor-pool
+
+查询因子池条目。常用过滤参数：`status`/`pool_status`、`category`、`tag`、重复 `tags`、`universe`、`market`、`factor_hash`、`experiment_id`、`q`、`limit`、`offset`。
+多个 `tags` 使用 AND 语义。
+
+### GET /api/v1/factor-pool/tags
+
+返回 tags、categories 和 statuses facets，可按 `status`/`pool_status`、`universe`、`market` 缩小统计范围。
+
+### GET/PATCH/DELETE /api/v1/factor-pool/{entry_id}
+
+读取、更新或删除单个用户自己的因子池条目。
 
 ---
 
@@ -1052,7 +1095,7 @@ preflight/override 允许时触发正式提交。`alt` 账号只能用于模拟�
 
 ## MCP Tools
 
-QuantGPT 提供 41 个 MCP (Model Context Protocol) 工具，覆盖因子研究、StrategySpec v0/v1
+QuantGPT 提供 49 个 MCP (Model Context Protocol) 工具，覆盖因子研究、因子池、StrategySpec v0/v1
 策略工具和 WQ BRAIN 工作流。推荐本机 stdio 模式；如果暴露 HTTP MCP (`/mcp/`, `/mcp-sse/`)，
 认证开启时必须设置 `QUANTGPT_MCP_HTTP_TOKEN` 并由客户端发送 `Authorization: Bearer <token>`。
 直接用浏览器或普通 `curl` 访问 `/mcp/` 可能返回 `406 Not Acceptable`；功能验证应使用 MCP streamable-http 客户端，并发送 `Accept: application/json, text/event-stream`。
@@ -1067,6 +1110,8 @@ QuantGPT 提供 41 个 MCP (Model Context Protocol) 工具，覆盖因子研究�
 | `run_backtest` | 执行回测,返回完整指标 + 反过拟合检测 + 报告路径 |
 | `score_factor` | 执行回测并返回综合评分 (0-100, A/B/C/D) |
 | `compute_factor_values` | 按股票池和日期区间输出每日截面因子值 |
+| `get_mcp_task_status` | 查询 MCP 后台任务状态、进度和可选最终结果 |
+| `cancel_mcp_task` | 请求协作式取消 MCP 后台任务 |
 | `diagnose_factor` | 诊断因子问题,推荐突变策略 (6种) |
 | `run_anti_overfit` | 独立反过拟合检测 (4项测试) |
 | `run_rolling_validation` | Walk-Forward 滚动验证 |
@@ -1080,6 +1125,12 @@ QuantGPT 提供 41 个 MCP (Model Context Protocol) 工具，覆盖因子研究�
 | `run_multiple_testing_check` | 写入 trial-aware 多重检验结果 |
 | `promote_experiment` | 写入 promotion event |
 | `reject_experiment` | 写入 rejection event |
+| `save_factor_pool_entry` | 保存或 upsert 研究因子池条目，tags/category/status 一起入库 |
+| `list_factor_pool_entries` | 按状态、category、tags、股票池、hash、experiment 或关键词查询因子池 |
+| `get_factor_pool_entry` | 读取单个因子池条目 |
+| `update_factor_pool_entry` | 更新因子池 tags、category、状态和研究快照 |
+| `delete_factor_pool_entry` | 删除因子池条目 |
+| `list_factor_pool_tags` | 返回因子池 tag/category/status facets |
 | `list_markets` | 返回策略框架支持的市场 |
 | `list_data_fields` | 返回指定市场可用于策略因子表达式的数据字段 |
 | `list_strategy_templates` | 返回可用策略模板和治理边界 |
@@ -1130,12 +1181,20 @@ check_market_cache(universe="csi500", start_date="2026-05-01", end_date="2026-05
 |------|--------|------|
 | `universe_date` | `start_date` | 股票池成分股基准日期；用于命中月度 universe cache |
 | `allow_remote_fetch` | `false` | 是否允许缓存缺失时阻塞式远程补数 |
+| `submit_only` | `false` | 异步提交并立即返回 `task_id`；默认同步返回完整结果 |
 
-`compute_factor_values` 也支持这两个参数，但 `universe_date` 默认使用 `end_date`，因为该工具通常用于近期截面查询。
+`compute_factor_values` 也支持 `universe_date`、`allow_remote_fetch` 和 `submit_only`，但 `universe_date` 默认使用 `end_date`，因为该工具通常用于近期截面查询。
 
 当 `allow_remote_fetch=true` 且预计需要补齐的单股 parquet 数量超过
 `QUANTGPT_MCP_REMOTE_FETCH_STOCK_LIMIT`（默认 50）时，工具返回 `REMOTE_PREFETCH_REQUIRED`，并包含
 `suggested_prewarm_command`、缺失数量、阈值和可用 universe 缓存月份。
+
+`submit_only=true` 适用于 `run_backtest`、`score_factor`、`compute_factor_values`、
+`run_anti_overfit`、`run_rolling_validation`。工具会立即返回 `task_id`，随后可用
+`get_mcp_task_status(task_id, include_result=false)` 查询 `status`、`progress`、
+`progress_message`、`stage`、`error`，或用 `cancel_mcp_task(task_id)` 请求协作式取消。
+取消无法强杀已经进入的单次 baostock/rqdatac/socket 阻塞调用，实际响应时间受当前调用和
+`QUANTGPT_BAOSTOCK_TIMEOUT` 影响。
 
 ### 配置 (.mcp.json)
 

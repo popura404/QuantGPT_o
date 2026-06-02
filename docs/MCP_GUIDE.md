@@ -49,7 +49,8 @@ QuantGPT 提供标准 MCP (Model Context Protocol) 接口，支持因子研究�
 3. **cwd 必须用绝对路径** — 指向项目根目录，确保 `python3 -m quantgpt` 能找到包
 4. **deepseek MCP 需要 `.env` 中配置 `DEEPSEEK_API_KEY`** — 脚本会自动从 `.env` 读取
 5. **因子重工具默认只读本地缓存** — `score_factor` / `run_backtest` / `compute_factor_values` / 验证类重工具在缓存缺失时会快速返回 `MARKET_DATA_UNAVAILABLE`，避免 Agent 长时间无输出后断流；确认要阻塞式拉取远程行情时再传 `allow_remote_fetch=true`
-6. **单股研究先读单股缓存** — 研究 `600487` 这类单只 A 股时先调用 `get_stock_history` / `check_market_cache`，不要直接调用 `compute_factor_values(csi500)` 或 `score_factor(csi500)`
+6. **长任务可异步提交** — 5 个因子重工具支持 `submit_only=true` 返回 `task_id`，再用 `get_mcp_task_status` 查询进度或 `cancel_mcp_task` 请求协作式取消
+7. **单股研究先读单股缓存** — 研究 `600487` 这类单只 A 股时先调用 `get_stock_history` / `check_market_cache`，不要直接调用 `compute_factor_values(csi500)` 或 `score_factor(csi500)`
 
 配置完成后**重启 Claude Code**（退出后重新进入项目目录），验证连接：
 
@@ -129,6 +130,8 @@ MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先�
 | `run_backtest` | 执行因子回测，生成 HTML 报告 |
 | `score_factor` | 因子综合评分 (0-100, A/B/C/D) |
 | `compute_factor_values` | 输出每日全市场截面因子值 |
+| `get_mcp_task_status` | 查询 MCP 后台任务状态、进度和可选最终结果 |
+| `cancel_mcp_task` | 请求协作式取消 MCP 后台任务 |
 | `diagnose_factor` | 诊断因子问题，推荐改进策略 |
 | `run_anti_overfit` | 反过拟合检测 (4 项测试) |
 | `run_rolling_validation` | 滚动验证 (Walk-Forward) |
@@ -139,9 +142,13 @@ MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先�
 | `run_multiple_testing_check` | 写入 trial-aware 多重检验结果 |
 | `promote_experiment` / `reject_experiment` | 写入 promotion/rejection event |
 | `export_experiment_report` | 导出轻量实验 JSON/Markdown 报告 |
+| `save_factor_pool_entry` | 保存或 upsert 研究因子池条目；`accepted` 不触发 ledger promotion |
+| `list_factor_pool_entries` / `get_factor_pool_entry` | 查询因子池条目，支持状态、category、tags、股票池、hash 和关键词过滤 |
+| `update_factor_pool_entry` / `delete_factor_pool_entry` | 更新或删除因子池条目 |
+| `list_factor_pool_tags` | 返回因子池 tag/category/status facets |
 | `wq_brain_submit` | 调用 WorldQuant BRAIN 远程模拟；正式 submit 受 preflight/override 约束 |
 
-`ask_deepseek` 由 `scripts/mcp_deepseek.py` 提供，是可选的独立 MCP server，不计入 QuantGPT 的 41 个内置工具。
+`ask_deepseek` 由 `scripts/mcp_deepseek.py` 提供，是可选的独立 MCP server，不计入 QuantGPT 的 49 个内置工具。
 
 ### StrategySpec 策略工具
 
@@ -199,6 +206,7 @@ metrics 作为权威结论。
 | `benchmark` | str | `hs300` | 基准指数：`hs300` / `zz500` / `sz50` / `csi1000` |
 | `neutralize_industry` | bool | `true` | 行业中性化 |
 | `neutralize_cap` | bool | `true` | 市值中性化 |
+| `submit_only` | bool | `false` | 异步提交并立即返回 `task_id`；默认同步返回完整结果 |
 
 `run_backtest` 与 `score_factor` 额外支持 OOS/data-quality 参数。面向 Agent 的默认结论路径为
 `oos_enabled=true`、`validation_stage="selection"`：train 只用于确定方向/参数，valid 用于候选选择，
@@ -226,6 +234,27 @@ data-quality 会优先使用免费行情源可取得的 A 股元数据：`is_st`
 `run_backtest` 和 `score_factor` 的正式结果会携带 `data_snapshot_id`、`data_source`、
 `data_source_metadata`，并把 `data_snapshot_id` 同步进 `params`、`data_quality` 和
 `oos_result`，用于 ledger hash、promotion gate 和 export 追溯。
+
+### MCP 后台任务进度与取消
+
+`run_backtest`、`score_factor`、`compute_factor_values`、`run_anti_overfit`、`run_rolling_validation`
+都支持 `submit_only=true`。返回示例：
+
+```json
+{
+  "submitted": true,
+  "task_id": "abc123",
+  "status": "running",
+  "poll_tool": "get_mcp_task_status",
+  "cancel_tool": "cancel_mcp_task"
+}
+```
+
+随后调用 `get_mcp_task_status(task_id, include_result=false)` 可查看 `status`、`progress`、
+`progress_message`、`progress_current`、`progress_total`、`stage`、`error` 等字段；任务完成后传
+`include_result=true` 可取最终结果。调用 `cancel_mcp_task(task_id)` 会设置取消标记，后台任务在下一个检查点退出。
+取消是协作式：无法强杀已经进入的单次 baostock/rqdatac/socket 阻塞调用，实际响应时间受当前调用和
+`QUANTGPT_BAOSTOCK_TIMEOUT` 影响。
 
 candidate / submit / export 边界统一要求 `validation_provenance.suite_version="factor_validation/v1"`，
 且必须同时具备 `data_snapshot_id`，并通过 data-quality gate、train/valid/test、rolling window、
@@ -277,6 +306,7 @@ A 股 `a_share` / `hs300` 代理检查，不能直接授权 WQ `USA` / `TOP3000`
 | `end_date` | str | 今天 | 结束日期 YYYY-MM-DD |
 | `universe_date` | str \| null | `end_date` | 股票池成分股基准日期；用于命中 `data/universe/<universe>_YYYY-MM.txt` |
 | `allow_remote_fetch` | bool | `false` | 是否允许缓存缺失时阻塞式远程补数；超过阈值会返回 `REMOTE_PREFETCH_REQUIRED` |
+| `submit_only` | bool | `false` | 异步提交并立即返回 `task_id`；默认同步返回完整结果 |
 
 示例：
 

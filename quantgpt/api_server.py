@@ -209,6 +209,7 @@ from .routes.comparison import router as comparison_router
 from .routes.composite import router as composite_router
 from .routes.daily_summary import router as daily_summary_router
 from .routes.factor_library import router as factor_library_router
+from .routes.factor_pool import router as factor_pool_router
 from .routes.factor_values import router as factor_values_router
 from .routes.feedback import router as feedback_router
 from .routes.iteration_routes import router as iteration_router
@@ -221,6 +222,7 @@ app.include_router(auth_router)
 app.include_router(sessions_router)
 app.include_router(admin_router)
 app.include_router(factor_library_router)
+app.include_router(factor_pool_router)
 app.include_router(composite_router)
 app.include_router(comparison_router)
 app.include_router(daily_summary_router)

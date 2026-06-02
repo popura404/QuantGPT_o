@@ -130,6 +130,49 @@ class SavedFactor(Base):
     user = relationship("User")
 
 
+class FactorPoolEntry(Base):
+    __tablename__ = "factor_pool_entries"
+
+    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_user_id = Column(Uuid, ForeignKey("users.id"), nullable=False, index=True)
+    expression = Column(Text, nullable=False)
+    expression_normalized = Column(Text, nullable=False)
+    name = Column(String(200), nullable=True)
+    note = Column(Text, nullable=True)
+    main_reason = Column(Text, nullable=True)
+    tags = Column(JSON, nullable=True)
+    category_tag = Column(String(120), default="category:uncategorized", nullable=False, index=True)
+    pool_status = Column(String(40), default="watchlist", nullable=False, index=True)
+    factor_hash = Column(String(80), nullable=True, index=True)
+    experiment_id = Column(String(80), nullable=True, index=True)
+    task_id = Column(String(12), nullable=True, index=True)
+    market = Column(String(60), default="a_share", nullable=False)
+    universe = Column(String(80), nullable=True, index=True)
+    holding_period = Column(Integer, nullable=True)
+    validation_stage = Column(String(40), nullable=True)
+    metrics = Column(JSON, nullable=True)
+    backtest_summary = Column(JSON, nullable=True)
+    params = Column(JSON, nullable=True)
+    validation_provenance = Column(JSON, nullable=True)
+    report_url = Column(String(500), nullable=True)
+    factor_card_path = Column(String(500), nullable=True)
+    source = Column(String(40), default="manual", nullable=False)
+    created_by = Column(String(80), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
+
+    owner = relationship("User")
+
+    __table_args__ = (
+        Index("ix_factor_pool_owner_status", "owner_user_id", "pool_status"),
+        Index("ix_factor_pool_owner_category", "owner_user_id", "category_tag"),
+        Index("ix_factor_pool_owner_hash", "owner_user_id", "factor_hash"),
+        Index("ix_factor_pool_owner_expr", "owner_user_id", "expression_normalized"),
+        Index("ix_factor_pool_owner_universe", "owner_user_id", "universe"),
+        Index("ix_factor_pool_owner_created", "owner_user_id", "created_at"),
+    )
+
+
 class Feedback(Base):
     __tablename__ = "feedbacks"
 

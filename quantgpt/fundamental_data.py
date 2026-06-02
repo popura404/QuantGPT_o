@@ -7,6 +7,7 @@ baostock path: fetches quarterly data from 6 APIs, aligns to daily via pubDate m
 import logging
 import re
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import pandas as pd
@@ -264,6 +265,8 @@ class FundamentalDataFetcher:
         end_date: str,
         needed_vars: set[str],
         allow_remote_fetch: bool = True,
+        cancel_check: Callable[[], None] | None = None,
+        progress_callback: Callable[[int, int, str], None] | None = None,
     ) -> pd.DataFrame | None:
         """Fetch fundamental data for multiple stocks with caching."""
         needed_apis = get_needed_apis(needed_vars)
@@ -276,7 +279,10 @@ class FundamentalDataFetcher:
 
         # First pass: load all cached data
         to_fetch = []
-        for code in stock_codes:
+        total = len(stock_codes)
+        for checked, code in enumerate(stock_codes, start=1):
+            if cancel_check:
+                cancel_check()
             cached = self._load_cache(code)
             if cached is not None:
                 raw_vars = set()
@@ -294,8 +300,12 @@ class FundamentalDataFetcher:
                     req_end = pd.Timestamp(end_date)
                     if cache_min <= req_start + pd.Timedelta(days=100) and cache_max >= req_end - pd.Timedelta(days=100):
                         all_dfs.append(cached)
+                        if progress_callback:
+                            progress_callback(checked, total, f"checked fundamental cache for {code}")
                         continue
             to_fetch.append((code, cached))
+            if progress_callback:
+                progress_callback(checked, total, f"checked fundamental cache for {code}")
 
         # Second pass: fetch uncached from baostock (unless cache-only)
         if to_fetch:
@@ -306,6 +316,8 @@ class FundamentalDataFetcher:
                     _baostock_login()
                     try:
                         for i, (code, cached) in enumerate(to_fetch):
+                            if cancel_check:
+                                cancel_check()
                             if (i + 1) % 50 == 0:
                                 logger.info(f"Fetching fundamentals: {i+1}/{len(to_fetch)}")
                             try:
@@ -321,6 +333,14 @@ class FundamentalDataFetcher:
                                     all_dfs.append(stock_df)
                             except Exception as e:
                                 logger.warning(f"Failed to fetch fundamentals for {code}: {e}")
+                            if progress_callback:
+                                progress_callback(
+                                    total - len(to_fetch) + i + 1,
+                                    total,
+                                    f"fetched fundamentals for {code}",
+                                )
+                            if cancel_check:
+                                cancel_check()
                     finally:
                         _baostock_logout()
 
@@ -535,6 +555,8 @@ class FundamentalDataFetcher:
         start_date: str,
         end_date: str,
         allow_remote_fetch: bool = True,
+        cancel_check: Callable[[], None] | None = None,
+        progress_callback: Callable[[int, int, str], None] | None = None,
     ) -> pd.DataFrame | None:
         """Fetch dividend data for multiple stocks with caching."""
         from .market_data import CACHE_ONLY, _baostock_login, _baostock_logout, _bs_lock
@@ -542,12 +564,17 @@ class FundamentalDataFetcher:
         all_dfs = []
         to_fetch_codes = []
 
-        for code in stock_codes:
+        total = len(stock_codes)
+        for checked, code in enumerate(stock_codes, start=1):
+            if cancel_check:
+                cancel_check()
             cached = self._load_dividend_cache(code)
             if cached is not None and len(cached) > 0:
                 all_dfs.append(cached)
             else:
                 to_fetch_codes.append(code)
+            if progress_callback:
+                progress_callback(checked, total, f"checked dividend cache for {code}")
 
         if to_fetch_codes:
             if CACHE_ONLY or not allow_remote_fetch:
@@ -557,6 +584,8 @@ class FundamentalDataFetcher:
                     _baostock_login()
                     try:
                         for i, code in enumerate(to_fetch_codes):
+                            if cancel_check:
+                                cancel_check()
                             if (i + 1) % 50 == 0:
                                 logger.info(f"Fetching dividends: {i+1}/{len(to_fetch_codes)}")
                             try:
@@ -566,6 +595,14 @@ class FundamentalDataFetcher:
                                     all_dfs.append(div_df)
                             except Exception as e:
                                 logger.warning(f"Failed to fetch dividends for {code}: {e}")
+                            if progress_callback:
+                                progress_callback(
+                                    total - len(to_fetch_codes) + i + 1,
+                                    total,
+                                    f"fetched dividends for {code}",
+                                )
+                            if cancel_check:
+                                cancel_check()
                     finally:
                         _baostock_logout()
 
@@ -724,6 +761,7 @@ def _fetch_factors_rq(
     start_date: str,
     end_date: str,
     rq_factors: list[str] | None = None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> pd.DataFrame | None:
     """Fetch daily factor data from rqdatac for multiple stocks. Returns DataFrame with stock_code, trade_date, + factor columns."""
     from .market_data import _from_rq_code, _rqdatac_init, _to_rq_code
@@ -737,12 +775,16 @@ def _fetch_factors_rq(
     rq_codes = [_to_rq_code(c) for c in stock_codes]
 
     try:
+        if cancel_check:
+            cancel_check()
         raw = rqdatac.get_factor(
             order_book_ids=rq_codes,
             factor=rq_factors,
             start_date=start_date,
             end_date=end_date,
         )
+        if cancel_check:
+            cancel_check()
         if raw is None or len(raw) == 0:
             return None
     except Exception as e:
@@ -816,6 +858,8 @@ def enrich_with_fundamentals_rq(
     start_date: str,
     end_date: str,
     allow_remote_fetch: bool = True,
+    cancel_check: Callable[[], None] | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> pd.DataFrame | None:
     """Enrich market_df with fundamental data: local cache → rqdatac → None.
 
@@ -839,15 +883,22 @@ def enrich_with_fundamentals_rq(
     # Step 1: Try loading from per-stock Parquet cache
     cached_parts = []
     uncached_codes = []
-    for code in stock_codes:
+    total = len(stock_codes)
+    for checked, code in enumerate(stock_codes, start=1):
+        if cancel_check:
+            cancel_check()
         cached = _load_factor_cache(code, start_date, end_date)
         if cached is not None:
             # Check if cache has the needed variable columns
             needed_cols = set(var_to_rq.keys()) & set(cached.columns)
             if needed_cols:
                 cached_parts.append(cached)
+                if progress_callback:
+                    progress_callback(checked, total, f"checked rq factor cache for {code}")
                 continue
         uncached_codes.append(code)
+        if progress_callback:
+            progress_callback(checked, total, f"checked rq factor cache for {code}")
 
     # Step 2: Fetch uncached stocks from rqdatac
     if uncached_codes:
@@ -858,13 +909,23 @@ def enrich_with_fundamentals_rq(
             )
         elif _rqdatac_init():
             for i in range(0, len(uncached_codes), 200):
+                if cancel_check:
+                    cancel_check()
                 batch = uncached_codes[i:i + 200]
-                fetched = _fetch_factors_rq(batch, start_date, end_date, rq_factors)
+                fetched = _fetch_factors_rq(batch, start_date, end_date, rq_factors, cancel_check=cancel_check)
                 if fetched is not None and len(fetched) > 0:
                     for code, group in fetched.groupby("stock_code"):
                         _save_factor_cache(code, group)
                     cached_parts.append(fetched)
                     logger.info(f"[rqdatac] Fetched factors for {fetched['stock_code'].nunique()} stocks, cached")
+                if progress_callback:
+                    progress_callback(
+                        total - len(uncached_codes) + min(i + len(batch), len(uncached_codes)),
+                        total,
+                        f"fetched rq fundamentals chunk {i // 200 + 1}",
+                    )
+                if cancel_check:
+                    cancel_check()
         else:
             logger.warning("rqdatac unavailable and factor cache miss, fundamental data will be incomplete")
 
@@ -935,6 +996,8 @@ def enrich_market_data(
     start_date: str,
     end_date: str,
     allow_remote_fetch: bool = True,
+    cancel_check: Callable[[], None] | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> pd.DataFrame:
     """Enrich market_df with fundamental data if fund_vars is non-empty.
 
@@ -950,6 +1013,8 @@ def enrich_market_data(
         start_date,
         end_date,
         allow_remote_fetch=allow_remote_fetch,
+        cancel_check=cancel_check,
+        progress_callback=progress_callback,
     )
     if rq_result is not None:
         return rq_result
@@ -963,6 +1028,8 @@ def enrich_market_data(
             end_date,
             non_div_vars,
             allow_remote_fetch=allow_remote_fetch,
+            cancel_check=cancel_check,
+            progress_callback=progress_callback,
         )
         if qdf is not None and len(qdf) > 0:
             market_df = fetcher.align_to_daily(qdf, market_df, non_div_vars)
@@ -972,6 +1039,8 @@ def enrich_market_data(
             start_date,
             end_date,
             allow_remote_fetch=allow_remote_fetch,
+            cancel_check=cancel_check,
+            progress_callback=progress_callback,
         )
         if div_df is not None and len(div_df) > 0:
             market_df = fetcher.align_dividends_to_daily(div_df, market_df)

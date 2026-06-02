@@ -46,7 +46,15 @@ def test_compute_factor_values_payload_groups_finite_values(monkeypatch):
         return ["A", "B"]
 
     class FakeFetcher:
-        def fetch_stocks(self, stocks, start_date, end_date, cache_only=None):
+        def fetch_stocks(
+            self,
+            stocks,
+            start_date,
+            end_date,
+            cache_only=None,
+            cancel_check=None,
+            progress_callback=None,
+        ):
             calls["stocks"] = stocks
             calls["fetch_start"] = start_date
             calls["end_date"] = end_date
@@ -91,7 +99,15 @@ def test_compute_factor_values_payload_explicit_universe_date_wins(monkeypatch):
         return ["A"]
 
     class FakeFetcher:
-        def fetch_stocks(self, stocks, start_date, end_date, cache_only=None):
+        def fetch_stocks(
+            self,
+            stocks,
+            start_date,
+            end_date,
+            cache_only=None,
+            cancel_check=None,
+            progress_callback=None,
+        ):
             return _market_frame()
 
     monkeypatch.setattr(factor_values, "get_universe", fake_get_universe)

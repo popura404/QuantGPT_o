@@ -39,7 +39,7 @@ The core architecture:
 ```
 LLM Agent (Claude Code / Claude Desktop)
     │
-    ├── MCP Tools (41 个)         ← Agent 的工具箱
+    ├── MCP Tools (49 个)         ← Agent 的工具箱
     │   ├── Factor research        ← 回测、评分、诊断、OOS、因子截面值
     │   ├── StrategySpec workflow  ← 模板、校验、策略回测、报告、导出、优化
     │   └── WQ BRAIN workflow      ← 模拟、查询、检查、preflight-gated 正式提交
@@ -332,7 +332,7 @@ TrajectoryAnalyzer → MetaEvolutionSelector → Strategy Execution
 | **Web UI** | Browser workbench | 单因子、组合、StrategySpec、WQ BRAIN、任务中心、报告查看、因子库管理 |
 
 <details>
-<summary><b>MCP Tools (41 个)</b></summary>
+<summary><b>MCP Tools (49 个)</b></summary>
 
 | Category | Tool | Description |
 |:---------|:-----|:------------|
@@ -343,6 +343,8 @@ TrajectoryAnalyzer → MetaEvolutionSelector → Strategy Execution
 | Factor | `validate_expression` | 语法校验 |
 | Factor | `run_backtest` | 因子回测，默认 OOS selection |
 | Factor | `score_factor` | 评分（0–100, A/B/C/D），支持 OOS/data-quality |
+| Factor | `get_mcp_task_status` | 查询 MCP 后台任务状态和进度 |
+| Factor | `cancel_mcp_task` | 请求协作式取消 MCP 后台任务 |
 | Factor | `diagnose_factor` | 失败模式诊断 + 改进建议 |
 | Factor | `run_anti_overfit` | 4 项反过拟合检验 |
 | Factor | `run_rolling_validation` | Walk-forward 验证 |
@@ -357,6 +359,12 @@ TrajectoryAnalyzer → MetaEvolutionSelector → Strategy Execution
 | Experiment | `run_multiple_testing_check` | 多重检验审计 |
 | Experiment | `promote_experiment` | 记录实验晋级 |
 | Experiment | `reject_experiment` | 记录实验拒绝 |
+| Factor Pool | `save_factor_pool_entry` | 保存或 upsert 研究因子池条目 |
+| Factor Pool | `list_factor_pool_entries` | 查询因子池，支持状态/category/tags/hash 过滤 |
+| Factor Pool | `get_factor_pool_entry` | 读取单个因子池条目 |
+| Factor Pool | `update_factor_pool_entry` | 更新因子池 tags、分类和研究状态 |
+| Factor Pool | `delete_factor_pool_entry` | 删除因子池条目 |
+| Factor Pool | `list_factor_pool_tags` | 查询 tag/category/status facets |
 | StrategySpec | `list_markets` | 策略框架支持的市场和能力 |
 | StrategySpec | `list_data_fields` | 指定市场可用数据字段 |
 | StrategySpec | `list_strategy_templates` | StrategySpec 模板列表 |
@@ -392,7 +400,7 @@ TrajectoryAnalyzer → MetaEvolutionSelector → Strategy Execution
 | Knowledge accumulation | Personal notes | None | Lost between sessions | **Structured KB across sessions** |
 | WQ BRAIN integration | -- | -- | -- | **Operator-aligned + preflight-gated submission** |
 | Anti-overfit | -- | -- | -- | **4 statistical tests + walk-forward** |
-| MCP / AI Agent | -- | -- | -- | **41 tools, skill-loop orchestration** |
+| MCP / AI Agent | -- | -- | -- | **49 tools, skill-loop orchestration** |
 | Live trading | Yes | Limited | -- | -- |
 | Intraday data | Yes | Yes | -- | Daily only |
 
@@ -442,6 +450,12 @@ For single-stock questions such as `600487`, use MCP `get_stock_history` first, 
 if the Agent needs to inspect universe membership or cache coverage. Full-universe tools default to local
 cache only; if `allow_remote_fetch=true` would fill more than `QUANTGPT_MCP_REMOTE_FETCH_STOCK_LIMIT`
 stock parquet files, they return `REMOTE_PREFETCH_REQUIRED` with a prewarm command.
+
+For long factor-heavy MCP calls, pass `submit_only=true` to `run_backtest`, `score_factor`,
+`compute_factor_values`, `run_anti_overfit`, or `run_rolling_validation`. The tool returns a `task_id`;
+poll it with `get_mcp_task_status(task_id, include_result=false)` and request cooperative cancellation with
+`cancel_mcp_task(task_id)`. Cancellation cannot interrupt a single in-flight baostock/rqdatac socket call;
+it takes effect at the next checkpoint.
 
 ### Option 2: Expression Mode (No LLM Required)
 
@@ -557,7 +571,7 @@ quantgpt/
 │   ├── backtest.py              # Rank-based group backtest engine
 │   ├── market_data.py           # baostock/akshare → Parquet cache
 │   ├── api_server.py            # FastAPI REST API + SSE
-│   ├── mcp_server.py            # FastMCP server (41 tools — Agent's toolkit)
+│   ├── mcp_server.py            # FastMCP server (49 tools — Agent's toolkit)
 │   ├── iteration.py             # 3-phase evolutionary iteration
 │   ├── mutation_engine.py       # 8 directed mutation strategies
 │   ├── crossover_engine.py      # High-score factor crossover

@@ -22,6 +22,15 @@ planning check. If the call would need to fill more than
 `REMOTE_PREFETCH_REQUIRED` and a suggested prewarm command instead of starting a
 large remote batch.
 
+The same five tools support asynchronous MCP execution with `submit_only=true`.
+The initial response contains a `task_id`; use `get_mcp_task_status` for
+progress fields (`status`, `progress`, `progress_message`, `stage`) and
+`cancel_mcp_task` to request cooperative cancellation. Cancellation is checked
+between cache scans, per-stock baostock fetches, rqdatac chunks, fundamental
+fetches, and CPU-result polling. It cannot forcibly terminate a single
+in-flight baostock/rqdatac/socket call; the practical upper bound is the current
+provider call plus `QUANTGPT_BAOSTOCK_TIMEOUT` where applicable.
+
 Single-stock research should use `get_stock_history`, which reads only
 `data/stocks/<market>_<code>.parquet`, or `check_market_cache` to inspect the
 monthly universe cache and stock coverage. These diagnostic tools never fetch

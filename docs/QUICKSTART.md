@@ -57,6 +57,10 @@ Then let the Agent work:
 单股问题（例如 `600487`）先让 Agent 调用 `get_stock_history`，需要检查股票池月份或 parquet 覆盖时再调用
 `check_market_cache`。不要把单股问题直接升级为 `compute_factor_values(csi500)` 或 `score_factor(csi500)`。
 
+长任务优先走异步 MCP：对 `run_backtest`、`score_factor`、`compute_factor_values`、`run_anti_overfit`、
+`run_rolling_validation` 传入 `submit_only=true`，拿到 `task_id` 后用 `get_mcp_task_status` 查询阶段、进度、
+错误和结果；如果研究方向需要中止，用 `cancel_mcp_task` 请求协作式取消。
+
 这里的“可提交”应理解为生成可模拟/可候选的 WQ BRAIN 表达式；正式 submit 仍需要本地
 preflight 通过，或显式提供 `submission_override_reason` 记录豁免理由。
 

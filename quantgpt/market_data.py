@@ -14,6 +14,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import pandas as pd
@@ -648,6 +649,8 @@ class MarketDataFetcher:
         start_date: str,
         end_date: str,
         cache_only: bool | None = None,
+        cancel_check: Callable[[], None] | None = None,
+        progress_callback: Callable[[int, int, str], None] | None = None,
     ) -> pd.DataFrame | None:
         """Fetch multiple stocks with caching. rqdatac batch → baostock fallback."""
         all_data: list[pd.DataFrame] = []
@@ -655,9 +658,14 @@ class MarketDataFetcher:
         source_events: list[dict] = []
 
         req_start, req_end = pd.Timestamp(start_date), pd.Timestamp(end_date)
+        total = len(stock_codes)
+        checked = 0
 
         for code in stock_codes:
+            if cancel_check:
+                cancel_check()
             normalized_code = self._normalize_stock_code(code)
+            checked += 1
             cached = self._load_cache(code)
             if cached is not None and len(cached) > 0:
                 cache_min = cached["trade_date"].min()
@@ -674,8 +682,12 @@ class MarketDataFetcher:
                             "source_kind": "cache_hit",
                             "cache_path": self._cache_path(normalized_code),
                         })
+                        if progress_callback:
+                            progress_callback(checked, total, f"checked local cache for {normalized_code}")
                         continue
             to_fetch.append(code)
+            if progress_callback:
+                progress_callback(checked, total, f"checked local cache for {normalized_code}")
 
         if to_fetch:
             if _cache_only_enabled(cache_only):
@@ -688,7 +700,9 @@ class MarketDataFetcher:
                     with _bs_lock:
                         _baostock_login()
                         try:
-                            for code in to_fetch:
+                            for idx, code in enumerate(to_fetch, start=1):
+                                if cancel_check:
+                                    cancel_check()
                                 df = self._fetch_remote_bs(code, start_date, end_date, already_logged_in=True)
                                 if df is not None and len(df) > 0:
                                     existing = self._load_cache(code)
@@ -705,6 +719,14 @@ class MarketDataFetcher:
                                             "cache_path": self._cache_path(code),
                                         })
                                     bs_fetched.add(self._normalize_stock_code(code))
+                                if progress_callback:
+                                    progress_callback(
+                                        len(stock_codes) - len(to_fetch) + idx,
+                                        total,
+                                        f"fetched baostock {self._normalize_stock_code(code)}",
+                                    )
+                                if cancel_check:
+                                    cancel_check()
                         finally:
                             _baostock_logout()
 
@@ -712,6 +734,8 @@ class MarketDataFetcher:
                 rq_remaining = [c for c in to_fetch if self._normalize_stock_code(c) not in bs_fetched]
                 if rq_remaining and _rqdatac_init():
                     for i in range(0, len(rq_remaining), 200):
+                        if cancel_check:
+                            cancel_check()
                         chunk = rq_remaining[i:i+200]
                         rq_results = self._fetch_remote_rq(chunk, start_date, end_date)
                         for bs_code, df in rq_results.items():
@@ -729,6 +753,14 @@ class MarketDataFetcher:
                                         "source_kind": "optional_paid_fetch",
                                         "cache_path": self._cache_path(bs_code),
                                     })
+                        if progress_callback:
+                            progress_callback(
+                                len(stock_codes) - len(rq_remaining) + min(i + len(chunk), len(rq_remaining)),
+                                total,
+                                f"fetched rqdatac chunk {i // 200 + 1}",
+                            )
+                        if cancel_check:
+                            cancel_check()
 
         if all_data:
             result = pd.concat(all_data, ignore_index=True)

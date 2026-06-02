@@ -16,9 +16,11 @@ import json
 import logging
 import os
 import sys
+import time
 import traceback
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import date
-from typing import Literal
+from typing import Awaitable, Callable, Literal
 
 import pandas as pd
 from mcp.server.fastmcp import FastMCP
@@ -55,6 +57,30 @@ from .experiment_ledger import (
 )
 from .expression_parser import __doc__ as _expr_module_doc
 from .expression_parser import parse_expression
+from .factor_pool import (
+    MCP_SYSTEM_USER_ID,
+    FactorPoolError,
+    ensure_mcp_system_user,
+    factor_pool_entry_to_dict,
+)
+from .factor_pool import (
+    delete_factor_pool_entry as _pool_delete_factor_pool_entry,
+)
+from .factor_pool import (
+    get_factor_pool_entry as _pool_get_factor_pool_entry,
+)
+from .factor_pool import (
+    list_factor_pool_entries as _pool_list_factor_pool_entries,
+)
+from .factor_pool import (
+    list_factor_pool_tags as _pool_list_factor_pool_tags,
+)
+from .factor_pool import (
+    save_factor_pool_entry as _pool_save_factor_pool_entry,
+)
+from .factor_pool import (
+    update_factor_pool_entry as _pool_update_factor_pool_entry,
+)
 from .factor_values import compute_factor_values_payload as _compute_factor_values_payload
 from .factor_values import validate_factor_values_request as _validate_factor_values_request
 from .fundamental_data import ALL_FUNDAMENTAL_NAMES
@@ -70,7 +96,16 @@ from .market_data import (
     read_cached_universe,
     universe_cache_path,
 )
-from .mcp_task_helper import complete_mcp_task, start_mcp_task
+from .mcp_task_helper import (
+    complete_mcp_task,
+    force_mcp_task_id,
+    get_mcp_task_status_payload,
+    request_mcp_task_cancel,
+    reset_forced_mcp_task_id,
+    start_mcp_task,
+    update_mcp_task_progress,
+    update_mcp_task_progress_sync,
+)
 from .report import generate_report
 from .statistics.factor_similarity import factor_similarity_report as _factor_similarity_report
 from .statistics.multiple_testing import multiple_testing_report as _multiple_testing_report
@@ -120,6 +155,7 @@ from .strategy.service import (
     validate_strategy_payload as _validate_strategy_payload,
 )
 from .task_executor import _run_backtest_in_process, _run_oos_backtest_in_process, get_executor
+from .task_store import CancelledException, check_cancelled
 from .validation.oos_backtest import to_public_oos_result
 from .validation.oos_score import (
     FINAL_TEST_NOT_RUN,
@@ -146,6 +182,7 @@ from .wq_submission_guard import require_submission_preflight, wq_target_scope
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s", stream=sys.stderr)
 logger = logging.getLogger(__name__)
+_MCP_BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 mcp = FastMCP(
     "quantgpt",
@@ -171,6 +208,8 @@ def _enrich_with_fundamentals(
     start_date: str,
     end_date: str,
     allow_remote_fetch: bool = True,
+    cancel_check: Callable[[], None] | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ):
     """Conditionally fetch and merge fundamental data if the expression uses fundamental vars."""
     from .fundamental_data import detect_fundamental_vars, enrich_market_data
@@ -182,7 +221,96 @@ def _enrich_with_fundamentals(
         start_date,
         end_date,
         allow_remote_fetch=allow_remote_fetch,
+        cancel_check=cancel_check,
+        progress_callback=progress_callback,
     )
+
+
+def _submit_mcp_background_task(coro) -> None:
+    task = asyncio.create_task(coro)
+    _MCP_BACKGROUND_TASKS.add(task)
+
+    def _discard(done: asyncio.Task) -> None:
+        _MCP_BACKGROUND_TASKS.discard(done)
+        try:
+            done.result()
+        except Exception:
+            logger.error("MCP background task crashed: %s", traceback.format_exc())
+
+    task.add_done_callback(_discard)
+
+
+async def _run_mcp_tool_with_existing_task(task_id: str, coro_factory: Callable[[], Awaitable[str]]) -> None:
+    token = force_mcp_task_id(task_id)
+    try:
+        await coro_factory()
+    finally:
+        reset_forced_mcp_task_id(token)
+
+
+async def _await_mcp_future_result(future, task_id: str, timeout_seconds: float = 600):
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            _mcp_cancel_check(task_id)
+        except CancelledException:
+            future.cancel()
+            raise
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return await asyncio.to_thread(future.result, 0)
+        try:
+            return await asyncio.to_thread(future.result, min(2.0, remaining))
+        except FutureTimeoutError:
+            continue
+
+
+def _submitted_mcp_task_response(task_id: str) -> str:
+    return json.dumps({
+        "submitted": True,
+        "task_id": task_id,
+        "status": "running",
+        "poll_tool": "get_mcp_task_status",
+        "cancel_tool": "cancel_mcp_task",
+    }, ensure_ascii=False, indent=2)
+
+
+def _mcp_cancel_check(task_id: str) -> None:
+    check_cancelled(task_id)
+
+
+def _mcp_fetch_progress_callback(
+    task_id: str,
+    *,
+    status: str,
+    stage: str,
+    base_progress: int,
+    span: int,
+) -> Callable[[int, int, str], None]:
+    def _callback(done: int, total: int, message: str) -> None:
+        pct = base_progress
+        if total > 0:
+            pct = base_progress + int((max(0, min(done, total)) / total) * span)
+        update_mcp_task_progress_sync(
+            task_id,
+            status=status,
+            stage=stage,
+            progress=pct,
+            progress_current=done,
+            progress_total=total,
+            progress_message=message,
+        )
+
+    return _callback
+
+
+def _mcp_cancelled_result(task_id: str) -> dict:
+    return {
+        "error_code": "MCP_TASK_CANCELLED",
+        "task_id": task_id,
+        "status": "cancelled",
+        "hint": "The task was cancelled cooperatively. A blocking upstream data call may finish before cancellation is observed.",
+    }
 
 
 def _market_data_unavailable_result(allow_remote_fetch: bool) -> dict:
@@ -278,7 +406,7 @@ def _raise_if_remote_prefetch_required(
 async def _record_market_data_prefetch_required(
     *,
     tool_name: str,
-    task_id: str | None,
+    task_id: str,
     expression: str,
     params: dict,
     exc: _RemotePrefetchRequired,
@@ -305,6 +433,8 @@ def _fetch_data_for_market(
     end_date: str,
     allow_remote_fetch: bool = True,
     universe_date: str | None = None,
+    cancel_check: Callable[[], None] | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ):
     """Fetch market data and stock codes. Returns (market_df, stock_codes)."""
     cache_only = not allow_remote_fetch
@@ -319,7 +449,18 @@ def _fetch_data_for_market(
             stock_codes=stock_codes,
         )
     fetcher = MarketDataFetcher()
-    market_df = fetcher.fetch_stocks(stock_codes, start_date, end_date, cache_only=cache_only)
+    if cancel_check:
+        cancel_check()
+    market_df = fetcher.fetch_stocks(
+        stock_codes,
+        start_date,
+        end_date,
+        cache_only=cache_only,
+        cancel_check=cancel_check,
+        progress_callback=progress_callback,
+    )
+    if cancel_check:
+        cancel_check()
     return market_df, stock_codes
 
 
@@ -1039,6 +1180,24 @@ async def validate_expression(expression: str, mode: str = "local") -> str:
 
 
 @mcp.tool()
+async def get_mcp_task_status(task_id: str, include_result: bool = False) -> str:
+    """查询 MCP 后台任务状态、进度和可选最终结果。"""
+    return json.dumps(
+        get_mcp_task_status_payload(task_id, include_result=include_result),
+        ensure_ascii=False,
+        indent=2,
+        default=str,
+    )
+
+
+@mcp.tool()
+async def cancel_mcp_task(task_id: str) -> str:
+    """请求协作式取消 MCP 后台任务。"""
+    payload = await request_mcp_task_cancel(task_id)
+    return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+
+
+@mcp.tool()
 async def run_backtest(
     expression: str,
     universe: str = "hs300",
@@ -1061,6 +1220,7 @@ async def run_backtest(
     max_missing_ratio_per_stock: float = 0.2,
     adjustment: Literal["qfq", "hfq", "none", "unknown"] = "unknown",
     allow_remote_fetch: bool = False,
+    submit_only: bool = False,
 ) -> str:
     """执行因子回测,生成 QuantStats HTML 报告。
 
@@ -1082,6 +1242,7 @@ async def run_backtest(
         fixed_direction: fixed 模式方向，1=高值做多，-1=低值做多
         data_quality: 是否运行基础行情数据质量门；None 表示兼容默认
         allow_remote_fetch: 是否允许 MCP 工具在缓存缺失时阻塞式拉取远程行情；默认 False
+        submit_only: 是否异步提交并立即返回 task_id；默认 False 保持同步行为
 
     Returns:
         JSON string with report_path, metrics, group_returns, anti_overfit.
@@ -1098,9 +1259,53 @@ async def run_backtest(
         "allow_remote_fetch": allow_remote_fetch,
     }
     task_id = await start_mcp_task("backtest", expression, task_params)
+    if submit_only:
+        await update_mcp_task_progress(
+            task_id,
+            status="running",
+            progress=0,
+            progress_message="submitted run_backtest",
+            stage="submitted",
+        )
+        _submit_mcp_background_task(_run_mcp_tool_with_existing_task(
+            task_id,
+            lambda: run_backtest(
+                expression,
+                universe=universe,
+                start_date=start_date,
+                end_date=end_date,
+                universe_date=universe_date,
+                n_groups=n_groups,
+                holding_period=holding_period,
+                benchmark=benchmark,
+                neutralize_industry=neutralize_industry,
+                neutralize_cap=neutralize_cap,
+                rebalance_anchor=rebalance_anchor,
+                oos_enabled=oos_enabled,
+                validation_stage=validation_stage,
+                direction_mode=direction_mode,
+                fixed_direction=fixed_direction,
+                data_quality=data_quality,
+                data_quality_mode=data_quality_mode,
+                max_abs_daily_ret=max_abs_daily_ret,
+                max_missing_ratio_per_stock=max_missing_ratio_per_stock,
+                adjustment=adjustment,
+                allow_remote_fetch=allow_remote_fetch,
+                submit_only=False,
+            ),
+        ))
+        return _submitted_mcp_task_response(task_id)
     _error_msg = None
     _result = None
     try:
+        await update_mcp_task_progress(
+            task_id,
+            status="validating",
+            progress=2,
+            progress_message="validating run_backtest request",
+            stage="validating",
+        )
+        _mcp_cancel_check(task_id)
         if validation_stage not in {"selection", "final"}:
             _result = {
                 "error_code": "INVALID_VALIDATION_STAGE",
@@ -1184,9 +1389,29 @@ async def run_backtest(
             return json.dumps(_result)
 
         logger.info(f"Getting universe: {universe}")
+        await update_mcp_task_progress(
+            task_id,
+            status="fetching_data",
+            progress=5,
+            progress_message="fetching market data",
+            stage="fetching_data",
+        )
         try:
             market_df, stock_codes = await asyncio.to_thread(
-                _fetch_data_for_market, universe, start_date, end_date, allow_remote_fetch, resolved_universe_date
+                _fetch_data_for_market,
+                universe,
+                start_date,
+                end_date,
+                allow_remote_fetch,
+                resolved_universe_date,
+                lambda: _mcp_cancel_check(task_id),
+                _mcp_fetch_progress_callback(
+                    task_id,
+                    status="fetching_data",
+                    stage="fetching_data",
+                    base_progress=5,
+                    span=35,
+                ),
             )
         except _RemotePrefetchRequired as exc:
             _result = exc.payload
@@ -1223,6 +1448,14 @@ async def run_backtest(
         data_quality_report = None
         dq_enabled = oos_enabled if data_quality is None else data_quality
         if dq_enabled:
+            await update_mcp_task_progress(
+                task_id,
+                status="checking_data_quality",
+                progress=42,
+                progress_message="checking data quality",
+                stage="checking_data_quality",
+            )
+            _mcp_cancel_check(task_id)
             dq_config = DataQualityConfig(
                 enabled=True,
                 mode=data_quality_mode,
@@ -1231,6 +1464,7 @@ async def run_backtest(
                 adjustment=adjustment,
             )
             market_df, data_quality_report = await asyncio.to_thread(run_data_quality_gate, market_df, dq_config)
+            _mcp_cancel_check(task_id)
         elif oos_enabled:
             data_quality_report = {
                 "enabled": False,
@@ -1240,6 +1474,13 @@ async def run_backtest(
             }
         _annotate_data_provenance(data_quality_report, data_provenance)
 
+        await update_mcp_task_progress(
+            task_id,
+            status="fetching_fundamentals",
+            progress=50,
+            progress_message="fetching fundamentals if required",
+            stage="fetching_fundamentals",
+        )
         market_df = await asyncio.to_thread(
             _enrich_with_fundamentals,
             expression,
@@ -1248,9 +1489,25 @@ async def run_backtest(
             start_date,
             end_date,
             allow_remote_fetch,
+            lambda: _mcp_cancel_check(task_id),
+            _mcp_fetch_progress_callback(
+                task_id,
+                status="fetching_fundamentals",
+                stage="fetching_fundamentals",
+                base_progress=50,
+                span=15,
+            ),
         )
 
         logger.info(f"Running backtest: {expression}")
+        await update_mcp_task_progress(
+            task_id,
+            status="backtesting",
+            progress=68,
+            progress_message="running factor backtest",
+            stage="backtesting",
+        )
+        _mcp_cancel_check(task_id)
         executor = get_executor()
         if oos_enabled:
             oos_config = OOSConfig(rebalance_anchor=rebalance_anchor)
@@ -1266,14 +1523,24 @@ async def run_backtest(
                 rebalance_anchor=rebalance_anchor,
                 direction_mode=direction_mode, fixed_direction=fixed_direction,
             )
-        result = await asyncio.to_thread(future.result, 600)
+        result = await _await_mcp_future_result(future, task_id, 600)
+        _mcp_cancel_check(task_id)
 
         anti_overfit_result = None
         factor_df = result.get("_direction_adjusted_factor_df") if oos_enabled else result.get("_factor_df")
         if factor_df is not None and len(factor_df) > 100:
             try:
+                await update_mcp_task_progress(
+                    task_id,
+                    status="analyzing",
+                    progress=82,
+                    progress_message="running anti-overfit diagnostics",
+                    stage="analyzing",
+                )
+                _mcp_cancel_check(task_id)
                 from .anti_overfit import run_anti_overfit as _run_ao
                 anti_overfit_result = await asyncio.to_thread(_run_ao, factor_df, holding_period)
+                _mcp_cancel_check(task_id)
                 if oos_enabled and isinstance(anti_overfit_result, dict):
                     anti_overfit_result["diagnostic_scope"] = "direction_adjusted_oos_compat"
             except Exception as e:
@@ -1287,12 +1554,21 @@ async def run_backtest(
         except Exception as e:
             logger.warning(f"Benchmark fetch failed: {e}")
 
+        await update_mcp_task_progress(
+            task_id,
+            status="generating_report",
+            progress=90,
+            progress_message="generating report",
+            stage="generating_report",
+        )
+        _mcp_cancel_check(task_id)
         report_result = await asyncio.to_thread(
             generate_report,
             result["ls_returns"],
             benchmark_returns=bm_returns,
             title=f"Factor: {expression}",
         )
+        _mcp_cancel_check(task_id)
 
         backtest_summary = {
             "long_short_sharpe": result["long_short_sharpe"],
@@ -1398,8 +1674,26 @@ async def run_backtest(
             expression=expression,
             payload=_result,
         )
+        await update_mcp_task_progress(
+            task_id,
+            status="completed",
+            progress=100,
+            progress_message="run_backtest completed",
+            stage="completed",
+        )
         return json.dumps(_result, ensure_ascii=False, indent=2, default=str)
 
+    except CancelledException:
+        logger.info(f"Backtest task {task_id} cancelled")
+        _error_msg = "cancelled"
+        _result = _mcp_cancelled_result(task_id)
+        await update_mcp_task_progress(
+            task_id,
+            status="cancelled",
+            progress_message="run_backtest cancelled",
+            stage="cancelled",
+        )
+        return json.dumps(_result, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"Backtest failed: {traceback.format_exc()}")
         _error_msg = str(e)
@@ -1438,6 +1732,7 @@ async def score_factor(
     max_missing_ratio_per_stock: float = 0.2,
     adjustment: Literal["qfq", "hfq", "none", "unknown"] = "unknown",
     allow_remote_fetch: bool = False,
+    submit_only: bool = False,
 ) -> str:
     """执行因子回测并返回综合评分(0-100)和等级(A/B/C/D)。
 
@@ -1459,6 +1754,7 @@ async def score_factor(
         validation_stage: selection 只用 train+valid 选候选；final 才运行并暴露 test
         data_quality: 是否运行基础行情数据质量门；None 表示兼容默认
         allow_remote_fetch: 是否允许 MCP 工具在缓存缺失时阻塞式拉取远程行情；默认 False
+        submit_only: 是否异步提交并立即返回 task_id；默认 False 保持同步行为
 
     Returns:
         JSON with score, grade, component_scores, key metrics.
@@ -1474,9 +1770,51 @@ async def score_factor(
         "data_quality": data_quality, "allow_remote_fetch": allow_remote_fetch,
     }
     task_id = await start_mcp_task("score", expression, task_params)
+    if submit_only:
+        await update_mcp_task_progress(
+            task_id,
+            status="running",
+            progress=0,
+            progress_message="submitted score_factor",
+            stage="submitted",
+        )
+        _submit_mcp_background_task(_run_mcp_tool_with_existing_task(
+            task_id,
+            lambda: score_factor(
+                expression,
+                universe=universe,
+                start_date=start_date,
+                end_date=end_date,
+                universe_date=universe_date,
+                n_groups=n_groups,
+                holding_period=holding_period,
+                benchmark=benchmark,
+                neutralize_industry=neutralize_industry,
+                neutralize_cap=neutralize_cap,
+                rebalance_anchor=rebalance_anchor,
+                oos_enabled=oos_enabled,
+                validation_stage=validation_stage,
+                data_quality=data_quality,
+                data_quality_mode=data_quality_mode,
+                max_abs_daily_ret=max_abs_daily_ret,
+                max_missing_ratio_per_stock=max_missing_ratio_per_stock,
+                adjustment=adjustment,
+                allow_remote_fetch=allow_remote_fetch,
+                submit_only=False,
+            ),
+        ))
+        return _submitted_mcp_task_response(task_id)
     _error_msg = None
     _result = None
     try:
+        await update_mcp_task_progress(
+            task_id,
+            status="validating",
+            progress=2,
+            progress_message="validating score_factor request",
+            stage="validating",
+        )
+        _mcp_cancel_check(task_id)
         if validation_stage not in {"selection", "final"}:
             _result = {
                 "error_code": "INVALID_VALIDATION_STAGE",
@@ -1506,8 +1844,28 @@ async def score_factor(
             ))
             return json.dumps(_result)
         try:
+            await update_mcp_task_progress(
+                task_id,
+                status="fetching_data",
+                progress=5,
+                progress_message="fetching market data",
+                stage="fetching_data",
+            )
             market_df, stock_codes = await asyncio.to_thread(
-                _fetch_data_for_market, universe, start_date, end_date, allow_remote_fetch, resolved_universe_date
+                _fetch_data_for_market,
+                universe,
+                start_date,
+                end_date,
+                allow_remote_fetch,
+                resolved_universe_date,
+                lambda: _mcp_cancel_check(task_id),
+                _mcp_fetch_progress_callback(
+                    task_id,
+                    status="fetching_data",
+                    stage="fetching_data",
+                    base_progress=5,
+                    span=35,
+                ),
             )
         except _RemotePrefetchRequired as exc:
             _result = exc.payload
@@ -1544,6 +1902,14 @@ async def score_factor(
         data_quality_report = None
         dq_enabled = oos_enabled if data_quality is None else data_quality
         if dq_enabled:
+            await update_mcp_task_progress(
+                task_id,
+                status="checking_data_quality",
+                progress=42,
+                progress_message="checking data quality",
+                stage="checking_data_quality",
+            )
+            _mcp_cancel_check(task_id)
             dq_config = DataQualityConfig(
                 enabled=True,
                 mode=data_quality_mode,
@@ -1552,6 +1918,7 @@ async def score_factor(
                 adjustment=adjustment,
             )
             market_df, data_quality_report = await asyncio.to_thread(run_data_quality_gate, market_df, dq_config)
+            _mcp_cancel_check(task_id)
         elif oos_enabled:
             data_quality_report = {
                 "enabled": False,
@@ -1561,6 +1928,13 @@ async def score_factor(
             }
         _annotate_data_provenance(data_quality_report, data_provenance)
 
+        await update_mcp_task_progress(
+            task_id,
+            status="fetching_fundamentals",
+            progress=50,
+            progress_message="fetching fundamentals if required",
+            stage="fetching_fundamentals",
+        )
         market_df = await asyncio.to_thread(
             _enrich_with_fundamentals,
             expression,
@@ -1569,8 +1943,24 @@ async def score_factor(
             start_date,
             end_date,
             allow_remote_fetch,
+            lambda: _mcp_cancel_check(task_id),
+            _mcp_fetch_progress_callback(
+                task_id,
+                status="fetching_fundamentals",
+                stage="fetching_fundamentals",
+                base_progress=50,
+                span=15,
+            ),
         )
 
+        await update_mcp_task_progress(
+            task_id,
+            status="backtesting",
+            progress=68,
+            progress_message="running factor score backtest",
+            stage="backtesting",
+        )
+        _mcp_cancel_check(task_id)
         executor = get_executor()
         if oos_enabled:
             oos_config = OOSConfig(rebalance_anchor=rebalance_anchor)
@@ -1585,7 +1975,8 @@ async def score_factor(
                 neutralize_industry=neutralize_industry, neutralize_cap=neutralize_cap,
                 rebalance_anchor=rebalance_anchor,
             )
-        result = await asyncio.to_thread(future.result, 600)
+        result = await _await_mcp_future_result(future, task_id, 600)
+        _mcp_cancel_check(task_id)
 
         params = {
             "expression": expression,
@@ -1607,6 +1998,13 @@ async def score_factor(
             "data_snapshot_id": data_provenance["data_snapshot_id"],
             "data_source": data_provenance.get("data_source"),
         }
+        await update_mcp_task_progress(
+            task_id,
+            status="analyzing",
+            progress=85,
+            progress_message="scoring factor",
+            stage="analyzing",
+        )
 
         if oos_enabled:
             public_oos = to_public_oos_result(result.get("oos_result", {}))
@@ -1680,6 +2078,13 @@ async def score_factor(
                 expression=expression,
                 payload=_result,
             )
+            await update_mcp_task_progress(
+                task_id,
+                status="completed",
+                progress=100,
+                progress_message="score_factor completed",
+                stage="completed",
+            )
             return json.dumps(_result, ensure_ascii=False, indent=2, default=str)
 
         bm_returns = None
@@ -1690,12 +2095,21 @@ async def score_factor(
         except Exception:
             pass
 
+        await update_mcp_task_progress(
+            task_id,
+            status="generating_report",
+            progress=90,
+            progress_message="generating score report",
+            stage="generating_report",
+        )
+        _mcp_cancel_check(task_id)
         report_result = await asyncio.to_thread(
             generate_report,
             result["ls_returns"],
             benchmark_returns=bm_returns,
             title="Factor Score",
         )
+        _mcp_cancel_check(task_id)
 
         scoring = compute_factor_score(
             backtest_summary={
@@ -1745,8 +2159,26 @@ async def score_factor(
             expression=expression,
             payload=_result,
         )
+        await update_mcp_task_progress(
+            task_id,
+            status="completed",
+            progress=100,
+            progress_message="score_factor completed",
+            stage="completed",
+        )
         return json.dumps(_result, ensure_ascii=False, indent=2, default=str)
 
+    except CancelledException:
+        logger.info(f"Score task {task_id} cancelled")
+        _error_msg = "cancelled"
+        _result = _mcp_cancelled_result(task_id)
+        await update_mcp_task_progress(
+            task_id,
+            status="cancelled",
+            progress_message="score_factor cancelled",
+            stage="cancelled",
+        )
+        return json.dumps(_result, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"Score failed: {traceback.format_exc()}")
         _error_msg = str(e)
@@ -2011,6 +2443,251 @@ async def reject_experiment(experiment_id: str, reason: str) -> str:
 
 
 @mcp.tool()
+async def save_factor_pool_entry(
+    expression: str,
+    name: str | None = None,
+    note: str | None = None,
+    main_reason: str | None = None,
+    tags: list[str] | None = None,
+    category: str | None = None,
+    pool_status: Literal["accepted", "watchlist", "rejected", "insufficient_data", "runtime_failed"] = "watchlist",
+    factor_hash: str | None = None,
+    experiment_id: str | None = None,
+    task_id: str | None = None,
+    market: str = "a_share",
+    universe: str | None = None,
+    holding_period: int | None = None,
+    validation_stage: str | None = None,
+    metrics: dict | None = None,
+    backtest_summary: dict | None = None,
+    params: dict | None = None,
+    validation_provenance: dict | None = None,
+    report_url: str | None = None,
+    factor_card_path: str | None = None,
+    entry_id: str | None = None,
+) -> str:
+    """保存或更新研究因子池条目；accepted 仅表示研究池状态，不触发 promotion。"""
+    payload = _compact_factor_pool_payload(
+        expression=expression,
+        name=name,
+        note=note,
+        main_reason=main_reason,
+        tags=tags,
+        category=category,
+        pool_status=pool_status,
+        factor_hash=factor_hash,
+        experiment_id=experiment_id,
+        task_id=task_id,
+        market=market,
+        universe=universe,
+        holding_period=holding_period,
+        validation_stage=validation_stage,
+        metrics=metrics,
+        backtest_summary=backtest_summary,
+        params=params,
+        validation_provenance=validation_provenance,
+        report_url=report_url,
+        factor_card_path=factor_card_path,
+        source="mcp",
+        created_by="mcp.factor_pool",
+    )
+    try:
+        factory = _get_ledger_session_factory()
+        async with factory() as session:
+            await ensure_mcp_system_user(session)
+            row, created = await _pool_save_factor_pool_entry(
+                session,
+                owner_user_id=MCP_SYSTEM_USER_ID,
+                entry_id=entry_id,
+                data=payload,
+            )
+            await session.commit()
+            await session.refresh(row)
+            return json.dumps(
+                {"entry": factor_pool_entry_to_dict(row), "created": created},
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+    except FactorPoolError as exc:
+        return json.dumps({"error_code": "FACTOR_POOL_ERROR", "hint": str(exc)}, ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps({"error_code": "FACTOR_POOL_UNAVAILABLE", "hint": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def list_factor_pool_entries(
+    pool_status: str | None = None,
+    category: str | None = None,
+    tag: str | None = None,
+    tags: list[str] | None = None,
+    universe: str | None = None,
+    market: str | None = None,
+    factor_hash: str | None = None,
+    experiment_id: str | None = None,
+    q: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> str:
+    """按状态、category tag、tags、股票池、hash、experiment 或关键词查询研究因子池。"""
+    try:
+        factory = _get_ledger_session_factory()
+        async with factory() as session:
+            rows, total = await _pool_list_factor_pool_entries(
+                session,
+                owner_user_id=MCP_SYSTEM_USER_ID,
+                pool_status=pool_status,
+                category=category,
+                tag=tag,
+                tags=tags,
+                universe=universe,
+                market=market,
+                factor_hash=factor_hash,
+                experiment_id=experiment_id,
+                q=q,
+                limit=limit,
+                offset=offset,
+            )
+            return json.dumps(
+                {
+                    "entries": [factor_pool_entry_to_dict(row) for row in rows],
+                    "total": total,
+                    "limit": max(1, min(int(limit), 200)),
+                    "offset": max(0, int(offset)),
+                },
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+    except FactorPoolError as exc:
+        return json.dumps({"error_code": "FACTOR_POOL_ERROR", "hint": str(exc)}, ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps({"error_code": "FACTOR_POOL_UNAVAILABLE", "hint": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def get_factor_pool_entry(entry_id: str) -> str:
+    """查询单个研究因子池条目。"""
+    try:
+        factory = _get_ledger_session_factory()
+        async with factory() as session:
+            row = await _pool_get_factor_pool_entry(session, owner_user_id=MCP_SYSTEM_USER_ID, entry_id=entry_id)
+            return json.dumps(factor_pool_entry_to_dict(row), ensure_ascii=False, indent=2, default=str)
+    except FactorPoolError as exc:
+        return json.dumps({"error_code": "FACTOR_POOL_ERROR", "hint": str(exc)}, ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps({"error_code": "FACTOR_POOL_UNAVAILABLE", "hint": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def update_factor_pool_entry(
+    entry_id: str,
+    expression: str | None = None,
+    name: str | None = None,
+    note: str | None = None,
+    main_reason: str | None = None,
+    tags: list[str] | None = None,
+    category: str | None = None,
+    pool_status: str | None = None,
+    factor_hash: str | None = None,
+    experiment_id: str | None = None,
+    task_id: str | None = None,
+    market: str | None = None,
+    universe: str | None = None,
+    holding_period: int | None = None,
+    validation_stage: str | None = None,
+    metrics: dict | None = None,
+    backtest_summary: dict | None = None,
+    params: dict | None = None,
+    validation_provenance: dict | None = None,
+    report_url: str | None = None,
+    factor_card_path: str | None = None,
+) -> str:
+    """更新研究因子池条目；状态变更不写 experiment ledger。"""
+    payload = _compact_factor_pool_payload(
+        expression=expression,
+        name=name,
+        note=note,
+        main_reason=main_reason,
+        tags=tags,
+        category=category,
+        pool_status=pool_status,
+        factor_hash=factor_hash,
+        experiment_id=experiment_id,
+        task_id=task_id,
+        market=market,
+        universe=universe,
+        holding_period=holding_period,
+        validation_stage=validation_stage,
+        metrics=metrics,
+        backtest_summary=backtest_summary,
+        params=params,
+        validation_provenance=validation_provenance,
+        report_url=report_url,
+        factor_card_path=factor_card_path,
+    )
+    try:
+        factory = _get_ledger_session_factory()
+        async with factory() as session:
+            row = await _pool_update_factor_pool_entry(
+                session,
+                owner_user_id=MCP_SYSTEM_USER_ID,
+                entry_id=entry_id,
+                data=payload,
+            )
+            await session.commit()
+            await session.refresh(row)
+            return json.dumps(factor_pool_entry_to_dict(row), ensure_ascii=False, indent=2, default=str)
+    except FactorPoolError as exc:
+        return json.dumps({"error_code": "FACTOR_POOL_ERROR", "hint": str(exc)}, ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps({"error_code": "FACTOR_POOL_UNAVAILABLE", "hint": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def delete_factor_pool_entry(entry_id: str) -> str:
+    """删除研究因子池条目。"""
+    try:
+        factory = _get_ledger_session_factory()
+        async with factory() as session:
+            await _pool_delete_factor_pool_entry(session, owner_user_id=MCP_SYSTEM_USER_ID, entry_id=entry_id)
+            await session.commit()
+            return json.dumps({"deleted": True, "entry_id": entry_id}, ensure_ascii=False, indent=2)
+    except FactorPoolError as exc:
+        return json.dumps({"error_code": "FACTOR_POOL_ERROR", "hint": str(exc)}, ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps({"error_code": "FACTOR_POOL_UNAVAILABLE", "hint": str(exc)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def list_factor_pool_tags(
+    pool_status: str | None = None,
+    universe: str | None = None,
+    market: str | None = None,
+) -> str:
+    """查询研究因子池 tags、category 和 status facets。"""
+    try:
+        factory = _get_ledger_session_factory()
+        async with factory() as session:
+            facets = await _pool_list_factor_pool_tags(
+                session,
+                owner_user_id=MCP_SYSTEM_USER_ID,
+                pool_status=pool_status,
+                universe=universe,
+                market=market,
+            )
+            return json.dumps(facets, ensure_ascii=False, indent=2, default=str)
+    except FactorPoolError as exc:
+        return json.dumps({"error_code": "FACTOR_POOL_ERROR", "hint": str(exc)}, ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps({"error_code": "FACTOR_POOL_UNAVAILABLE", "hint": str(exc)}, ensure_ascii=False)
+
+
+def _compact_factor_pool_payload(**kwargs) -> dict:
+    return {key: value for key, value in kwargs.items() if value is not None}
+
+
+@mcp.tool()
 def diagnose_factor(
     expression: str,
     ic_mean: float = 0.0,
@@ -2111,6 +2788,7 @@ async def run_anti_overfit(
     neutralize_industry: bool = True,
     neutralize_cap: bool = True,
     allow_remote_fetch: bool = False,
+    submit_only: bool = False,
 ) -> str:
     """对因子执行反过拟合检测(4项测试)。
 
@@ -2127,6 +2805,7 @@ async def run_anti_overfit(
         neutralize_industry: 行业中性化(默认开启)
         neutralize_cap: 市值中性化(默认开启)
         allow_remote_fetch: 是否允许缓存缺失时阻塞式拉取远程行情；默认 False
+        submit_only: 是否异步提交并立即返回 task_id；默认 False 保持同步行为
 
     Returns:
         JSON with score, recommendation, and per-test details.
@@ -2145,12 +2824,64 @@ async def run_anti_overfit(
         "allow_remote_fetch": allow_remote_fetch,
     }
     task_id = await start_mcp_task("anti_overfit", expression, task_params)
+    if submit_only:
+        await update_mcp_task_progress(
+            task_id,
+            status="running",
+            progress=0,
+            progress_message="submitted run_anti_overfit",
+            stage="submitted",
+        )
+        _submit_mcp_background_task(_run_mcp_tool_with_existing_task(
+            task_id,
+            lambda: run_anti_overfit(
+                expression,
+                universe=universe,
+                start_date=start_date,
+                end_date=end_date,
+                universe_date=universe_date,
+                holding_period=holding_period,
+                neutralize_industry=neutralize_industry,
+                neutralize_cap=neutralize_cap,
+                allow_remote_fetch=allow_remote_fetch,
+                submit_only=False,
+            ),
+        ))
+        return _submitted_mcp_task_response(task_id)
     _error_msg = None
     _result = None
     try:
+        await update_mcp_task_progress(
+            task_id,
+            status="validating",
+            progress=2,
+            progress_message="validating run_anti_overfit request",
+            stage="validating",
+        )
+        _mcp_cancel_check(task_id)
         try:
+            await update_mcp_task_progress(
+                task_id,
+                status="fetching_data",
+                progress=5,
+                progress_message="fetching market data",
+                stage="fetching_data",
+            )
             market_df, stock_codes = await asyncio.to_thread(
-                _fetch_data_for_market, universe, start_date, end_date, allow_remote_fetch, resolved_universe_date
+                _fetch_data_for_market,
+                universe,
+                start_date,
+                end_date,
+                allow_remote_fetch,
+                resolved_universe_date,
+                lambda: _mcp_cancel_check(task_id),
+                _mcp_fetch_progress_callback(
+                    task_id,
+                    status="fetching_data",
+                    stage="fetching_data",
+                    base_progress=5,
+                    span=40,
+                ),
             )
         except _RemotePrefetchRequired as exc:
             _result = exc.payload
@@ -2184,6 +2915,13 @@ async def run_anti_overfit(
         task_params["data_snapshot_id"] = data_provenance["data_snapshot_id"]
         task_params["data_source"] = data_provenance.get("data_source")
 
+        await update_mcp_task_progress(
+            task_id,
+            status="fetching_fundamentals",
+            progress=50,
+            progress_message="fetching fundamentals if required",
+            stage="fetching_fundamentals",
+        )
         market_df = await asyncio.to_thread(
             _enrich_with_fundamentals,
             expression,
@@ -2192,15 +2930,32 @@ async def run_anti_overfit(
             start_date,
             end_date,
             allow_remote_fetch,
+            lambda: _mcp_cancel_check(task_id),
+            _mcp_fetch_progress_callback(
+                task_id,
+                status="fetching_fundamentals",
+                stage="fetching_fundamentals",
+                base_progress=50,
+                span=15,
+            ),
         )
 
+        await update_mcp_task_progress(
+            task_id,
+            status="backtesting",
+            progress=68,
+            progress_message="computing factor data for anti-overfit",
+            stage="backtesting",
+        )
+        _mcp_cancel_check(task_id)
         executor = get_executor()
         future = executor.submit_cpu_work(
             _run_backtest_in_process, market_df, expression, 5, holding_period,
             cost_rate=0,
             neutralize_industry=neutralize_industry, neutralize_cap=neutralize_cap,
         )
-        result = await asyncio.to_thread(future.result, 600)
+        result = await _await_mcp_future_result(future, task_id, 600)
+        _mcp_cancel_check(task_id)
         factor_df = result.get("_factor_df")
         if factor_df is None or len(factor_df) < 100:
             _result = {"error": "Insufficient factor data for anti-overfit analysis."}
@@ -2214,7 +2969,16 @@ async def run_anti_overfit(
             ))
             return json.dumps(_result)
 
+        await update_mcp_task_progress(
+            task_id,
+            status="analyzing",
+            progress=85,
+            progress_message="running anti-overfit checks",
+            stage="analyzing",
+        )
+        _mcp_cancel_check(task_id)
         _result = dict(await asyncio.to_thread(_run_ao, factor_df, holding_period))
+        _mcp_cancel_check(task_id)
         _result["params"] = task_params
         _result.update(data_provenance)
         _result["artifact_type"] = "anti_overfit"
@@ -2227,8 +2991,26 @@ async def run_anti_overfit(
             payload=_result,
             status="anti_overfit_checked",
         )
+        await update_mcp_task_progress(
+            task_id,
+            status="completed",
+            progress=100,
+            progress_message="run_anti_overfit completed",
+            stage="completed",
+        )
         return json.dumps(_result, ensure_ascii=False, indent=2, default=str)
 
+    except CancelledException:
+        logger.info(f"Anti-overfit task {task_id} cancelled")
+        _error_msg = "cancelled"
+        _result = _mcp_cancelled_result(task_id)
+        await update_mcp_task_progress(
+            task_id,
+            status="cancelled",
+            progress_message="run_anti_overfit cancelled",
+            stage="cancelled",
+        )
+        return json.dumps(_result, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"Anti-overfit failed: {traceback.format_exc()}")
         _error_msg = str(e)
@@ -2257,6 +3039,7 @@ async def run_rolling_validation(
     neutralize_industry: bool = True,
     neutralize_cap: bool = True,
     allow_remote_fetch: bool = False,
+    submit_only: bool = False,
 ) -> str:
     """对因子执行滚动验证(Walk-Forward)。
 
@@ -2273,6 +3056,7 @@ async def run_rolling_validation(
         neutralize_industry: 行业中性化(默认开启)
         neutralize_cap: 市值中性化(默认开启)
         allow_remote_fetch: 是否允许缓存缺失时阻塞式拉取远程行情；默认 False
+        submit_only: 是否异步提交并立即返回 task_id；默认 False 保持同步行为
 
     Returns:
         JSON with composite score, per-window results, decay analysis.
@@ -2291,12 +3075,64 @@ async def run_rolling_validation(
         "allow_remote_fetch": allow_remote_fetch,
     }
     task_id = await start_mcp_task("rolling_validation", expression, task_params)
+    if submit_only:
+        await update_mcp_task_progress(
+            task_id,
+            status="running",
+            progress=0,
+            progress_message="submitted run_rolling_validation",
+            stage="submitted",
+        )
+        _submit_mcp_background_task(_run_mcp_tool_with_existing_task(
+            task_id,
+            lambda: run_rolling_validation(
+                expression,
+                universe=universe,
+                start_date=start_date,
+                end_date=end_date,
+                universe_date=universe_date,
+                holding_period=holding_period,
+                neutralize_industry=neutralize_industry,
+                neutralize_cap=neutralize_cap,
+                allow_remote_fetch=allow_remote_fetch,
+                submit_only=False,
+            ),
+        ))
+        return _submitted_mcp_task_response(task_id)
     _error_msg = None
     _result = None
     try:
+        await update_mcp_task_progress(
+            task_id,
+            status="validating",
+            progress=2,
+            progress_message="validating run_rolling_validation request",
+            stage="validating",
+        )
+        _mcp_cancel_check(task_id)
         try:
+            await update_mcp_task_progress(
+                task_id,
+                status="fetching_data",
+                progress=5,
+                progress_message="fetching market data",
+                stage="fetching_data",
+            )
             market_df, stock_codes = await asyncio.to_thread(
-                _fetch_data_for_market, universe, start_date, end_date, allow_remote_fetch, resolved_universe_date
+                _fetch_data_for_market,
+                universe,
+                start_date,
+                end_date,
+                allow_remote_fetch,
+                resolved_universe_date,
+                lambda: _mcp_cancel_check(task_id),
+                _mcp_fetch_progress_callback(
+                    task_id,
+                    status="fetching_data",
+                    stage="fetching_data",
+                    base_progress=5,
+                    span=40,
+                ),
             )
         except _RemotePrefetchRequired as exc:
             _result = exc.payload
@@ -2330,6 +3166,13 @@ async def run_rolling_validation(
         task_params["data_snapshot_id"] = data_provenance["data_snapshot_id"]
         task_params["data_source"] = data_provenance.get("data_source")
 
+        await update_mcp_task_progress(
+            task_id,
+            status="fetching_fundamentals",
+            progress=50,
+            progress_message="fetching fundamentals if required",
+            stage="fetching_fundamentals",
+        )
         market_df = await asyncio.to_thread(
             _enrich_with_fundamentals,
             expression,
@@ -2338,15 +3181,32 @@ async def run_rolling_validation(
             start_date,
             end_date,
             allow_remote_fetch,
+            lambda: _mcp_cancel_check(task_id),
+            _mcp_fetch_progress_callback(
+                task_id,
+                status="fetching_fundamentals",
+                stage="fetching_fundamentals",
+                base_progress=50,
+                span=15,
+            ),
         )
 
+        await update_mcp_task_progress(
+            task_id,
+            status="backtesting",
+            progress=68,
+            progress_message="computing factor data for rolling validation",
+            stage="backtesting",
+        )
+        _mcp_cancel_check(task_id)
         executor = get_executor()
         future = executor.submit_cpu_work(
             _run_backtest_in_process, market_df, expression, 5, holding_period,
             cost_rate=0,
             neutralize_industry=neutralize_industry, neutralize_cap=neutralize_cap,
         )
-        result = await asyncio.to_thread(future.result, 600)
+        result = await _await_mcp_future_result(future, task_id, 600)
+        _mcp_cancel_check(task_id)
         factor_df = result.get("_factor_df")
         if factor_df is None or len(factor_df) < 100:
             _result = {"error": "Insufficient factor data for rolling validation."}
@@ -2360,7 +3220,16 @@ async def run_rolling_validation(
             ))
             return json.dumps(_result)
 
+        await update_mcp_task_progress(
+            task_id,
+            status="analyzing",
+            progress=85,
+            progress_message="running rolling validation",
+            stage="analyzing",
+        )
+        _mcp_cancel_check(task_id)
         _result = dict(await asyncio.to_thread(_run_rv, factor_df, holding_period))
+        _mcp_cancel_check(task_id)
         _result["params"] = task_params
         _result.update(data_provenance)
         _result["artifact_type"] = "rolling_validation"
@@ -2373,8 +3242,26 @@ async def run_rolling_validation(
             payload=_result,
             status="rolling_checked",
         )
+        await update_mcp_task_progress(
+            task_id,
+            status="completed",
+            progress=100,
+            progress_message="run_rolling_validation completed",
+            stage="completed",
+        )
         return json.dumps(_result, ensure_ascii=False, indent=2, default=str)
 
+    except CancelledException:
+        logger.info(f"Rolling validation task {task_id} cancelled")
+        _error_msg = "cancelled"
+        _result = _mcp_cancelled_result(task_id)
+        await update_mcp_task_progress(
+            task_id,
+            status="cancelled",
+            progress_message="run_rolling_validation cancelled",
+            stage="cancelled",
+        )
+        return json.dumps(_result, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"Rolling validation failed: {traceback.format_exc()}")
         _error_msg = str(e)
@@ -2780,6 +3667,7 @@ async def compute_factor_values(
     end_date: str = "",
     universe_date: str | None = None,
     allow_remote_fetch: bool = False,
+    submit_only: bool = False,
 ) -> str:
     """计算因子截面值，返回每个交易日所有股票的因子得分。
 
@@ -2790,20 +3678,66 @@ async def compute_factor_values(
         end_date: 截止日期 YYYY-MM-DD，默认今天
         universe_date: 股票池成分股基准日期；默认使用 end_date
         allow_remote_fetch: 是否允许缓存缺失时阻塞式拉取远程行情；默认 False
+        submit_only: 是否异步提交并立即返回 task_id；默认 False 保持同步行为
 
     Returns:
         JSON string with trading_days and data: [{date, values: {symbol: score}, count}].
     """
+    task_params = {
+        "universe": universe,
+        "start_date": start_date,
+        "end_date": end_date,
+        "universe_date": universe_date,
+        "allow_remote_fetch": allow_remote_fetch,
+    }
+    task_id = await start_mcp_task("compute_factor_values", expression, task_params)
+    if submit_only:
+        await update_mcp_task_progress(
+            task_id,
+            status="running",
+            progress=0,
+            progress_message="submitted compute_factor_values",
+            stage="submitted",
+        )
+        _submit_mcp_background_task(_run_mcp_tool_with_existing_task(
+            task_id,
+            lambda: compute_factor_values(
+                expression,
+                universe=universe,
+                start_date=start_date,
+                end_date=end_date,
+                universe_date=universe_date,
+                allow_remote_fetch=allow_remote_fetch,
+                submit_only=False,
+            ),
+        ))
+        return _submitted_mcp_task_response(task_id)
+    _error_msg = None
+    _result = None
     try:
+        await update_mcp_task_progress(
+            task_id,
+            status="validating",
+            progress=2,
+            progress_message="validating compute_factor_values request",
+            stage="validating",
+        )
+        _mcp_cancel_check(task_id)
         req = _validate_factor_values_request(expression, universe, start_date, end_date)
         resolved_universe_date = _resolve_universe_date(universe_date, req.end_date)
+        task_params["start_date"] = req.start_date
+        task_params["end_date"] = req.end_date
+        task_params["fetch_start"] = req.fetch_start
+        task_params["universe_date"] = resolved_universe_date
         if allow_remote_fetch:
+            _mcp_cancel_check(task_id)
             stock_codes = await asyncio.to_thread(
                 get_universe,
                 req.universe,
                 resolved_universe_date,
                 False,
             )
+            _mcp_cancel_check(task_id)
             _raise_if_remote_prefetch_required(
                 universe=req.universe,
                 universe_date=resolved_universe_date,
@@ -2811,7 +3745,14 @@ async def compute_factor_values(
                 end_date=req.end_date,
                 stock_codes=stock_codes,
             )
-        result = await asyncio.to_thread(
+        await update_mcp_task_progress(
+            task_id,
+            status="fetching_data",
+            progress=5,
+            progress_message="fetching market data for factor values",
+            stage="fetching_data",
+        )
+        _result = await asyncio.to_thread(
             _compute_factor_values_payload,
             expression,
             universe=universe,
@@ -2819,13 +3760,45 @@ async def compute_factor_values(
             end_date=end_date,
             allow_remote_fetch=allow_remote_fetch,
             universe_date=resolved_universe_date,
+            cancel_check=lambda: _mcp_cancel_check(task_id),
+            progress_callback=_mcp_fetch_progress_callback(
+                task_id,
+                status="fetching_data",
+                stage="fetching_data",
+                base_progress=5,
+                span=70,
+            ),
         )
-        return json.dumps(result, ensure_ascii=False, indent=2, default=str)
+        _mcp_cancel_check(task_id)
+        await update_mcp_task_progress(
+            task_id,
+            status="completed",
+            progress=100,
+            progress_message="compute_factor_values completed",
+            stage="completed",
+        )
+        return json.dumps(_result, ensure_ascii=False, indent=2, default=str)
     except _RemotePrefetchRequired as exc:
-        return json.dumps(exc.payload, ensure_ascii=False, indent=2, default=str)
+        _result = exc.payload
+        return json.dumps(_result, ensure_ascii=False, indent=2, default=str)
+    except CancelledException:
+        logger.info(f"compute_factor_values task {task_id} cancelled")
+        _error_msg = "cancelled"
+        _result = _mcp_cancelled_result(task_id)
+        await update_mcp_task_progress(
+            task_id,
+            status="cancelled",
+            progress_message="compute_factor_values cancelled",
+            stage="cancelled",
+        )
+        return json.dumps(_result, ensure_ascii=False, indent=2)
     except Exception as e:
+        _error_msg = str(e)
+        _result = {"error": str(e)}
         logger.warning(f"compute_factor_values failed: {e}")
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return json.dumps(_result, ensure_ascii=False)
+    finally:
+        await complete_mcp_task(task_id, _result, _error_msg, expression)
 
 
 # Operator documentation fallback
