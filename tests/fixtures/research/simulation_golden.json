@@ -1,0 +1,64 @@
+{
+  "schema_version": "simulation_golden/v1",
+  "source": "synthetic_hand_calculated",
+  "simulation_config_version": "simulation_config/v1",
+  "event_order": ["previous_close_positions", "corporate_actions_and_entitlements", "open_fills_and_fees", "close_valuation", "after_close_signal"],
+  "cases": [
+    {
+      "id": "fresh_cash_entry_and_no_overnight_entitlement",
+      "start_state": {"evaluation_start_state": "fresh_cash", "cash": 1000, "positions": {}, "receivables": {}},
+      "session": "2024-01-03",
+      "previous_close": {"A": 100},
+      "open": {"A": 110},
+      "close": {"A": 121},
+      "dividends_ex_before_open": [{"event_id": "D1", "security_id": "A", "per_share": 2, "pay_session": "2024-01-05"}],
+      "fills": [{"security_id": "A", "quantity": 5, "raw_price": 110}],
+      "fees_bps": 10,
+      "expected": {"cash": 449.45, "positions": {"A": 5}, "receivables": {}, "fees": 0.55, "nav": 1054.45, "net_return": 0.05445}
+    },
+    {
+      "id": "carry_forward_ex_date_receivable",
+      "start_state": {"evaluation_start_state": "carry_forward", "cash": 500, "positions": {"A": 5}, "receivables": {}, "source_session": "2024-01-02", "source_ref": "synthetic-state-A"},
+      "session": "2024-01-03",
+      "previous_close": {"A": 100},
+      "open": {"A": 98},
+      "close": {"A": 98},
+      "dividends_ex_before_open": [{"event_id": "D1", "security_id": "A", "per_share": 2, "pay_session": "2024-01-05"}],
+      "fills": [],
+      "fees_bps": 10,
+      "expected": {"cash": 500, "positions": {"A": 5}, "receivables": {"D1": 10}, "fees": 0, "nav": 1000, "net_return": 0}
+    },
+    {
+      "id": "split_before_open_conserves_nav",
+      "start_state": {"evaluation_start_state": "carry_forward", "cash": 500, "positions": {"A": 5}, "receivables": {}, "source_session": "2024-01-02", "source_ref": "synthetic-state-A"},
+      "session": "2024-01-03",
+      "previous_close": {"A": 100},
+      "open": {"A": 50},
+      "close": {"A": 50},
+      "splits_before_open": [{"security_id": "A", "ratio": 2}],
+      "fills": [],
+      "fees_bps": 0,
+      "expected": {"cash": 500, "positions": {"A": 10}, "receivables": {}, "fees": 0, "nav": 1000, "net_return": 0}
+    },
+    {
+      "id": "first_entry_cost_is_first_drawdown",
+      "start_state": {"evaluation_start_state": "fresh_cash", "cash": 1000, "positions": {}, "receivables": {}},
+      "session": "2024-01-03",
+      "previous_close": {"A": 100},
+      "open": {"A": 100},
+      "close": {"A": 100},
+      "fills": [{"security_id": "A", "quantity": 5, "raw_price": 100}],
+      "fees_bps": 10,
+      "expected": {"cash": 499.5, "positions": {"A": 5}, "receivables": {}, "fees": 0.5, "nav": 999.5, "net_return": -0.0005, "drawdown": -0.0005}
+    }
+  ],
+  "buy_and_hold_case": {
+    "id": "fixed_quantities_are_not_daily_rebalanced",
+    "initial_cash": 0,
+    "quantities": {"A": 5, "B": 5},
+    "sessions": ["2024-01-02", "2024-01-03", "2024-01-04"],
+    "closes": {"A": [100, 200, 100], "B": [100, 100, 100]},
+    "expected_nav": [1000, 1500, 1000],
+    "expected_total_return": 0
+  }
+}

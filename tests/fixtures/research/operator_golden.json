@@ -1,0 +1,68 @@
+{
+  "schema_version": "operator_golden/v1",
+  "semantics_version": "factor_semantics/v2",
+  "source": "synthetic_hand_calculated",
+  "nonfinite_encoding": {"null": "NaN", "Infinity": "+inf", "-Infinity": "-inf"},
+  "cases": [
+    {
+      "id": "rank_average_ties_and_missing",
+      "expression": "rank(close)",
+      "rows": [
+        {"security_id": "A", "session": "2024-01-02", "close": 10},
+        {"security_id": "B", "session": "2024-01-02", "close": 10},
+        {"security_id": "C", "session": "2024-01-02", "close": 20},
+        {"security_id": "D", "session": "2024-01-02", "close": null},
+        {"security_id": "E", "session": "2024-01-02", "close": "Infinity"},
+        {"security_id": "A", "session": "2024-01-03", "close": 100}
+      ],
+      "expected": [0.5, 0.5, 1.0, null, null, 1.0]
+    },
+    {
+      "id": "scale_cross_section_and_constant",
+      "expression": "scale(close)",
+      "rows": [
+        {"security_id": "A", "session": "2024-01-02", "close": -10},
+        {"security_id": "B", "session": "2024-01-02", "close": 0},
+        {"security_id": "C", "session": "2024-01-02", "close": 10},
+        {"security_id": "D", "session": "2024-01-02", "close": null},
+        {"security_id": "E", "session": "2024-01-02", "close": "-Infinity"},
+        {"security_id": "A", "session": "2024-01-03", "close": 500},
+        {"security_id": "B", "session": "2024-01-03", "close": 500},
+        {"security_id": "A", "session": "2024-01-04", "close": 0},
+        {"security_id": "B", "session": "2024-01-04", "close": 0}
+      ],
+      "expected": [0.0, 0.5, 1.0, null, null, 0.0, 0.0, 0.0, 0.0]
+    },
+    {
+      "id": "scale_all_missing",
+      "expression": "scale(close)",
+      "rows": [
+        {"security_id": "A", "session": "2024-01-02", "close": null},
+        {"security_id": "B", "session": "2024-01-02", "close": "Infinity"}
+      ],
+      "expected": [null, null]
+    },
+    {
+      "id": "ts_rank_average_ties",
+      "expression": "ts_rank(close, 3)",
+      "rows": [
+        {"security_id": "A", "session": "2024-01-02", "close": 10},
+        {"security_id": "A", "session": "2024-01-03", "close": 10},
+        {"security_id": "A", "session": "2024-01-04", "close": 20},
+        {"security_id": "B", "session": "2024-01-02", "close": 100},
+        {"security_id": "B", "session": "2024-01-03", "close": 100},
+        {"security_id": "B", "session": "2024-01-04", "close": 100}
+      ],
+      "expected": [1.0, 0.75, 1.0, 1.0, 0.75, 0.6666666666666666],
+      "research_score_eligible": [false, false, true, false, false, true]
+    }
+  ],
+  "warmup_cases": [
+    {"expression": "close", "required_observations": 1, "prior_sessions": 0},
+    {"expression": "rank(close)", "required_observations": 1, "prior_sessions": 0},
+    {"expression": "ts_mean(close, 20)", "required_observations": 20, "prior_sessions": 19},
+    {"expression": "ts_mean(ts_mean(close, 20), 60)", "required_observations": 79, "prior_sessions": 78},
+    {"expression": "ts_shift(ts_mean(close, 20), 5)", "required_observations": 25, "prior_sessions": 24},
+    {"expression": "ts_corr(ts_mean(close, 20), ts_mean(volume, 60), 5)", "required_observations": 64, "prior_sessions": 63}
+  ]
+}
