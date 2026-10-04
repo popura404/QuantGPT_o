@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-10-04T20:13:24.626858+00:00",
+  "provider": "alpha_vantage_free",
+  "key_kind": "official_public_demo",
+  "symbol": "IBM",
+  "window": {
+    "start": "2026-09-19",
+    "end": "2026-10-03"
+  },
+  "external_integration": "limited_demo_response_verified",
+  "research_decision": "not_evaluated",
+  "sec_external_integration": "not_run",
+  "sec_reason": "real_contact_user_agent_not_configured",
+  "raw_data_saved": false,
+  "rows": 10,
+  "missing_sessions": [],
+  "provenance": {
+    "provider": "alpha_vantage_free",
+    "feed": "TIME_SERIES_DAILY:compact",
+    "adjustment": "raw",
+    "asof": "2026-10-04T20:13:24.626858+00:00",
+    "retrieved_at": "2026-10-04T20:13:26.733641+00:00",
+    "source_sha256": "b4fa59f0a94088fce15b8eded1e0343f1caf2cc7ee4813e9606f404c82ba84d8",
+    "request_sha256": "e50be366f7c78e28eecfe2f8ac2230ea06029ac5e1a830c56485a40e796c212d",
+    "schema_version": "us_research_data/v1",
+    "upstream_version": "unknown",
+    "status": "research_only",
+    "limitations": [
+      "compact_history_only",
+      "corporate_actions_unavailable",
+      "historical_membership_unavailable",
+      "delisting_terminal_values_unavailable",
+      "security_master_unverified",
+      "upstream_vintages_unknown",
+      "public_demo"
+    ]
+  }
+}

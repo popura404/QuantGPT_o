@@ -1,0 +1,9 @@
+{
+  "fixture_kind": "synthetic_contract_only",
+  "Meta Data": {"2. Symbol": "IBM", "3. Last Refreshed": "2024-03-12", "5. Time Zone": "US/Eastern"},
+  "Time Series (Daily)": {
+    "2024-03-08": {"1. open": "100", "2. high": "103", "3. low": "99", "4. close": "102", "5. volume": "10000"},
+    "2024-03-11": {"1. open": "102", "2. high": "104", "3. low": "101", "4. close": "103", "5. volume": "12000"},
+    "2024-03-12": {"1. open": "103", "2. high": "105", "3. low": "102", "4. close": "104", "5. volume": "11000"}
+  }
+}

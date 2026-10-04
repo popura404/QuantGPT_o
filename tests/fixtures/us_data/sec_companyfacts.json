@@ -1,0 +1,18 @@
+{
+  "fixture_kind": "synthetic_contract_only",
+  "cik": 1234567,
+  "entityName": "SYNTHETIC TEST ISSUER",
+  "facts": {
+    "us-gaap": {
+      "NetIncomeLoss": {
+        "units": {
+          "USD": [
+            {"start": "2024-01-01", "end": "2024-03-31", "val": 100, "accn": "0001234567-24-000001", "form": "10-Q", "filed": "2024-05-01", "fy": 2024, "fp": "Q1"},
+            {"start": "2024-01-01", "end": "2024-03-31", "val": 90, "accn": "0001234567-24-000002", "form": "10-Q/A", "filed": "2024-08-01", "fy": 2024, "fp": "Q1"}
+          ],
+          "EUR": [{"start": "2024-01-01", "end": "2024-03-31", "val": 999, "accn": "0001234567-24-000001", "form": "10-Q", "filed": "2024-05-01"}]
+        }
+      }
+    }
+  }
+}

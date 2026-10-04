@@ -13,6 +13,12 @@ class DataField:
     name: str
     dtype: str
     description: str = ""
+    unit: str = "unknown"
+    available_at: str = "unknown"
+    period: str = "unknown"
+    vintage: str = "unknown"
+    version: str = "unknown"
+    status: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -27,6 +33,10 @@ class MarketCapabilities:
     supports_leverage: bool
     default_cost_bps: float
     data_fields: tuple[DataField, ...]
+    status: str = "unknown"
+    data_scope: str = "unknown"
+    provider: str = "unknown"
+    capability_blockers: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
         return {
@@ -40,6 +50,10 @@ class MarketCapabilities:
             "supports_leverage": self.supports_leverage,
             "default_cost_bps": self.default_cost_bps,
             "data_fields": [field.__dict__ for field in self.data_fields],
+            "status": self.status,
+            "data_scope": self.data_scope,
+            "provider": self.provider,
+            "capability_blockers": list(self.capability_blockers),
         }
 
 
