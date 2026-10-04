@@ -1,5 +1,7 @@
 # QuantGPT API 完整文档
 
+新增 `/api/v1/research` 项目、评价、artifact、v2策略运行、signal_ref优化与持久任务接口，见 [共享研究 API](RESEARCH_API.md)。旧 `/api/v1/strategy/export` 的调用者结果字典不再构成授权，返回 `SERVER_STRATEGY_RUN_REQUIRED`；新导出按项目内 strategy_run_id 核验服务端证据。
+
 > API 文档版本: v1 | 应用版本: 2.8.0 | 基础路径: `/api/v1` | REST 认证: Bearer Token (JWT/API Key)
 
 ---

@@ -1,5 +1,7 @@
 # QuantGPT MCP 配置指南
 
+共享研究使用 `list_research_projects`、`evaluate_factors`、`run_research_strategy`、`get_research_artifact`、`optimize_research_portfolio` 和 `export_research_strategy`。完整配置、项目身份和任务说明见 [研究 API/MCP](RESEARCH_API.md)。系统身份须显式加入项目；project_id 不是访问凭据。MCP 1.x 是当前锁定兼容通道。
+
 QuantGPT 提供标准 MCP (Model Context Protocol) 接口，支持因子研究工具、StrategySpec v0 策略工具，以及当前仓库已实现的 Post-MVP StrategySpec v1 扩展。可通过 Claude Code、Claude Desktop 等 MCP 客户端直接调用。
 
 ## 快速开始（推荐）

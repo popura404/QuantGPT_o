@@ -1,0 +1,145 @@
+{
+  "schema_version": "research_service_benchmark/v1",
+  "measurement_context": {
+    "purpose": "final_source_structural_verification",
+    "cpu_load_isolated": false,
+    "parallel_validation": "Full pytest and browser E2E validation allowed concurrently by coordinator",
+    "timing_is_performance_baseline": false
+  },
+  "created_at": "2026-10-04T20:58:28.710859+00:00",
+  "dataset_kind": "synthetic",
+  "correctness_oracle": false,
+  "config": {
+    "stocks": 20,
+    "sessions": 180,
+    "rows": 3600,
+    "seed": 20261005,
+    "repeats": 1,
+    "expressions": [
+      "rank(close / ts_mean(close, 20))",
+      "-rank(close / delay(close, 5) - 1)",
+      "-rank(ts_std(close / delay(close, 1) - 1, 20))"
+    ],
+    "engine": "python"
+  },
+  "source_revision": "31667decc5a57121d645dbcfdec1cfdb257fe524",
+  "working_tree_dirty": true,
+  "engine_identity": {
+    "engine": "python",
+    "version": "3.12.14",
+    "code_version": "sha256:5b9654109f264fe2dbe1087deaf9b0c741230c1ed92d7d44c4d46a4dc09aafa2",
+    "semantics_version": "factor_semantics/v2",
+    "conformance": "unverified"
+  },
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "machine": "AMD64",
+    "logical_cpus": 20,
+    "sqlite": "3.53.1",
+    "packages": {
+      "pandas": "3.0.6",
+      "numpy": "2.5.3",
+      "pyarrow": "25.0.1",
+      "psutil": "7.2.2",
+      "sqlalchemy": "2.1.3",
+      "aiosqlite": "0.22.1",
+      "pydantic": "2.13.5"
+    },
+    "dependency_lock": "windows-py312.lock",
+    "dependency_lock_sha256": "71cbcfbfd30264012fe252ffc9b4faf9c4a6b94e7232d7c48d53cc9d52b2c3bc"
+  },
+  "dataset": {
+    "snapshot_id": "ds_e522affe6fd1b9cb9967074d7ccc0c1f",
+    "logical_content_sha256": "0590a87c38c528b41d24733047573ed6a1eda28c65aecdab39bf4a1d63e3d909",
+    "parquet_sha256": "0ea8e5ca7e412340ad81a683e8de646212402130ac1f5430d4ba4c127505099d",
+    "parquet_bytes": 177964
+  },
+  "setup_seconds": 0.36525860000256216,
+  "peak_rss_bytes": 216678400,
+  "peak_rss_sampling_seconds": 0.01,
+  "verification": {
+    "all_retries_reused_results": true,
+    "all_artifacts_verified": true,
+    "actual_read_compute_counters_match": true,
+    "engine_source_stable_during_run": true,
+    "rust_conformance": "unverified; not benchmarked",
+    "integrity": [
+      {
+        "repetition": 0,
+        "evaluation_results_identical": true,
+        "artifact_ids_and_hashes_identical": true,
+        "evaluation_result_sha256": "4bfe4e307a888b4ee77779adf69453e76fc2e3c165523aa847a99d91c312a7fc",
+        "artifact_count": 9
+      }
+    ],
+    "cache_invalidation": {
+      "changed_cost_recomputed": true,
+      "changed_cost_has_new_identity": true,
+      "original_evaluation_retained_and_reused": true,
+      "outside_timed_samples": true
+    }
+  },
+  "phases": {
+    "cold_batch": {
+      "p50_seconds": 11.416199800005415,
+      "p95_seconds": 11.416199800005415
+    },
+    "warm_identical_retry": {
+      "p50_seconds": 0.10665299999527633,
+      "p95_seconds": 0.10665299999527633
+    }
+  },
+  "samples": [
+    {
+      "phase": "cold_batch",
+      "repetition": 0,
+      "seconds": 11.416199800005415,
+      "response_serialization_seconds": 0.0003007000050274655,
+      "response_bytes": 9589,
+      "artifact_payload_bytes": 1466282,
+      "provider_requests": 0,
+      "panel_builds": 1,
+      "engine_calls": 3,
+      "logical_panel_read_bytes": 177964,
+      "process_io_read_bytes": 2647611,
+      "process_io_write_bytes": 2017728,
+      "database_bytes_after_phase": 2174976,
+      "evaluation_hashes": [
+        "777ac06ab381b4ca8dd63924aea46dc49380ec2993df9edf2116be9d3cbf9b28",
+        "8111c32537661b6aa24bfb3abef0db3f7e070b1b4e15b0e7553d45b8d947231e",
+        "35770914273760fb914819cbe44ebd9046fe8041417343ebe9095299df2ea94b"
+      ]
+    },
+    {
+      "phase": "warm_identical_retry",
+      "repetition": 0,
+      "seconds": 0.10665299999527633,
+      "response_serialization_seconds": 0.00012399999832268804,
+      "response_bytes": 9589,
+      "artifact_payload_bytes": 1466282,
+      "provider_requests": 0,
+      "panel_builds": 0,
+      "engine_calls": 0,
+      "logical_panel_read_bytes": 0,
+      "process_io_read_bytes": 3549369,
+      "process_io_write_bytes": 0,
+      "database_bytes_after_phase": 2174976,
+      "evaluation_hashes": [
+        "777ac06ab381b4ca8dd63924aea46dc49380ec2993df9edf2116be9d3cbf9b28",
+        "8111c32537661b6aa24bfb3abef0db3f7e070b1b4e15b0e7553d45b8d947231e",
+        "35770914273760fb914819cbe44ebd9046fe8041417343ebe9095299df2ea94b"
+      ]
+    }
+  ],
+  "isolated_run_directory": "E:\\fpga\\\u91cf\u5316gpt\\benchmark-results\\service-isq1bzac",
+  "known_limitations": [
+    "Synthetic weekday calendar and prices; no real-market validation.",
+    "Cold means empty evaluation database; OS file cache is not flushed.",
+    "Setup, artifact readback and database schema creation are outside service timings.",
+    "Retry speed is reuse of immutable evidence, not a faster numerical engine.",
+    "Historical pre-fix parser measurements are not a correctness oracle.",
+    "Python correctness is established by separate golden/regression tests, not timing."
+  ],
+  "label": "p19-service-post-boundary-and-type-fix-structural-check"
+}

@@ -134,6 +134,23 @@ serialization time and summary size. Provider calls are zero by construction.
 It is an expression microbenchmark, not proof of shared-service caching or an
 end-to-end provider benchmark.
 
+The service mode exercises a real isolated SQLite database, project membership,
+snapshot registration, Python factor backtests, research-card persistence and
+verified artifact reads on the fixed 20-security/180-session offline demo:
+
+```powershell
+./.venv312/Scripts/python.exe scripts/benchmark_research.py --mode service --repeats 3 --label p19-service-synthetic --output benchmark-results/service.json
+```
+
+It independently instruments panel reads and numerical calls: a cold three-factor
+batch must load once/compute three times, and an identical retry must do neither.
+All result identities and artifact hashes must remain identical. Changing fees
+must produce a new identity and computation while preserving the original result.
+These assertions also run once in CI. Raw snapshots/databases stay under ignored
+`benchmark-results/`; the script never connects to the user's database. The
+printed speed difference measures evidence reuse, not numerical engine speed.
+Source changes during a run invalidate the benchmark and require a fresh run.
+
 The checked-in historical result in
 `docs/testing/performance-baseline-2026-10-05.json` loads the exact parser source
 from `25bda5e` using `--source-ref`. Its label is `known-incorrect-pre-fix-baseline`:

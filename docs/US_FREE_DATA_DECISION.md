@@ -56,9 +56,9 @@ A-share defaults are preserved. US factor values use the same adapter as strateg
 research; the result propagates `research_only`, capability blockers and provenance.
 Warmup uses expression AST requirements and real XNYS sessions. Recursive warmup
 without a frozen initialization is blocked. Cache-only requests cannot initiate a
-remote US fetch. MCP callers should forward `market`, `backend` and remote-fetch
-permission through their task wrapper; the MCP implementation is integrated by
-the service owner separately.
+remote US fetch. The MCP factor-values tool forwards `market`, `backend` and
+remote-fetch permission through the shared service. REST and MCP preserve
+structured capability errors, including retryability and the next action.
 
 SEC `net_income`, assets, liabilities, reported common shares and period diluted
 EPS retain exact tags/units. Missing fields fail; no close×volume, price, current

@@ -1,5 +1,7 @@
 **QuantGPT 美股双路线研究平台执行计划**
 
+执行记录见 [US_RESEARCH_EXECUTION_STATUS.md](US_RESEARCH_EXECUTION_STATUS.md)。用户已将本轮优先范围明确为离线契约测试、免费数据简单验证和付费数据接入口；下述完整发布门禁仍保留，不能把离线通过等同于真实美股/WQ生产验收。
+
 版本：v1.1，已完成写后审核及修订；日期：2026-10-05（Asia/Shanghai）；代码基线：`25bda5e`。
 
 依据：[项目审阅报告](E:/fpga/量化gpt/docs/reviews/2026-10-05-us-factor-strategy-audit.md)。目标是同时支持本地美股因子/策略研究和 WQ BRAIN 因子研究，优先打通共同的因子池、实验记录、验证证据与工作台。本文件安排后续实施；所有工作包初始状态为 `planned`，已有审阅及复现不代表修复完成。

@@ -28,6 +28,10 @@ LLM Agent 自治因子挖矿 → 批量回测 → 多维评分 → 反过拟合�
 
 </div>
 
+美股共享研究的本轮执行记录见 [状态与已知限制](docs/US_RESEARCH_EXECUTION_STATUS.md)。新增项目共池、不可变评价/产物、v2策略血缘、持久任务及离线网页流程；免费美股来源仅做有限接入验证，付费供应商接口已预留。新开发环境按 [Python 3.12 测试说明](docs/TESTING.md) 安装，现有数据库先阅读 [迁移说明](docs/RESEARCH_MIGRATION.md)。
+
+[因子研究卡与假设预注册](docs/FACTOR_RESEARCH_CARDS.md)记录同一评价的口径、制品和能力缺口；[服务性能证据](docs/testing/P19_SERVICE_BENCHMARK.md)使用真实 SQLite 服务和固定合成样本，核验批量计算、同输入复用及费用配置失效。它们不代表完整真实美股数据验收或 Rust 数值一致性已通过。
+
 ---
 
 ## What Is QuantGPT

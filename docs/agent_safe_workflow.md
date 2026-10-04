@@ -1,5 +1,9 @@
 # Agent Safe Workflow
 
+## Shared research workflow
+
+先解析认证项目和 capabilities，在首次评价前注册经济假设、冻结基线及项目holdout；固定数据manifest、字段契约、方向、模拟配置和split。使用 `evaluate_factors` 批量提交并按task_id读取状态，再按需读取artifact。网页共同池保存服务端evaluation引用；v2策略保存完整血缘，优化只接受实际signal_ref，导出只接受server strategy_run_id。selection 不运行 final；首次 final 暴露后不能靠修改费用、快照或候选ID重用窗口。WQ仅平台scope，unknown结果必须对账，停止本地等待不等于远端取消。完整接口和限制见 [RESEARCH_API](RESEARCH_API.md)、[执行状态](US_RESEARCH_EXECUTION_STATUS.md)。
+
 Purpose: give Agents a reproducible path from expression to candidate export.
 
 Recommended MCP flow:

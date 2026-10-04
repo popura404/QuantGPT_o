@@ -1,5 +1,9 @@
 # Strategy Signal Export
 
+## Current server-owned export
+
+新研究导出为 `strategy_signal.v2`，输入只有已授权项目和 `strategy_run_id`。服务端重算完整策略身份、读取实际 signal artifact（含因子值、score、eligibility）并检查 local_strategy profile。页面权重、caller-provided validation booleans 和旧 `promotion_ready` 字典不构成证明。证据不足返回 `exported:false` 与所需检查。以下 v1 格式保留为历史读取说明；旧 payload 导出 API 现返回 `SERVER_STRATEGY_RUN_REQUIRED`。新格式仍不包含券商、账户或真实订单指令。
+
 Purpose: define the non-execution candidate export format.
 
 Canonical schema:

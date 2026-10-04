@@ -1,5 +1,9 @@
 # StrategySpec v0
 
+## Research v2
+
+`strategy_spec/v2` 由新 `/api/v1/research/projects/{id}/strategy-runs` 入口接收。保留 v1 数值规则，新增按组件顺序的 `factor_evaluations`、`semantics_version`、必填 `simulation_config`；完整模型参与 strategy_hash。服务器核对每个引用的项目、定义、evaluation_hash、市场/股票池、方向、数据、引擎、模拟和窗口。selection 引用可进入同 split 的后续 final，final 结果不能回流候选选择。v0/v1 原始报告仍可读；旧解析器不会静默接受 v2。详见 [研究契约](RESEARCH_CONTRACTS.md) 和 [接口](RESEARCH_API.md)。
+
 `StrategySpecV0` is the MVP executable strategy contract. It describes a
 candidate strategy for validation and backtesting; it is not Python strategy
 code and it is not an order or brokerage instruction.

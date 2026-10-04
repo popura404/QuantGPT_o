@@ -1,0 +1,233 @@
+{
+  "schema_version": "research_service_benchmark/v1",
+  "created_at": "2026-10-04T20:46:35.549267+00:00",
+  "dataset_kind": "synthetic",
+  "correctness_oracle": false,
+  "config": {
+    "stocks": 20,
+    "sessions": 180,
+    "rows": 3600,
+    "seed": 20261005,
+    "repeats": 3,
+    "expressions": [
+      "rank(close / ts_mean(close, 20))",
+      "-rank(close / delay(close, 5) - 1)",
+      "-rank(ts_std(close / delay(close, 1) - 1, 20))"
+    ],
+    "engine": "python"
+  },
+  "source_revision": "80a3937aac3872bc5032c2302e957e7a8059ef67",
+  "working_tree_dirty": true,
+  "engine_identity": {
+    "engine": "python",
+    "version": "3.12.14",
+    "code_version": "sha256:3b43321e1395272523bbe9efde5d8a224b66b61f642deb2b97d492f492334182",
+    "semantics_version": "factor_semantics/v2",
+    "conformance": "unverified"
+  },
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "machine": "AMD64",
+    "logical_cpus": 20,
+    "sqlite": "3.53.1",
+    "packages": {
+      "pandas": "3.0.6",
+      "numpy": "2.5.3",
+      "pyarrow": "25.0.1",
+      "psutil": "7.2.2",
+      "sqlalchemy": "2.1.3",
+      "aiosqlite": "0.22.1",
+      "pydantic": "2.13.5"
+    },
+    "dependency_lock": "windows-py312.lock",
+    "dependency_lock_sha256": "71cbcfbfd30264012fe252ffc9b4faf9c4a6b94e7232d7c48d53cc9d52b2c3bc"
+  },
+  "dataset": {
+    "snapshot_id": "ds_e522affe6fd1b9cb9967074d7ccc0c1f",
+    "logical_content_sha256": "0590a87c38c528b41d24733047573ed6a1eda28c65aecdab39bf4a1d63e3d909",
+    "parquet_sha256": "0ea8e5ca7e412340ad81a683e8de646212402130ac1f5430d4ba4c127505099d",
+    "parquet_bytes": 177964
+  },
+  "setup_seconds": 0.455914500002109,
+  "peak_rss_bytes": 218243072,
+  "peak_rss_sampling_seconds": 0.01,
+  "verification": {
+    "all_retries_reused_results": true,
+    "all_artifacts_verified": true,
+    "actual_read_compute_counters_match": true,
+    "engine_source_stable_during_run": true,
+    "rust_conformance": "unverified; not benchmarked",
+    "integrity": [
+      {
+        "repetition": 0,
+        "evaluation_results_identical": true,
+        "artifact_ids_and_hashes_identical": true,
+        "evaluation_result_sha256": "1a01fb93e0c10344ab4494c8471bff6464ecdc08066d382732b19f4b6c61a853",
+        "artifact_count": 9
+      },
+      {
+        "repetition": 1,
+        "evaluation_results_identical": true,
+        "artifact_ids_and_hashes_identical": true,
+        "evaluation_result_sha256": "218dfc9ab8ca6dbafe6cc45c892c6c3c5661ce7f8043e3b970e510ec628ffd0b",
+        "artifact_count": 9
+      },
+      {
+        "repetition": 2,
+        "evaluation_results_identical": true,
+        "artifact_ids_and_hashes_identical": true,
+        "evaluation_result_sha256": "74d95ac1177b82f10c86254b1de07023a82b18378ac8eae36540bd1e7905e1d6",
+        "artifact_count": 9
+      }
+    ],
+    "cache_invalidation": {
+      "changed_cost_recomputed": true,
+      "changed_cost_has_new_identity": true,
+      "original_evaluation_retained_and_reused": true,
+      "outside_timed_samples": true
+    }
+  },
+  "phases": {
+    "cold_batch": {
+      "p50_seconds": 19.156450499998755,
+      "p95_seconds": 19.20771612000608
+    },
+    "warm_identical_retry": {
+      "p50_seconds": 0.1577575000046636,
+      "p95_seconds": 0.16519789000303717
+    }
+  },
+  "samples": [
+    {
+      "phase": "cold_batch",
+      "repetition": 0,
+      "seconds": 19.213412300006894,
+      "response_serialization_seconds": 0.00024900000425986946,
+      "response_bytes": 9589,
+      "artifact_payload_bytes": 1466282,
+      "provider_requests": 0,
+      "panel_builds": 1,
+      "engine_calls": 3,
+      "logical_panel_read_bytes": 177964,
+      "process_io_read_bytes": 2155258,
+      "process_io_write_bytes": 2017728,
+      "database_bytes_after_phase": 2174976,
+      "evaluation_hashes": [
+        "a3cf77accd98ac73e0a2aad02462d3696999daa07a2581d62dfa3b42b1b383c2",
+        "6515ab5282ebcb8dfc73c590516f3d257b5c0a48ffa99f29b51b853a94c9daed",
+        "95e0cacd16d6b5e4d1a1646ca3859d901919d6731bdeaf534cfe78d10337d039"
+      ]
+    },
+    {
+      "phase": "warm_identical_retry",
+      "repetition": 0,
+      "seconds": 0.1513150000027963,
+      "response_serialization_seconds": 0.00021859999833395705,
+      "response_bytes": 9589,
+      "artifact_payload_bytes": 1466282,
+      "provider_requests": 0,
+      "panel_builds": 0,
+      "engine_calls": 0,
+      "logical_panel_read_bytes": 0,
+      "process_io_read_bytes": 3058162,
+      "process_io_write_bytes": 0,
+      "database_bytes_after_phase": 2174976,
+      "evaluation_hashes": [
+        "a3cf77accd98ac73e0a2aad02462d3696999daa07a2581d62dfa3b42b1b383c2",
+        "6515ab5282ebcb8dfc73c590516f3d257b5c0a48ffa99f29b51b853a94c9daed",
+        "95e0cacd16d6b5e4d1a1646ca3859d901919d6731bdeaf534cfe78d10337d039"
+      ]
+    },
+    {
+      "phase": "cold_batch",
+      "repetition": 1,
+      "seconds": 18.15047760000016,
+      "response_serialization_seconds": 0.00032130000181496143,
+      "response_bytes": 9589,
+      "artifact_payload_bytes": 1466282,
+      "provider_requests": 0,
+      "panel_builds": 1,
+      "engine_calls": 3,
+      "logical_panel_read_bytes": 177964,
+      "process_io_read_bytes": 1919509,
+      "process_io_write_bytes": 2017728,
+      "database_bytes_after_phase": 2174976,
+      "evaluation_hashes": [
+        "a3cf77accd98ac73e0a2aad02462d3696999daa07a2581d62dfa3b42b1b383c2",
+        "6515ab5282ebcb8dfc73c590516f3d257b5c0a48ffa99f29b51b853a94c9daed",
+        "95e0cacd16d6b5e4d1a1646ca3859d901919d6731bdeaf534cfe78d10337d039"
+      ]
+    },
+    {
+      "phase": "warm_identical_retry",
+      "repetition": 1,
+      "seconds": 0.1577575000046636,
+      "response_serialization_seconds": 0.00019040000188397244,
+      "response_bytes": 9589,
+      "artifact_payload_bytes": 1466282,
+      "provider_requests": 0,
+      "panel_builds": 0,
+      "engine_calls": 0,
+      "logical_panel_read_bytes": 0,
+      "process_io_read_bytes": 3058162,
+      "process_io_write_bytes": 0,
+      "database_bytes_after_phase": 2174976,
+      "evaluation_hashes": [
+        "a3cf77accd98ac73e0a2aad02462d3696999daa07a2581d62dfa3b42b1b383c2",
+        "6515ab5282ebcb8dfc73c590516f3d257b5c0a48ffa99f29b51b853a94c9daed",
+        "95e0cacd16d6b5e4d1a1646ca3859d901919d6731bdeaf534cfe78d10337d039"
+      ]
+    },
+    {
+      "phase": "cold_batch",
+      "repetition": 2,
+      "seconds": 19.156450499998755,
+      "response_serialization_seconds": 0.0002447000006213784,
+      "response_bytes": 9589,
+      "artifact_payload_bytes": 1466282,
+      "provider_requests": 0,
+      "panel_builds": 1,
+      "engine_calls": 3,
+      "logical_panel_read_bytes": 177964,
+      "process_io_read_bytes": 1919509,
+      "process_io_write_bytes": 2017728,
+      "database_bytes_after_phase": 2174976,
+      "evaluation_hashes": [
+        "a3cf77accd98ac73e0a2aad02462d3696999daa07a2581d62dfa3b42b1b383c2",
+        "6515ab5282ebcb8dfc73c590516f3d257b5c0a48ffa99f29b51b853a94c9daed",
+        "95e0cacd16d6b5e4d1a1646ca3859d901919d6731bdeaf534cfe78d10337d039"
+      ]
+    },
+    {
+      "phase": "warm_identical_retry",
+      "repetition": 2,
+      "seconds": 0.16602460000285646,
+      "response_serialization_seconds": 0.0002519999979995191,
+      "response_bytes": 9589,
+      "artifact_payload_bytes": 1466282,
+      "provider_requests": 0,
+      "panel_builds": 0,
+      "engine_calls": 0,
+      "logical_panel_read_bytes": 0,
+      "process_io_read_bytes": 3058162,
+      "process_io_write_bytes": 0,
+      "database_bytes_after_phase": 2174976,
+      "evaluation_hashes": [
+        "a3cf77accd98ac73e0a2aad02462d3696999daa07a2581d62dfa3b42b1b383c2",
+        "6515ab5282ebcb8dfc73c590516f3d257b5c0a48ffa99f29b51b853a94c9daed",
+        "95e0cacd16d6b5e4d1a1646ca3859d901919d6731bdeaf534cfe78d10337d039"
+      ]
+    }
+  ],
+  "isolated_run_directory": "E:\\fpga\\\u91cf\u5316gpt\\benchmark-results\\service-8c3l1wsx",
+  "known_limitations": [
+    "Synthetic weekday calendar and prices; no real-market validation.",
+    "Cold means empty evaluation database; OS file cache is not flushed.",
+    "Setup, artifact readback and database schema creation are outside service timings.",
+    "Retry speed is reuse of immutable evidence, not a faster numerical engine.",
+    "Historical pre-fix parser measurements are not a correctness oracle.",
+    "Python correctness is established by separate golden/regression tests, not timing."
+  ],
+  "label": "p19-service-synthetic"
+}

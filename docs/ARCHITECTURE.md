@@ -1,5 +1,7 @@
 # Architecture
 
+本轮新增 `quantgpt/research/` 作为项目授权、不可变评价、产物、持久研究任务、最终窗口、策略血缘和优化的共同业务层。HTTP 与 MCP 复用该层，数值计算复用修正后的 Python 因子/持仓账本；未验证的 Rust 路径明确回退。新旧身份并存，不重解释旧 factor_hash。详见 [研究接口](RESEARCH_API.md) 与 [实施范围](US_RESEARCH_EXECUTION_STATUS.md)。
+
 QuantGPT 是 Agent-Driven 的因子研究引擎。核心架构分为六层：Agent 接口、表达式引擎、回测引擎、验证体系、数据管道、进化引擎。
 
 ## System Overview
