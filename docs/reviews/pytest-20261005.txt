@@ -1,0 +1,110 @@
+
+=================================== ERRORS ====================================
+____________ ERROR collecting tests/test_mcp_experiment_ledger.py _____________
+ImportError while importing test module 'E:\fpga\����gpt\tests\test_mcp_experiment_ledger.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+C:\Python314\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_mcp_experiment_ledger.py:12: in <module>
+    from quantgpt import mcp_server
+quantgpt\mcp_server.py:26: in <module>
+    from mcp.server.fastmcp import FastMCP
+.venv\Lib\site-packages\mcp\server\fastmcp.py:16: in <module>
+    raise ModuleNotFoundError(_MESSAGE, name=__name__)
+E   ModuleNotFoundError: No module named 'mcp.server.fastmcp'. This is mcp 2.x, where FastMCP was renamed to MCPServer (from mcp.server.mcpserver import MCPServer) and other APIs changed; see the migration guide at https://py.sdk.modelcontextprotocol.io/v2/migration/#fastmcp-renamed-to-mcpserver or pin 'mcp<2' to keep running v1 code.
+_____________ ERROR collecting tests/test_mcp_factor_backtest.py ______________
+ImportError while importing test module 'E:\fpga\����gpt\tests\test_mcp_factor_backtest.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+C:\Python314\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_mcp_factor_backtest.py:9: in <module>
+    from quantgpt import mcp_server
+quantgpt\mcp_server.py:26: in <module>
+    from mcp.server.fastmcp import FastMCP
+.venv\Lib\site-packages\mcp\server\fastmcp.py:16: in <module>
+    raise ModuleNotFoundError(_MESSAGE, name=__name__)
+E   ModuleNotFoundError: No module named 'mcp.server.fastmcp'. This is mcp 2.x, where FastMCP was renamed to MCPServer (from mcp.server.mcpserver import MCPServer) and other APIs changed; see the migration guide at https://py.sdk.modelcontextprotocol.io/v2/migration/#fastmcp-renamed-to-mcpserver or pin 'mcp<2' to keep running v1 code.
+_______________ ERROR collecting tests/test_mcp_factor_pool.py ________________
+ImportError while importing test module 'E:\fpga\����gpt\tests\test_mcp_factor_pool.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+C:\Python314\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_mcp_factor_pool.py:9: in <module>
+    from quantgpt import mcp_server
+quantgpt\mcp_server.py:26: in <module>
+    from mcp.server.fastmcp import FastMCP
+.venv\Lib\site-packages\mcp\server\fastmcp.py:16: in <module>
+    raise ModuleNotFoundError(_MESSAGE, name=__name__)
+E   ModuleNotFoundError: No module named 'mcp.server.fastmcp'. This is mcp 2.x, where FastMCP was renamed to MCPServer (from mcp.server.mcpserver import MCPServer) and other APIs changed; see the migration guide at https://py.sdk.modelcontextprotocol.io/v2/migration/#fastmcp-renamed-to-mcpserver or pin 'mcp<2' to keep running v1 code.
+______________ ERROR collecting tests/test_mcp_factor_values.py _______________
+ImportError while importing test module 'E:\fpga\����gpt\tests\test_mcp_factor_values.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+C:\Python314\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_mcp_factor_values.py:7: in <module>
+    from quantgpt import mcp_server
+quantgpt\mcp_server.py:26: in <module>
+    from mcp.server.fastmcp import FastMCP
+.venv\Lib\site-packages\mcp\server\fastmcp.py:16: in <module>
+    raise ModuleNotFoundError(_MESSAGE, name=__name__)
+E   ModuleNotFoundError: No module named 'mcp.server.fastmcp'. This is mcp 2.x, where FastMCP was renamed to MCPServer (from mcp.server.mcpserver import MCPServer) and other APIs changed; see the migration guide at https://py.sdk.modelcontextprotocol.io/v2/migration/#fastmcp-renamed-to-mcpserver or pin 'mcp<2' to keep running v1 code.
+______________ ERROR collecting tests/test_mcp_stock_history.py _______________
+ImportError while importing test module 'E:\fpga\����gpt\tests\test_mcp_stock_history.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+C:\Python314\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_mcp_stock_history.py:7: in <module>
+    from quantgpt import mcp_server
+quantgpt\mcp_server.py:26: in <module>
+    from mcp.server.fastmcp import FastMCP
+.venv\Lib\site-packages\mcp\server\fastmcp.py:16: in <module>
+    raise ModuleNotFoundError(_MESSAGE, name=__name__)
+E   ModuleNotFoundError: No module named 'mcp.server.fastmcp'. This is mcp 2.x, where FastMCP was renamed to MCPServer (from mcp.server.mcpserver import MCPServer) and other APIs changed; see the migration guide at https://py.sdk.modelcontextprotocol.io/v2/migration/#fastmcp-renamed-to-mcpserver or pin 'mcp<2' to keep running v1 code.
+______________ ERROR collecting tests/test_mcp_strategy_tools.py ______________
+ImportError while importing test module 'E:\fpga\����gpt\tests\test_mcp_strategy_tools.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+C:\Python314\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_mcp_strategy_tools.py:7: in <module>
+    from quantgpt import mcp_server
+quantgpt\mcp_server.py:26: in <module>
+    from mcp.server.fastmcp import FastMCP
+.venv\Lib\site-packages\mcp\server\fastmcp.py:16: in <module>
+    raise ModuleNotFoundError(_MESSAGE, name=__name__)
+E   ModuleNotFoundError: No module named 'mcp.server.fastmcp'. This is mcp 2.x, where FastMCP was renamed to MCPServer (from mcp.server.mcpserver import MCPServer) and other APIs changed; see the migration guide at https://py.sdk.modelcontextprotocol.io/v2/migration/#fastmcp-renamed-to-mcpserver or pin 'mcp<2' to keep running v1 code.
+___________ ERROR collecting tests/test_mcp_task_cancel_progress.py ___________
+ImportError while importing test module 'E:\fpga\����gpt\tests\test_mcp_task_cancel_progress.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+C:\Python314\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_mcp_task_cancel_progress.py:10: in <module>
+    from quantgpt import mcp_server, mcp_task_helper
+quantgpt\mcp_server.py:26: in <module>
+    from mcp.server.fastmcp import FastMCP
+.venv\Lib\site-packages\mcp\server\fastmcp.py:16: in <module>
+    raise ModuleNotFoundError(_MESSAGE, name=__name__)
+E   ModuleNotFoundError: No module named 'mcp.server.fastmcp'. This is mcp 2.x, where FastMCP was renamed to MCPServer (from mcp.server.mcpserver import MCPServer) and other APIs changed; see the migration guide at https://py.sdk.modelcontextprotocol.io/v2/migration/#fastmcp-renamed-to-mcpserver or pin 'mcp<2' to keep running v1 code.
+=========================== short test summary info ===========================
+ERROR tests/test_mcp_experiment_ledger.py
+ERROR tests/test_mcp_factor_backtest.py
+ERROR tests/test_mcp_factor_pool.py
+ERROR tests/test_mcp_factor_values.py
+ERROR tests/test_mcp_stock_history.py
+ERROR tests/test_mcp_strategy_tools.py
+ERROR tests/test_mcp_task_cancel_progress.py
+!!!!!!!!!!!!!!!!!!! Interrupted: 7 errors during collection !!!!!!!!!!!!!!!!!!!
+7 errors in 9.94s

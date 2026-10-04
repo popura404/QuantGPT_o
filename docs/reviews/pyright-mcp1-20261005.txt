@@ -1,0 +1,1289 @@
+e:\fpga\量化gpt\quantgpt\alpha_tracker.py
+  e:\fpga\量化gpt\quantgpt\alpha_tracker.py:109:24 - error: Cannot assign to attribute "status" for class "SubmittedAlpha"
+    Expression of type "str" cannot be assigned to attribute "status" of class "SubmittedAlpha"
+      "str" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\alpha_tracker.py:202:12 - error: Invalid conditional operand of type "Unknown | ColumnElement[bool]"
+    Method __bool__ for type "ColumnElement[bool]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\alpha_tracker.py:206:62 - error: Argument of type "Unknown | Column[str]" cannot be assigned to parameter "expr_b" of type "str" in function "compute_similarity"
+    Type "Unknown | Column[str]" is not assignable to type "str"
+      "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\alpha_tracker.py:214:46 - error: Argument of type "Unknown | Column[str]" cannot be assigned to parameter "expr_b" of type "str" in function "compute_similarity"
+    Type "Unknown | Column[str]" is not assignable to type "str"
+      "Column[str]" is not assignable to "str" (reportArgumentType)
+e:\fpga\量化gpt\quantgpt\anti_overfit.py
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:82:16 - error: Type "DataFrame | Unknown" is not assignable to return type "Series"
+    Type "DataFrame | Unknown" is not assignable to type "Series"
+      "DataFrame" is not assignable to "Series" (reportReturnType)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:130:55 - error: Cannot access attribute "year" for class "Index"
+    Attribute "year" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:130:55 - error: Cannot access attribute "year" for class "Index*"
+    Attribute "year" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:130:55 - error: Cannot access attribute "year" for class "MultiIndex"
+    Attribute "year" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:130:55 - error: Cannot access attribute "year" for class "RangeIndex"
+    Attribute "year" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:132:42 - error: Cannot access attribute "values" for class "str"
+    Attribute "values" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:132:42 - error: Cannot access attribute "values" for class "bytes"
+    Attribute "values" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:132:42 - error: Cannot access attribute "values" for class "date"
+    Attribute "values" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:132:42 - error: Cannot access attribute "values" for class "datetime"
+    Attribute "values" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:132:42 - error: Cannot access attribute "values" for class "timedelta"
+    Attribute "values" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:132:42 - error: Cannot access attribute "values" for class "datetime64[Any]"
+    Attribute "values" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:132:42 - error: Cannot access attribute "values" for class "timedelta64[Any]"
+    Attribute "values" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:132:42 - error: Cannot access attribute "values" for class "bool"
+    Attribute "values" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:132:42 - error: Cannot access attribute "values" for class "int"
+    Attribute "values" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:132:42 - error: Cannot access attribute "values" for class "float"
+    Attribute "values" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:132:42 - error: Cannot access attribute "values" for class "Timestamp"
+    Attribute "values" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:132:42 - error: Cannot access attribute "values" for class "Timedelta"
+    Attribute "values" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:132:42 - error: Cannot access attribute "values" for class "Interval[Unknown]"
+    Attribute "values" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:132:42 - error: Cannot access attribute "values" for class "complex"
+    Attribute "values" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:132:42 - error: Cannot access attribute "values" for class "integer[Any]"
+    Attribute "values" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:132:42 - error: Cannot access attribute "values" for class "floating[Any]"
+    Attribute "values" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:132:42 - error: Cannot access attribute "values" for class "complexfloating[Any, Any]"
+    Attribute "values" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:140:47 - error: Argument of type "Any | Series | Unknown" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Any | Series | Unknown" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex"
+    ... (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:140:47 - error: Argument of type "Any | Series | Unknown" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Any | Series | Unknown" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:140:76 - error: Cannot access attribute "items" for class "str"
+    Attribute "items" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:140:76 - error: Cannot access attribute "items" for class "bytes"
+    Attribute "items" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:140:76 - error: Cannot access attribute "items" for class "date"
+    Attribute "items" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:140:76 - error: Cannot access attribute "items" for class "datetime"
+    Attribute "items" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:140:76 - error: Cannot access attribute "items" for class "timedelta"
+    Attribute "items" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:140:76 - error: Cannot access attribute "items" for class "datetime64[Any]"
+    Attribute "items" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:140:76 - error: Cannot access attribute "items" for class "timedelta64[Any]"
+    Attribute "items" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:140:76 - error: Cannot access attribute "items" for class "bool"
+    Attribute "items" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:140:76 - error: Cannot access attribute "items" for class "int"
+    Attribute "items" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:140:76 - error: Cannot access attribute "items" for class "float"
+    Attribute "items" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:140:76 - error: Cannot access attribute "items" for class "Timestamp"
+    Attribute "items" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:140:76 - error: Cannot access attribute "items" for class "Timedelta"
+    Attribute "items" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:140:76 - error: Cannot access attribute "items" for class "Interval[Unknown]"
+    Attribute "items" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:140:76 - error: Cannot access attribute "items" for class "complex"
+    Attribute "items" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:140:76 - error: Cannot access attribute "items" for class "integer[Any]"
+    Attribute "items" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:140:76 - error: Cannot access attribute "items" for class "floating[Any]"
+    Attribute "items" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\anti_overfit.py:140:76 - error: Cannot access attribute "items" for class "complexfloating[Any, Any]"
+    Attribute "items" is unknown (reportAttributeAccessIssue)
+e:\fpga\量化gpt\quantgpt\api_server.py
+  e:\fpga\量化gpt\quantgpt\api_server.py:63:19 - error: Cannot access attribute "rowcount" for class "Result[*tuple[Any, ...]]"
+    Attribute "rowcount" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\api_server.py:65:46 - error: Cannot access attribute "rowcount" for class "Result[*tuple[Any, ...]]"
+    Attribute "rowcount" is unknown (reportAttributeAccessIssue)
+e:\fpga\量化gpt\quantgpt\attribution.py
+  e:\fpga\量化gpt\quantgpt\attribution.py:153:24 - error: Argument of type "float" cannot be assigned to parameter "factor_series" of type "Series" in function "_rank_ic"
+    "float" is not assignable to "Series" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\attribution.py:153:34 - error: Argument of type "Unknown | DataFrame | Any" cannot be assigned to parameter "returns_series" of type "Series" in function "_rank_ic"
+    Type "Unknown | DataFrame | Any" is not assignable to type "Series"
+      "DataFrame" is not assignable to "Series" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\attribution.py:163:31 - error: Argument of type "float" cannot be assigned to parameter "factor_series" of type "Series" in function "_rank_ic"
+    "float" is not assignable to "Series" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\attribution.py:163:40 - error: Argument of type "Unknown | DataFrame | Any" cannot be assigned to parameter "returns_series" of type "Series" in function "_rank_ic"
+    Type "Unknown | DataFrame | Any" is not assignable to type "Series"
+      "DataFrame" is not assignable to "Series" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\attribution.py:184:18 - error: Argument of type "Series" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Series" is not assignable to type "ConvertibleToFloat"
+      "Series" is not assignable to "str"
+      "Series" is incompatible with protocol "Buffer"
+        "__buffer__" is not present
+      "Series" is incompatible with protocol "SupportsFloat"
+        "__float__" is not present
+      "Series" is incompatible with protocol "SupportsIndex"
+        "__index__" is not present (reportArgumentType)
+e:\fpga\量化gpt\quantgpt\auth.py
+  e:\fpga\量化gpt\quantgpt\auth.py:272:28 - error: Invalid conditional operand of type "Column[bool]"
+    Method __bool__ for type "Column[bool]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\auth.py:290:24 - error: Invalid conditional operand of type "Column[bool]"
+    Method __bool__ for type "Column[bool]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\auth.py:306:28 - error: Invalid conditional operand of type "Column[bool]"
+    Method __bool__ for type "Column[bool]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\auth.py:327:24 - error: Invalid conditional operand of type "Column[bool]"
+    Method __bool__ for type "Column[bool]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\auth.py:365:28 - error: Invalid conditional operand of type "Column[bool]"
+    Method __bool__ for type "Column[bool]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\auth.py:388:24 - error: Invalid conditional operand of type "Column[bool]"
+    Method __bool__ for type "Column[bool]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\auth.py:425:24 - error: Invalid conditional operand of type "Column[bool]"
+    Method __bool__ for type "Column[bool]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+e:\fpga\量化gpt\quantgpt\backtest.py
+  e:\fpga\量化gpt\quantgpt\backtest.py:105:27 - error: Argument of type "Series | Any" cannot be assigned to parameter "x" of type "ConvertibleToInt" in function "__new__"
+    Type "Series | Any" is not assignable to type "ConvertibleToInt"
+      Type "Series" is not assignable to type "ConvertibleToInt"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsInt"
+          "__int__" is not present
+        "Series" is incompatible with protocol "SupportsIndex"
+    ... (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\backtest.py:105:27 - error: Argument of type "Series | Any" cannot be assigned to parameter "x" of type "ConvertibleToInt" in function "__new__"
+    Type "Series | Any" is not assignable to type "ConvertibleToInt"
+      Type "Series" is not assignable to type "ConvertibleToInt"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsInt"
+          "__int__" is not present
+        "Series" is incompatible with protocol "SupportsIndex" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\backtest.py:124:20 - error: Type "Series | Unknown | Categorical | ndarray[_AnyShape, dtype[Any]] | tuple[Series | Unknown | Categorical | ndarray[_AnyShape, dtype[Any]], IntervalArray | ExtensionArray | ndarray[_AnyShape, dtype[Any]] | IntervalIndex | Index]" is not assignable to return type "Series"
+    Type "Series | Unknown | Categorical | ndarray[_AnyShape, dtype[Any]] | tuple[Series | Unknown | Categorical | ndarray[_AnyShape, dtype[Any]], IntervalArray | ExtensionArray | ndarray[_AnyShape, dtype[Any]] | IntervalIndex | Index]" is not assignable to type "Series"
+      "Categorical" is not assignable to "Series" (reportReturnType)
+  e:\fpga\量化gpt\quantgpt\backtest.py:179:27 - error: Argument of type "dict_keys[Hashable, Unknown] | dict_keys[Unknown, Unknown]" cannot be assigned to parameter "iterable" of type "Iterable[SupportsRichComparisonT@sorted]" in function "sorted"
+    Type "dict_keys[Hashable, Unknown] | dict_keys[Unknown, Unknown]" is not assignable to type "Iterable[SupportsRichComparisonT@sorted]"
+      "dict_keys[Hashable, Unknown]" is not assignable to "Iterable[SupportsRichComparisonT@sorted]"
+        Type parameter "_T_co@Iterable" is covariant, but "Hashable" is not a subtype of "SupportsRichComparisonT@sorted"
+          Type "Hashable" is not assignable to type "SupportsRichComparison"
+            Type "Hashable" is not assignable to type "SupportsRichComparison" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\backtest.py:275:12 - error: No overloads for "dropna" match the provided arguments
+    Argument types: (list[str]) (reportCallIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:284:10 - error: Cannot access attribute "unstack" for class "str"
+    Attribute "unstack" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:284:10 - error: Cannot access attribute "unstack" for class "bytes"
+    Attribute "unstack" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:284:10 - error: Cannot access attribute "unstack" for class "date"
+    Attribute "unstack" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:284:10 - error: Cannot access attribute "unstack" for class "datetime"
+    Attribute "unstack" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:284:10 - error: Cannot access attribute "unstack" for class "timedelta"
+    Attribute "unstack" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:284:10 - error: Cannot access attribute "unstack" for class "datetime64[Any]"
+    Attribute "unstack" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:284:10 - error: Cannot access attribute "unstack" for class "timedelta64[Any]"
+    Attribute "unstack" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:284:10 - error: Cannot access attribute "unstack" for class "bool"
+    Attribute "unstack" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:284:10 - error: Cannot access attribute "unstack" for class "int"
+    Attribute "unstack" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:284:10 - error: Cannot access attribute "unstack" for class "float"
+    Attribute "unstack" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:284:10 - error: Cannot access attribute "unstack" for class "Timestamp"
+    Attribute "unstack" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:284:10 - error: Cannot access attribute "unstack" for class "Timedelta"
+    Attribute "unstack" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:284:10 - error: Cannot access attribute "unstack" for class "Interval[Unknown]"
+    Attribute "unstack" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:284:10 - error: Cannot access attribute "unstack" for class "complex"
+    Attribute "unstack" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:284:10 - error: Cannot access attribute "unstack" for class "integer[Any]"
+    Attribute "unstack" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:284:10 - error: Cannot access attribute "unstack" for class "floating[Any]"
+    Attribute "unstack" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:284:10 - error: Cannot access attribute "unstack" for class "complexfloating[Any, Any]"
+    Attribute "unstack" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:304:24 - error: Argument of type "Unknown | tuple[Unknown, ...] | MultiIndex | int | Index | Any" cannot be assigned to parameter "obj" of type "Sized" in function "len"
+    Type "Unknown | tuple[Unknown, ...] | MultiIndex | int | Index | Any" is not assignable to type "Sized"
+      "int" is incompatible with protocol "Sized"
+        "__len__" is not present (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\backtest.py:305:33 - error: "__getitem__" method not defined on type "int" (reportIndexIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:402:54 - error: Argument of type "Series | Unknown | Any | ndarray[_AnyShape, dtype[Any]]" cannot be assigned to parameter "returns" of type "Series" in function "_calc_max_drawdown"
+    Type "Series | Unknown | Any | ndarray[_AnyShape, dtype[Any]]" is not assignable to type "Series"
+      "ndarray[_AnyShape, dtype[Any]]" is not assignable to "Series" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\backtest.py:431:50 - error: Argument of type "Unknown | Any | None" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Unknown | Any | None" is not assignable to type "ConvertibleToFloat"
+      Type "None" is not assignable to type "ConvertibleToFloat"
+        "None" is not assignable to "str"
+        "None" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "None" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "None" is incompatible with protocol "SupportsIndex"
+    ... (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\backtest.py:431:50 - error: Argument of type "Unknown | Any | None" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Unknown | Any | None" is not assignable to type "ConvertibleToFloat"
+      Type "None" is not assignable to type "ConvertibleToFloat"
+        "None" is not assignable to "str"
+        "None" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "None" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "None" is incompatible with protocol "SupportsIndex" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\backtest.py:543:20 - error: No overloads for "rename" match the provided arguments
+    Argument types: (dict[str, str]) (reportCallIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:597:54 - error: Cannot access attribute "unique" for class "ndarray[_AnyShape, dtype[Any]]"
+    Attribute "unique" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:624:64 - error: Cannot access attribute "unique" for class "ndarray[_AnyShape, dtype[Any]]"
+    Attribute "unique" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\backtest.py:657:16 - error: Argument of type "_T_co@tuple" cannot be assigned to parameter "x" of type "SupportsAbs[_T@abs]" in function "abs"
+    "object*" is incompatible with protocol "SupportsAbs[_T@abs]"
+      "__abs__" is not present (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\backtest.py:675:59 - error: Cannot access attribute "unique" for class "ndarray[_AnyShape, dtype[Any]]"
+    Attribute "unique" is unknown (reportAttributeAccessIssue)
+e:\fpga\量化gpt\quantgpt\daily_summary.py
+  e:\fpga\量化gpt\quantgpt\daily_summary.py:58:55 - error: Cannot access attribute "normalize" for class "DatetimeIndex"
+    Attribute "normalize" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\daily_summary.py:63:111 - error: Cannot access attribute "strftime" for class "tuple[Unknown, ...]"
+    Attribute "strftime" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\daily_summary.py:63:111 - error: Cannot access attribute "strftime" for class "MultiIndex"
+    Attribute "strftime" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\daily_summary.py:63:111 - error: Cannot access attribute "strftime" for class "int"
+    Attribute "strftime" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\daily_summary.py:63:111 - error: Cannot access attribute "strftime" for class "Index"
+    Attribute "strftime" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\daily_summary.py:397:44 - error: "strip" is not a known attribute of "None" (reportOptionalMemberAccess)
+e:\fpga\量化gpt\quantgpt\data_quality.py
+  e:\fpga\量化gpt\quantgpt\data_quality.py:48:55 - error: Cannot access attribute "fillna" for class "float"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:48:55 - error: Cannot access attribute "fillna" for class "Number"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:48:55 - error: Cannot access attribute "fillna" for class "number[Any, Any]"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:48:55 - error: Cannot access attribute "fillna" for class "int"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:48:55 - error: Cannot access attribute "fillna" for class "NAType"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:48:55 - error: Cannot access attribute "fillna" for class "NaTType"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:48:55 - error: Cannot access attribute "fillna" for class "ndarray[_AnyShape, dtype[Any]]"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:48:55 - error: Cannot access attribute "fillna" for class "ndarray[_AnyShape, _dtype]"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:55:55 - error: Cannot access attribute "fillna" for class "float"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:55:55 - error: Cannot access attribute "fillna" for class "Number"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:55:55 - error: Cannot access attribute "fillna" for class "number[Any, Any]"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:55:55 - error: Cannot access attribute "fillna" for class "int"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:55:55 - error: Cannot access attribute "fillna" for class "NAType"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:55:55 - error: Cannot access attribute "fillna" for class "NaTType"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:55:55 - error: Cannot access attribute "fillna" for class "ndarray[_AnyShape, dtype[Any]]"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:55:55 - error: Cannot access attribute "fillna" for class "ndarray[_AnyShape, _dtype]"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:79:26 - error: Cannot access attribute "notna" for class "float"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:79:26 - error: Cannot access attribute "notna" for class "Number"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:79:26 - error: Cannot access attribute "notna" for class "number[Any, Any]"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:79:26 - error: Cannot access attribute "notna" for class "int"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:79:26 - error: Cannot access attribute "notna" for class "ArrowExtensionArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:79:26 - error: Cannot access attribute "notna" for class "NAType"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:79:26 - error: Cannot access attribute "notna" for class "NaTType"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:79:26 - error: Cannot access attribute "notna" for class "BooleanArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:79:26 - error: Cannot access attribute "notna" for class "FloatingArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:79:26 - error: Cannot access attribute "notna" for class "IntegerArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:79:26 - error: Cannot access attribute "notna" for class "ndarray[_AnyShape, dtype[Any]]"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:79:26 - error: Cannot access attribute "notna" for class "ndarray[_AnyShape, _dtype]"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:79:26 - error: Cannot access attribute "notna" for class "ExtensionArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:79:61 - error: Argument of type "ArrayLike | float | Number | number[Any, Any] | int | Any | Series | Unknown | Index | ArrowExtensionArray | NAType | NaTType | BooleanArray | FloatingArray | IntegerArray | ndarray[_AnyShape, _dtype]" cannot be assigned to parameter "right" of type "Series" in function "_near_price"
+    Type "ArrayLike | float | Number | number[Any, Any] | int | Any | Series | Unknown | Index | ArrowExtensionArray | NAType | NaTType | BooleanArray | FloatingArray | IntegerArray | ndarray[_AnyShape, _dtype]" is not assignable to type "Series"
+      "ExtensionArray" is not assignable to "Series" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:80:30 - error: Cannot access attribute "notna" for class "float"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:80:30 - error: Cannot access attribute "notna" for class "Number"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:80:30 - error: Cannot access attribute "notna" for class "number[Any, Any]"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:80:30 - error: Cannot access attribute "notna" for class "int"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:80:30 - error: Cannot access attribute "notna" for class "ArrowExtensionArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:80:30 - error: Cannot access attribute "notna" for class "NAType"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:80:30 - error: Cannot access attribute "notna" for class "NaTType"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:80:30 - error: Cannot access attribute "notna" for class "BooleanArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:80:30 - error: Cannot access attribute "notna" for class "FloatingArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:80:30 - error: Cannot access attribute "notna" for class "IntegerArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:80:30 - error: Cannot access attribute "notna" for class "ndarray[_AnyShape, dtype[Any]]"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:80:30 - error: Cannot access attribute "notna" for class "ndarray[_AnyShape, _dtype]"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:80:30 - error: Cannot access attribute "notna" for class "ExtensionArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:80:65 - error: Argument of type "ArrayLike | float | Number | number[Any, Any] | int | Any | Series | Unknown | Index | ArrowExtensionArray | NAType | NaTType | BooleanArray | FloatingArray | IntegerArray | ndarray[_AnyShape, _dtype]" cannot be assigned to parameter "right" of type "Series" in function "_near_price"
+    Type "ArrayLike | float | Number | number[Any, Any] | int | Any | Series | Unknown | Index | ArrowExtensionArray | NAType | NaTType | BooleanArray | FloatingArray | IntegerArray | ndarray[_AnyShape, _dtype]" is not assignable to type "Series"
+      "ExtensionArray" is not assignable to "Series" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:87:34 - error: Cannot access attribute "notna" for class "float"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:87:34 - error: Cannot access attribute "notna" for class "Number"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:87:34 - error: Cannot access attribute "notna" for class "number[Any, Any]"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:87:34 - error: Cannot access attribute "notna" for class "int"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:87:34 - error: Cannot access attribute "notna" for class "ArrowExtensionArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:87:34 - error: Cannot access attribute "notna" for class "NAType"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:87:34 - error: Cannot access attribute "notna" for class "NaTType"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:87:34 - error: Cannot access attribute "notna" for class "BooleanArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:87:34 - error: Cannot access attribute "notna" for class "FloatingArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:87:34 - error: Cannot access attribute "notna" for class "IntegerArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:87:34 - error: Cannot access attribute "notna" for class "ndarray[_AnyShape, dtype[Any]]"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:87:34 - error: Cannot access attribute "notna" for class "ndarray[_AnyShape, _dtype]"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:87:34 - error: Cannot access attribute "notna" for class "ExtensionArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:87:44 - error: Operator ">" not supported for types "ArrayLike | float | Number | number[Any, Any] | int | Any | Series | Unknown | Index | ArrowExtensionArray | NAType | NaTType | BooleanArray | FloatingArray | IntegerArray | ndarray[_AnyShape, _dtype]" and "Literal[0]"
+    Operator ">" not supported for types "Number" and "Literal[0]"
+    Operator ">" not supported for types "NAType" and "Literal[0]"
+    Operator ">" not supported for types "ExtensionArray" and "Literal[0]" (reportOperatorIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:92:34 - error: Cannot access attribute "abs" for class "float"
+    Attribute "abs" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:92:34 - error: Cannot access attribute "abs" for class "Number"
+    Attribute "abs" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:92:34 - error: Cannot access attribute "abs" for class "number[Any, Any]"
+    Attribute "abs" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:92:34 - error: Cannot access attribute "abs" for class "int"
+    Attribute "abs" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:92:34 - error: Cannot access attribute "abs" for class "Index"
+    Attribute "abs" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:92:34 - error: Cannot access attribute "abs" for class "ArrowExtensionArray"
+    Attribute "abs" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:92:34 - error: Cannot access attribute "abs" for class "NAType"
+    Attribute "abs" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:92:34 - error: Cannot access attribute "abs" for class "NaTType"
+    Attribute "abs" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:92:34 - error: Cannot access attribute "abs" for class "BooleanArray"
+    Attribute "abs" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:92:34 - error: Cannot access attribute "abs" for class "FloatingArray"
+    Attribute "abs" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:92:34 - error: Cannot access attribute "abs" for class "IntegerArray"
+    Attribute "abs" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:92:34 - error: Cannot access attribute "abs" for class "ndarray[_AnyShape, dtype[Any]]"
+    Attribute "abs" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:92:34 - error: Cannot access attribute "abs" for class "ndarray[_AnyShape, _dtype]"
+    Attribute "abs" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:92:34 - error: Cannot access attribute "abs" for class "ExtensionArray"
+    Attribute "abs" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:23 - error: Cannot access attribute "notna" for class "float"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:23 - error: Cannot access attribute "notna" for class "Number"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:23 - error: Cannot access attribute "notna" for class "number[Any, Any]"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:23 - error: Cannot access attribute "notna" for class "int"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:23 - error: Cannot access attribute "notna" for class "ArrowExtensionArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:23 - error: Cannot access attribute "notna" for class "NAType"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:23 - error: Cannot access attribute "notna" for class "NaTType"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:23 - error: Cannot access attribute "notna" for class "BooleanArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:23 - error: Cannot access attribute "notna" for class "FloatingArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:23 - error: Cannot access attribute "notna" for class "IntegerArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:23 - error: Cannot access attribute "notna" for class "ndarray[_AnyShape, dtype[Any]]"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:23 - error: Cannot access attribute "notna" for class "ndarray[_AnyShape, _dtype]"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:23 - error: Cannot access attribute "notna" for class "ExtensionArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:33 - error: Operator ">" not supported for types "ArrayLike | float | Number | number[Any, Any] | int | Any | Series | Unknown | Index | ArrowExtensionArray | NAType | NaTType | BooleanArray | FloatingArray | IntegerArray | ndarray[_AnyShape, _dtype]" and "Literal[0]"
+    Operator ">" not supported for types "Number" and "Literal[0]"
+    Operator ">" not supported for types "NAType" and "Literal[0]"
+    Operator ">" not supported for types "ExtensionArray" and "Literal[0]" (reportOperatorIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:62 - error: Cannot access attribute "notna" for class "float"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:62 - error: Cannot access attribute "notna" for class "Number"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:62 - error: Cannot access attribute "notna" for class "number[Any, Any]"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:62 - error: Cannot access attribute "notna" for class "int"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:62 - error: Cannot access attribute "notna" for class "ArrowExtensionArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:62 - error: Cannot access attribute "notna" for class "NAType"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:62 - error: Cannot access attribute "notna" for class "NaTType"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:62 - error: Cannot access attribute "notna" for class "BooleanArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:62 - error: Cannot access attribute "notna" for class "FloatingArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:62 - error: Cannot access attribute "notna" for class "IntegerArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:62 - error: Cannot access attribute "notna" for class "ndarray[_AnyShape, dtype[Any]]"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:62 - error: Cannot access attribute "notna" for class "ndarray[_AnyShape, _dtype]"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\data_quality.py:104:62 - error: Cannot access attribute "notna" for class "ExtensionArray"
+    Attribute "notna" is unknown (reportAttributeAccessIssue)
+e:\fpga\量化gpt\quantgpt\experiment_ledger.py
+  e:\fpga\量化gpt\quantgpt\experiment_ledger.py:197:29 - error: Argument of type "Column[str]" cannot be assigned to parameter "current_status" of type "str" in function "assert_valid_transition"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\experiment_ledger.py:198:16 - error: Cannot assign to attribute "status" for class "Experiment"
+    Expression of type "str" cannot be assigned to attribute "status" of class "Experiment"
+      "str" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\experiment_ledger.py:199:16 - error: Cannot assign to attribute "updated_at" for class "Experiment"
+    Expression of type "datetime" cannot be assigned to attribute "updated_at" of class "Experiment"
+      "datetime" is not assignable to "Column[datetime]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\experiment_ledger.py:201:20 - error: Cannot assign to attribute "failure_reason" for class "Experiment"
+    Expression of type "str" cannot be assigned to attribute "failure_reason" of class "Experiment"
+      "str" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\experiment_ledger.py:203:20 - error: Cannot assign to attribute "promotion_stage" for class "Experiment"
+    Expression of type "str" cannot be assigned to attribute "promotion_stage" of class "Experiment"
+      "str" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\experiment_ledger.py:367:35 - error: Argument of type "Column[str]" cannot be assigned to parameter "expression" of type "str" in function "family_key"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\experiment_ledger.py:368:46 - error: Argument of type "Column[str]" cannot be assigned to parameter "expression_normalized" of type "str" in function "_operator_family"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\experiment_ledger.py:374:14 - error: Cannot assign to attribute "updated_at" for class "FactorRegistry"
+    Expression of type "datetime" cannot be assigned to attribute "updated_at" of class "FactorRegistry"
+      "datetime" is not assignable to "Column[datetime]" (reportAttributeAccessIssue)
+e:\fpga\量化gpt\quantgpt\expression_parser.py
+  e:\fpga\量化gpt\quantgpt\expression_parser.py:346:13 - error: Operator "-" not supported for "None" (reportOptionalOperand)
+  e:\fpga\量化gpt\quantgpt\expression_parser.py:350:16 - error: Type "DataFrame | Series | Series* | Unknown | Any | ndarray[_AnyShape, dtype[Any]]" is not assignable to return type "Series"
+    Type "DataFrame | Series | Series* | Unknown | Any | ndarray[_AnyShape, dtype[Any]]" is not assignable to type "Series"
+      "DataFrame" is not assignable to "Series" (reportReturnType)
+  e:\fpga\量化gpt\quantgpt\expression_parser.py:601:20 - error: Type "(df: Unknown, _op: Unknown = op, _i1: Unknown = inner1, _i2: Unknown = inner2, _w: int = window) -> (DataFrame | Unknown)" is not assignable to return type "(DataFrame) -> Series"
+    Type "(df: Unknown, _op: Unknown = op, _i1: Unknown = inner1, _i2: Unknown = inner2, _w: int = window) -> (DataFrame | Unknown)" is not assignable to type "(DataFrame) -> Series"
+      Function return type "DataFrame | Unknown" is incompatible with type "Series"
+        Type "DataFrame | Unknown" is not assignable to type "Series"
+          "DataFrame" is not assignable to "Series" (reportReturnType)
+  e:\fpga\量化gpt\quantgpt\expression_parser.py:714:24 - error: Type "(df: DataFrame, _i: (DataFrame) -> Series = inner, _w: int = window) -> (DataFrame | Series | Series* | Unknown | Any | ndarray[_AnyShape, dtype[Any]])" is not assignable to return type "(DataFrame) -> Series"
+    Type "(df: DataFrame, _i: (DataFrame) -> Series = inner, _w: int = window) -> (DataFrame | Series | Series* | Unknown | Any | ndarray[_AnyShape, dtype[Any]])" is not assignable to type "(DataFrame) -> Series"
+      Function return type "DataFrame | Series | Series* | Unknown | Any | ndarray[_AnyShape, dtype[Any]]" is incompatible with type "Series"
+        Type "DataFrame | Series | Series* | Unknown | Any | ndarray[_AnyShape, dtype[Any]]" is not assignable to type "Series"
+          "DataFrame" is not assignable to "Series" (reportReturnType)
+  e:\fpga\量化gpt\quantgpt\expression_parser.py:846:20 - error: Type "(df: DataFrame, _w: int = window) -> (Any | Unknown | Series | DataFrame | Series* | ndarray[_AnyShape, dtype[Any]])" is not assignable to return type "(DataFrame) -> Series"
+    Type "(df: DataFrame, _w: int = window) -> (Any | Unknown | Series | DataFrame | Series* | ndarray[_AnyShape, dtype[Any]])" is not assignable to type "(DataFrame) -> Series"
+      Function return type "Any | Unknown | Series | DataFrame | Series* | ndarray[_AnyShape, dtype[Any]]" is incompatible with type "Series"
+        Type "Any | Unknown | Series | DataFrame | Series* | ndarray[_AnyShape, dtype[Any]]" is not assignable to type "Series"
+          "DataFrame" is not assignable to "Series" (reportReturnType)
+e:\fpga\量化gpt\quantgpt\factor_pool.py
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:255:40 - error: Argument of type "ColumnElement[Any] | Any" cannot be assigned to parameter "tag" of type "str | None" in function "normalize_tag"
+    Type "ColumnElement[Any] | Any" is not assignable to type "str | None"
+      Type "ColumnElement[Any]" is not assignable to type "str | None"
+        "ColumnElement[Any]" is not assignable to "str"
+        "ColumnElement[Any]" is not assignable to "None" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:258:12 - error: Invalid conditional operand of type "Column[str]"
+    Method __bool__ for type "Column[str]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:259:13 - error: Argument of type "Column[str]" cannot be assigned to parameter "key" of type "str" in function "__getitem__"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:259:13 - error: Argument of type "Column[str]" cannot be assigned to parameter "key" of type "str" in function "__setitem__"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:260:12 - error: Invalid conditional operand of type "Column[str]"
+    Method __bool__ for type "Column[str]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:261:13 - error: Argument of type "Column[str]" cannot be assigned to parameter "key" of type "str" in function "__getitem__"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:261:13 - error: Argument of type "Column[str]" cannot be assigned to parameter "key" of type "str" in function "__setitem__"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:284:58 - error: Invalid conditional operand of type "Column[str] | bool"
+    Method __bool__ for type "Column[str]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:301:53 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:302:53 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:343:13 - error: Cannot assign to attribute "expression" for class "FactorPoolEntry"
+    Expression of type "str" cannot be assigned to attribute "expression" of class "FactorPoolEntry"
+      "str" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:344:13 - error: Cannot assign to attribute "expression_normalized" for class "FactorPoolEntry"
+    Expression of type "str" cannot be assigned to attribute "expression_normalized" of class "FactorPoolEntry"
+      "str" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:344:58 - error: Argument of type "Column[str]" cannot be assigned to parameter "expression" of type "str" in function "normalize_expression"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:347:13 - error: Cannot assign to attribute "expression" for class "FactorPoolEntry"
+    Expression of type "str" cannot be assigned to attribute "expression" of class "FactorPoolEntry"
+      "str" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:348:13 - error: Cannot assign to attribute "expression_normalized" for class "FactorPoolEntry"
+    Expression of type "str" cannot be assigned to attribute "expression_normalized" of class "FactorPoolEntry"
+      "str" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:348:58 - error: Argument of type "Column[str]" cannot be assigned to parameter "expression" of type "str" in function "normalize_expression"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:351:13 - error: Cannot assign to attribute "factor_hash" for class "FactorPoolEntry"
+    Expression of type "str" cannot be assigned to attribute "factor_hash" of class "FactorPoolEntry"
+      "str" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:353:13 - error: Cannot assign to attribute "factor_hash" for class "FactorPoolEntry"
+    Expression of type "str" cannot be assigned to attribute "factor_hash" of class "FactorPoolEntry"
+      "str" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:353:54 - error: Argument of type "Column[str]" cannot be assigned to parameter "expression" of type "str" in function "_resolve_factor_hash"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:356:13 - error: Cannot assign to attribute "pool_status" for class "FactorPoolEntry"
+    Expression of type "str" cannot be assigned to attribute "pool_status" of class "FactorPoolEntry"
+      "str" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:361:13 - error: Cannot assign to attribute "tags" for class "FactorPoolEntry"
+    Expression of type "list[str]" cannot be assigned to attribute "tags" of class "FactorPoolEntry"
+      "list[str]" is not assignable to "Column[_JSON_VALUE]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:361:23 - error: Cannot assign to attribute "category_tag" for class "FactorPoolEntry"
+    Expression of type "str" cannot be assigned to attribute "category_tag" of class "FactorPoolEntry"
+      "str" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:386:25 - error: Invalid conditional operand of type "Column[str]"
+    Method __bool__ for type "Column[str]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:387:13 - error: Cannot assign to attribute "name" for class "FactorPoolEntry"
+    Expression of type "ColumnElement[Any]" cannot be assigned to attribute "name" of class "FactorPoolEntry"
+      "ColumnElement[Any]" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:388:25 - error: Invalid conditional operand of type "Column[str]"
+    Method __bool__ for type "Column[str]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:389:13 - error: Cannot assign to attribute "market" for class "FactorPoolEntry"
+    Expression of type "Literal['a_share']" cannot be assigned to attribute "market" of class "FactorPoolEntry"
+      "Literal['a_share']" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:390:25 - error: Invalid conditional operand of type "Column[str]"
+    Method __bool__ for type "Column[str]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:391:13 - error: Cannot assign to attribute "source" for class "FactorPoolEntry"
+    Expression of type "Literal['manual']" cannot be assigned to attribute "source" of class "FactorPoolEntry"
+      "Literal['manual']" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:393:9 - error: Cannot assign to attribute "updated_at" for class "FactorPoolEntry"
+    Expression of type "datetime" cannot be assigned to attribute "updated_at" of class "FactorPoolEntry"
+      "datetime" is not assignable to "Column[datetime]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\factor_pool.py:422:47 - error: Argument of type "ColumnElement[Any] | Any" cannot be assigned to parameter "tag" of type "str | None" in function "normalize_tag"
+    Type "ColumnElement[Any] | Any" is not assignable to type "str | None"
+      Type "ColumnElement[Any]" is not assignable to type "str | None"
+        "ColumnElement[Any]" is not assignable to "str"
+        "ColumnElement[Any]" is not assignable to "None" (reportArgumentType)
+e:\fpga\量化gpt\quantgpt\fundamental_data.py
+  e:\fpga\量化gpt\quantgpt\fundamental_data.py:407:107 - error: "notna" is not a known attribute of "None" (reportOptionalMemberAccess)
+  e:\fpga\量化gpt\quantgpt\fundamental_data.py:418:46 - error: "notna" is not a known attribute of "None" (reportOptionalMemberAccess)
+  e:\fpga\量化gpt\quantgpt\fundamental_data.py:419:21 - error: Operator "/" not supported for "None" (reportOptionalOperand)
+  e:\fpga\量化gpt\quantgpt\fundamental_data.py:430:101 - error: "notna" is not a known attribute of "None" (reportOptionalMemberAccess)
+  e:\fpga\量化gpt\quantgpt\fundamental_data.py:438:46 - error: "notna" is not a known attribute of "None" (reportOptionalMemberAccess)
+  e:\fpga\量化gpt\quantgpt\fundamental_data.py:439:21 - error: Operator "/" not supported for "None" (reportOptionalOperand)
+  e:\fpga\量化gpt\quantgpt\fundamental_data.py:448:46 - error: "notna" is not a known attribute of "None" (reportOptionalMemberAccess)
+  e:\fpga\量化gpt\quantgpt\fundamental_data.py:449:21 - error: Operator "/" not supported for "None" (reportOptionalOperand)
+  e:\fpga\量化gpt\quantgpt\fundamental_data.py:462:46 - error: "notna" is not a known attribute of "None" (reportOptionalMemberAccess)
+  e:\fpga\量化gpt\quantgpt\fundamental_data.py:463:21 - error: Operator "/" not supported for "None" (reportOptionalOperand)
+  e:\fpga\量化gpt\quantgpt\fundamental_data.py:627:26 - error: No overloads for "sort_values" match the provided arguments
+    Argument types: (Literal['ex_date']) (reportCallIssue)
+  e:\fpga\量化gpt\quantgpt\fundamental_data.py:736:24 - error: Type "Series | Unknown" is not assignable to return type "DataFrame | None"
+    Type "Series | Unknown" is not assignable to type "DataFrame | None"
+      Type "Series" is not assignable to type "DataFrame | None"
+        "Series" is not assignable to "DataFrame"
+        "Series" is not assignable to "None" (reportReturnType)
+  e:\fpga\量化gpt\quantgpt\fundamental_data.py:848:36 - error: Argument of type "Hashable" cannot be assigned to parameter "stock_code" of type "str" in function "_save_factor_cache"
+    "Hashable" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\fundamental_data.py:918:44 - error: Argument of type "Hashable" cannot be assigned to parameter "stock_code" of type "str" in function "_save_factor_cache"
+    "Hashable" is not assignable to "str" (reportArgumentType)
+e:\fpga\量化gpt\quantgpt\iteration.py
+  e:\fpga\量化gpt\quantgpt\iteration.py:331:38 - error: Argument of type "str | None" cannot be assigned to parameter "raw" of type "str" in function "clean_expression"
+    Type "str | None" is not assignable to type "str"
+      "None" is not assignable to "str" (reportArgumentType)
+e:\fpga\量化gpt\quantgpt\llm_service.py
+  e:\fpga\量化gpt\quantgpt\llm_service.py:240:29 - error: Argument of type "str | None" cannot be assigned to parameter "raw" of type "str" in function "clean_expression"
+    Type "str | None" is not assignable to type "str"
+      "None" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\llm_service.py:270:29 - error: Argument of type "str | None" cannot be assigned to parameter "raw" of type "str" in function "clean_expression"
+    Type "str | None" is not assignable to type "str"
+      "None" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\llm_service.py:339:47 - error: "strip" is not a known attribute of "None" (reportOptionalMemberAccess)
+e:\fpga\量化gpt\quantgpt\market_data.py
+  e:\fpga\量化gpt\quantgpt\market_data.py:594:23 - error: "error_code" is not a known attribute of "None" (reportOptionalMemberAccess)
+  e:\fpga\量化gpt\quantgpt\market_data.py:595:84 - error: "error_msg" is not a known attribute of "None" (reportOptionalMemberAccess)
+  e:\fpga\量化gpt\quantgpt\market_data.py:597:34 - error: "fields" is not a known attribute of "None" (reportOptionalMemberAccess)
+  e:\fpga\量化gpt\quantgpt\market_data.py:599:26 - error: "next" is not a known attribute of "None" (reportOptionalMemberAccess)
+  e:\fpga\量化gpt\quantgpt\market_data.py:600:36 - error: "get_row_data" is not a known attribute of "None" (reportOptionalMemberAccess)
+  e:\fpga\量化gpt\quantgpt\market_data.py:621:75 - error: Cannot access attribute "fillna" for class "float"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\market_data.py:621:75 - error: Cannot access attribute "fillna" for class "Number"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\market_data.py:621:75 - error: Cannot access attribute "fillna" for class "number[Any, Any]"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\market_data.py:621:75 - error: Cannot access attribute "fillna" for class "int"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\market_data.py:621:75 - error: Cannot access attribute "fillna" for class "NAType"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\market_data.py:621:75 - error: Cannot access attribute "fillna" for class "NaTType"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\market_data.py:621:75 - error: Cannot access attribute "fillna" for class "ndarray[_AnyShape, dtype[Any]]"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\market_data.py:621:75 - error: Cannot access attribute "fillna" for class "ndarray[_AnyShape, _dtype]"
+    Attribute "fillna" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\market_data.py:678:41 - error: Argument of type "Series | Unknown" cannot be assigned to parameter "object" of type "DataFrame" in function "append"
+    Type "Series | Unknown" is not assignable to type "DataFrame"
+      "Series" is not assignable to "DataFrame" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\market_data.py:714:57 - error: Argument of type "Series | Unknown" cannot be assigned to parameter "object" of type "DataFrame" in function "append"
+    Type "Series | Unknown" is not assignable to type "DataFrame"
+      "Series" is not assignable to "DataFrame" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\market_data.py:749:53 - error: Argument of type "Series | Unknown" cannot be assigned to parameter "object" of type "DataFrame" in function "append"
+    Type "Series | Unknown" is not assignable to type "DataFrame"
+      "Series" is not assignable to "DataFrame" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\market_data.py:893:9 - error: Argument of type "Unknown | NaTType | None" cannot be assigned to parameter "requested_start" of type "Timestamp | None" in function "_range_covered"
+    Type "Unknown | NaTType | None" is not assignable to type "Timestamp | None"
+      Type "NaTType" is not assignable to type "Timestamp | None"
+        "NaTType" is not assignable to "Timestamp"
+        "NaTType" is not assignable to "None" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\market_data.py:894:9 - error: Argument of type "Unknown | NaTType | None" cannot be assigned to parameter "requested_end" of type "Timestamp | None" in function "_range_covered"
+    Type "Unknown | NaTType | None" is not assignable to type "Timestamp | None"
+      Type "NaTType" is not assignable to type "Timestamp | None"
+        "NaTType" is not assignable to "Timestamp"
+        "NaTType" is not assignable to "None" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\market_data.py:1014:35 - error: Cannot access attribute "index" for class "ndarray[_AnyShape, dtype[Any]]"
+    Attribute "index" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\market_data.py:1016:28 - error: Type "Unknown | Any | ndarray[_AnyShape, dtype[Any]] | Series" is not assignable to return type "Series | None"
+    Type "Unknown | Any | ndarray[_AnyShape, dtype[Any]] | Series" is not assignable to type "Series | None"
+      Type "ndarray[_AnyShape, dtype[Any]]" is not assignable to type "Series | None"
+        "ndarray[_AnyShape, dtype[Any]]" is not assignable to "Series"
+        "ndarray[_AnyShape, dtype[Any]]" is not assignable to "None" (reportReturnType)
+  e:\fpga\量化gpt\quantgpt\market_data.py:1070:22 - error: "error_code" is not a known attribute of "None" (reportOptionalMemberAccess)
+  e:\fpga\量化gpt\quantgpt\market_data.py:1070:47 - error: "next" is not a known attribute of "None" (reportOptionalMemberAccess)
+  e:\fpga\量化gpt\quantgpt\market_data.py:1071:32 - error: "get_row_data" is not a known attribute of "None" (reportOptionalMemberAccess)
+  e:\fpga\量化gpt\quantgpt\market_data.py:1074:48 - error: "fields" is not a known attribute of "None" (reportOptionalMemberAccess)
+  e:\fpga\量化gpt\quantgpt\market_data.py:1138:16 - error: Type "Series | Unknown" is not assignable to return type "DataFrame | None"
+    Type "Series | Unknown" is not assignable to type "DataFrame | None"
+      Type "Series" is not assignable to type "DataFrame | None"
+        "Series" is not assignable to "DataFrame"
+        "Series" is not assignable to "None" (reportReturnType)
+e:\fpga\量化gpt\quantgpt\mcp_server.py
+  e:\fpga\量化gpt\quantgpt\mcp_server.py:586:16 - error: Invalid conditional operand of type "ColumnElement[bool]"
+    Method __bool__ for type "ColumnElement[bool]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\mcp_server.py:627:31 - error: Argument of type "Column[str]" cannot be assigned to parameter "experiment_id" of type "str" in function "record_experiment_result"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\mcp_server.py:643:35 - error: Argument of type "Column[str]" cannot be assigned to parameter "experiment_id" of type "str" in function "record_experiment_artifact"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\mcp_server.py:653:35 - error: Argument of type "Column[str]" cannot be assigned to parameter "experiment_id" of type "str" in function "record_experiment_artifact"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\mcp_server.py:2302:79 - error: Argument of type "Column[str]" cannot be assigned to parameter "factor_hash" of type "str | None" in function "list_experiments"
+    Type "Column[str]" is not assignable to type "str | None"
+      "Column[str]" is not assignable to "str"
+      "Column[str]" is not assignable to "None" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\mcp_server.py:2303:60 - error: Argument of type "Column[str]" cannot be assigned to parameter "experiment_id" of type "str" in function "get_experiment"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\mcp_server.py:2303:89 - error: Invalid conditional operand of type "Column[str]"
+    Method __bool__ for type "Column[str]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\mcp_server.py:2347:64 - error: Argument of type "Column[str]" cannot be assigned to parameter "reference_expression" of type "str" in function "factor_similarity_report"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\mcp_server.py:2387:24 - error: Invalid conditional operand of type "ColumnElement[bool]"
+    Method __bool__ for type "ColumnElement[bool]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+e:\fpga\量化gpt\quantgpt\neutralize.py
+  e:\fpga\量化gpt\quantgpt\neutralize.py:48:12 - error: Type "DataFrame" is not assignable to return type "Series"
+    "DataFrame" is not assignable to "Series" (reportReturnType)
+  e:\fpga\量化gpt\quantgpt\neutralize.py:87:12 - error: Type "DataFrame" is not assignable to return type "Series"
+    "DataFrame" is not assignable to "Series" (reportReturnType)
+  e:\fpga\量化gpt\quantgpt\neutralize.py:126:30 - error: Operator "*" not supported for types "ArrayLike | Unknown" and "ArrayLike | Unknown"
+    Operator "*" not supported for types "ExtensionArray" and "ExtensionArray" (reportOperatorIssue)
+e:\fpga\量化gpt\quantgpt\report.py
+  e:\fpga\量化gpt\quantgpt\report.py:85:31 - error: Argument of type "Series | float" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Series | float" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex"
+    ... (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\report.py:85:31 - error: Argument of type "Series | float" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Series | float" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\report.py:86:23 - error: Argument of type "float | Series" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "float | Series" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex"
+    ... (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\report.py:86:23 - error: Argument of type "float | Series" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "float | Series" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\report.py:87:25 - error: Argument of type "float | Series" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "float | Series" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex"
+    ... (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\report.py:87:25 - error: Argument of type "float | Series" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "float | Series" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\report.py:88:26 - error: Argument of type "float | Series" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "float | Series" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex"
+    ... (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\report.py:88:26 - error: Argument of type "float | Series" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "float | Series" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\report.py:90:29 - error: Argument of type "float | Series" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "float | Series" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex"
+    ... (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\report.py:90:29 - error: Argument of type "float | Series" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "float | Series" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\report.py:91:27 - error: Argument of type "float | Series" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "float | Series" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex"
+    ... (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\report.py:91:27 - error: Argument of type "float | Series" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "float | Series" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\report.py:96:51 - error: Argument of type "Series | float" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Series | float" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex"
+    ... (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\report.py:96:51 - error: Argument of type "Series | float" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Series | float" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\report.py:97:43 - error: Argument of type "float | Series" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "float | Series" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex"
+    ... (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\report.py:97:43 - error: Argument of type "float | Series" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "float | Series" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex" (reportArgumentType)
+e:\fpga\量化gpt\quantgpt\routes\admin.py
+  e:\fpga\量化gpt\quantgpt\routes\admin.py:193:58 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\admin.py:194:64 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\admin.py:250:58 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\admin.py:287:58 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\admin.py:288:56 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\admin.py:305:8 - error: Cannot assign to attribute "resolved" for class "Feedback"
+    Expression of type "Literal[True]" cannot be assigned to attribute "resolved" of class "Feedback"
+      "Literal[True]" is not assignable to "Column[bool]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\admin.py:306:8 - error: Cannot assign to attribute "resolved_at" for class "Feedback"
+    Expression of type "datetime" cannot be assigned to attribute "resolved_at" of class "Feedback"
+      "datetime" is not assignable to "Column[datetime]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\admin.py:310:8 - error: Invalid conditional operand of type "Column[Unknown]"
+    Method __bool__ for type "Column[Unknown]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\admin.py:312:12 - error: Invalid conditional operand of type "Column[str] | None"
+    Method __bool__ for type "Column[str]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\admin.py:319:56 - error: Argument of type "Column[str]" cannot be assigned to parameter "email" of type "str" in function "send_feedback_resolved_email"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\admin.py:319:80 - error: Argument of type "Column[str]" cannot be assigned to parameter "description" of type "str" in function "send_feedback_resolved_email"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\admin.py:444:45 - error: Argument of type "Column[Unknown]" cannot be assigned to parameter "user_id" of type "UUID" in function "create_api_key_for_user"
+    "Column[Unknown]" is not assignable to "UUID" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\admin.py:464:60 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\admin.py:477:8 - error: Cannot assign to attribute "is_active" for class "ApiKey"
+    Expression of type "Literal[False]" cannot be assigned to attribute "is_active" of class "ApiKey"
+      "Literal[False]" is not assignable to "Column[bool]" (reportAttributeAccessIssue)
+e:\fpga\量化gpt\quantgpt\routes\auth.py
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:172:8 - error: Invalid conditional operand of type "ColumnElement[bool]"
+    Method __bool__ for type "ColumnElement[bool]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:173:12 - error: Cannot assign to attribute "used" for class "VerificationCode"
+    Expression of type "Literal[True]" cannot be assigned to attribute "used" of class "VerificationCode"
+      "Literal[True]" is not assignable to "Column[bool]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:177:8 - error: Cannot assign to attribute "attempts" for class "VerificationCode"
+    Expression of type "ColumnElement[int]" cannot be assigned to attribute "attempts" of class "VerificationCode"
+      "ColumnElement[int]" is not assignable to "Column[int]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:179:8 - error: Invalid conditional operand of type "ColumnElement[bool]"
+    Method __bool__ for type "ColumnElement[bool]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:185:8 - error: Cannot assign to attribute "used" for class "VerificationCode"
+    Expression of type "Literal[True]" cannot be assigned to attribute "used" of class "VerificationCode"
+      "Literal[True]" is not assignable to "Column[bool]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:196:14 - error: Cannot assign to attribute "last_login_at" for class "User"
+    Expression of type "datetime" cannot be assigned to attribute "last_login_at" of class "User"
+      "datetime" is not assignable to "Column[datetime]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:200:40 - error: Argument of type "Column[Unknown]" cannot be assigned to parameter "user_id" of type "UUID" in function "create_access_token"
+    "Column[Unknown]" is not assignable to "UUID" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:200:49 - error: Argument of type "Column[str]" cannot be assigned to parameter "email" of type "str" in function "create_access_token"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:201:42 - error: Argument of type "Column[Unknown]" cannot be assigned to parameter "user_id" of type "UUID" in function "create_refresh_token"
+    "Column[Unknown]" is not assignable to "UUID" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:225:24 - error: Invalid conditional operand of type "Column[bool]"
+    Method __bool__ for type "Column[bool]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:229:12 - error: Invalid conditional operand of type "Column[str]"
+    Method __bool__ for type "Column[str]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:232:42 - error: Argument of type "Column[str]" cannot be assigned to parameter "hashed" of type "str" in function "verify_password"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:237:10 - error: Cannot assign to attribute "last_login_at" for class "User"
+    Expression of type "datetime" cannot be assigned to attribute "last_login_at" of class "User"
+      "datetime" is not assignable to "Column[datetime]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:240:40 - error: Argument of type "Column[Unknown]" cannot be assigned to parameter "user_id" of type "UUID" in function "create_access_token"
+    "Column[Unknown]" is not assignable to "UUID" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:240:49 - error: Argument of type "Column[str]" cannot be assigned to parameter "email" of type "str" in function "create_access_token"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:241:42 - error: Argument of type "Column[Unknown]" cannot be assigned to parameter "user_id" of type "UUID" in function "create_refresh_token"
+    "Column[Unknown]" is not assignable to "UUID" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:264:8 - error: Invalid conditional operand of type "Column[str]"
+    Method __bool__ for type "Column[str]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:267:50 - error: Argument of type "Column[str]" cannot be assigned to parameter "hashed" of type "str" in function "verify_password"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:270:10 - error: Cannot assign to attribute "password_hash" for class "User"
+    Expression of type "str" cannot be assigned to attribute "password_hash" of class "User"
+      "str" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:296:8 - error: Invalid conditional operand of type "ColumnElement[bool]"
+    Method __bool__ for type "ColumnElement[bool]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:297:12 - error: Cannot assign to attribute "used" for class "VerificationCode"
+    Expression of type "Literal[True]" cannot be assigned to attribute "used" of class "VerificationCode"
+      "Literal[True]" is not assignable to "Column[bool]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:301:8 - error: Cannot assign to attribute "attempts" for class "VerificationCode"
+    Expression of type "ColumnElement[int]" cannot be assigned to attribute "attempts" of class "VerificationCode"
+      "ColumnElement[int]" is not assignable to "Column[int]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:303:8 - error: Invalid conditional operand of type "ColumnElement[bool]"
+    Method __bool__ for type "ColumnElement[bool]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:308:8 - error: Cannot assign to attribute "used" for class "VerificationCode"
+    Expression of type "Literal[True]" cannot be assigned to attribute "used" of class "VerificationCode"
+      "Literal[True]" is not assignable to "Column[bool]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:316:10 - error: Cannot assign to attribute "password_hash" for class "User"
+    Expression of type "str" cannot be assigned to attribute "password_hash" of class "User"
+      "str" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:336:24 - error: Invalid conditional operand of type "Column[bool]"
+    Method __bool__ for type "Column[bool]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:339:40 - error: Argument of type "Column[Unknown]" cannot be assigned to parameter "user_id" of type "UUID" in function "create_access_token"
+    "Column[Unknown]" is not assignable to "UUID" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:339:49 - error: Argument of type "Column[str]" cannot be assigned to parameter "email" of type "str" in function "create_access_token"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:352:54 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\auth.py:367:10 - error: Cannot assign to attribute "subscribe_weekly" for class "User"
+    Expression of type "bool" cannot be assigned to attribute "subscribe_weekly" of class "User"
+      "bool" is not assignable to "Column[bool]" (reportAttributeAccessIssue)
+e:\fpga\量化gpt\quantgpt\routes\backtest_tasks.py
+  e:\fpga\量化gpt\quantgpt\routes\backtest_tasks.py:299:31 - error: Argument of type "Column[str]" cannot be assigned to parameter "experiment_id" of type "str" in function "record_experiment_result"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\backtest_tasks.py:317:35 - error: Argument of type "Column[str]" cannot be assigned to parameter "experiment_id" of type "str" in function "record_experiment_artifact"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\backtest_tasks.py:540:38 - error: Arguments missing for parameters "train_ratio", "valid_ratio", "test_ratio", "min_train_days", "min_valid_days", "min_test_days", "warmup_days" (reportCallIssue)
+  e:\fpga\量化gpt\quantgpt\routes\backtest_tasks.py:648:32 - error: Cannot access attribute "strftime" for class "Hashable"
+    Attribute "strftime" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\backtest_tasks.py:648:113 - error: Argument of type "Series | Unknown" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Series | Unknown" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex"
+    ... (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\backtest_tasks.py:648:113 - error: Argument of type "Series | Unknown" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Series | Unknown" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\backtest_tasks.py:824:13 - error: Cannot assign to attribute "status" for class "Task"
+    Expression of type "Literal['cancelled']" cannot be assigned to attribute "status" of class "Task"
+      "Literal['cancelled']" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\backtest_tasks.py:825:13 - error: Cannot assign to attribute "error" for class "Task"
+    Expression of type "Literal['用户手动取消']" cannot be assigned to attribute "error" of class "Task"
+      "Literal['用户手动取消']" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\backtest_tasks.py:984:16 - error: Invalid conditional operand of type "Column[datetime] | Literal[False]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\backtest_tasks.py:990:53 - error: Invalid conditional operand of type "Column[Unknown]"
+    Method __bool__ for type "Column[Unknown]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\backtest_tasks.py:995:43 - error: Argument of type "Column[datetime]" cannot be assigned to parameter "dt" of type "datetime" in function "_ensure_utc"
+    "Column[datetime]" is not assignable to "datetime" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\backtest_tasks.py:995:73 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\backtest_tasks.py:996:45 - error: Argument of type "Column[datetime]" cannot be assigned to parameter "dt" of type "datetime" in function "_ensure_utc"
+    "Column[datetime]" is not assignable to "datetime" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\backtest_tasks.py:996:75 - error: Invalid conditional operand of type "Column[datetime] | Literal[False]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\backtest_tasks.py:1056:8 - error: Invalid conditional operand of type "ColumnElement[bool] | bool"
+    Method __bool__ for type "ColumnElement[bool]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+e:\fpga\量化gpt\quantgpt\routes\daily_summary.py
+  e:\fpga\量化gpt\quantgpt\routes\daily_summary.py:38:59 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\daily_summary.py:68:57 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+e:\fpga\量化gpt\quantgpt\routes\factor_library.py
+  e:\fpga\量化gpt\quantgpt\routes\factor_library.py:48:51 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\factor_library.py:122:16 - error: Cannot assign to attribute "name" for class "SavedFactor"
+    Expression of type "str" cannot be assigned to attribute "name" of class "SavedFactor"
+      "str" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\factor_library.py:124:16 - error: Cannot assign to attribute "note" for class "SavedFactor"
+    Expression of type "str" cannot be assigned to attribute "note" of class "SavedFactor"
+      "str" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\factor_library.py:126:16 - error: Cannot assign to attribute "tags" for class "SavedFactor"
+    Expression of type "list[str]" cannot be assigned to attribute "tags" of class "SavedFactor"
+      "list[str]" is not assignable to "Column[_JSON_VALUE]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\factor_library.py:127:12 - error: Cannot assign to attribute "updated_at" for class "SavedFactor"
+    Expression of type "datetime" cannot be assigned to attribute "updated_at" of class "SavedFactor"
+      "datetime" is not assignable to "Column[datetime]" (reportAttributeAccessIssue)
+e:\fpga\量化gpt\quantgpt\routes\factor_pool.py
+  e:\fpga\量化gpt\quantgpt\routes\factor_pool.py:94:27 - error: Argument of type "Column[Unknown]" cannot be assigned to parameter "owner_user_id" of type "str | UUID" in function "save_factor_pool_entry"
+    Type "Column[Unknown]" is not assignable to type "str | UUID"
+      "Column[Unknown]" is not assignable to "str"
+      "Column[Unknown]" is not assignable to "UUID" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\factor_pool.py:129:27 - error: Argument of type "Column[Unknown]" cannot be assigned to parameter "owner_user_id" of type "str | UUID" in function "list_factor_pool_entries"
+    Type "Column[Unknown]" is not assignable to type "str | UUID"
+      "Column[Unknown]" is not assignable to "str"
+      "Column[Unknown]" is not assignable to "UUID" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\factor_pool.py:164:27 - error: Argument of type "Column[Unknown]" cannot be assigned to parameter "owner_user_id" of type "str | UUID" in function "list_factor_pool_tags"
+    Type "Column[Unknown]" is not assignable to type "str | UUID"
+      "Column[Unknown]" is not assignable to "str"
+      "Column[Unknown]" is not assignable to "UUID" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\factor_pool.py:180:63 - error: Argument of type "Column[Unknown]" cannot be assigned to parameter "owner_user_id" of type "str | UUID" in function "get_factor_pool_entry"
+    Type "Column[Unknown]" is not assignable to type "str | UUID"
+      "Column[Unknown]" is not assignable to "str"
+      "Column[Unknown]" is not assignable to "UUID" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\factor_pool.py:197:66 - error: Argument of type "Column[Unknown]" cannot be assigned to parameter "owner_user_id" of type "str | UUID" in function "update_factor_pool_entry"
+    Type "Column[Unknown]" is not assignable to type "str | UUID"
+      "Column[Unknown]" is not assignable to "str"
+      "Column[Unknown]" is not assignable to "UUID" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\factor_pool.py:214:58 - error: Argument of type "Column[Unknown]" cannot be assigned to parameter "owner_user_id" of type "str | UUID" in function "delete_factor_pool_entry"
+    Type "Column[Unknown]" is not assignable to type "str | UUID"
+      "Column[Unknown]" is not assignable to "str"
+      "Column[Unknown]" is not assignable to "UUID" (reportArgumentType)
+e:\fpga\量化gpt\quantgpt\routes\feedback.py
+  e:\fpga\量化gpt\quantgpt\routes\feedback.py:216:25 - error: Cannot assign to attribute "webhook_sent" for class "Feedback"
+    Expression of type "bool" cannot be assigned to attribute "webhook_sent" of class "Feedback"
+      "bool" is not assignable to "Column[bool]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\feedback.py:241:48 - error: Argument of type "Column[str]" cannot be assigned to parameter "email" of type "str" in function "send_feedback_received_email"
+    "Column[str]" is not assignable to "str" (reportArgumentType)
+e:\fpga\量化gpt\quantgpt\routes\iteration_routes.py
+  e:\fpga\量化gpt\quantgpt\routes\iteration_routes.py:101:16 - error: Invalid conditional operand of type "ColumnElement[bool] | Literal[True]"
+    Method __bool__ for type "ColumnElement[bool]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\iteration_routes.py:110:16 - error: Invalid conditional operand of type "Unknown | Column[str] | Literal['']"
+    Method __bool__ for type "Column[str]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\iteration_routes.py:134:45 - error: Argument of type "Unknown | Column[str]" cannot be assigned to parameter "expression" of type "str" in function "detect_fundamental_vars"
+    Type "Unknown | Column[str]" is not assignable to type "str"
+      "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\iteration_routes.py:174:31 - error: Argument of type "Unknown | Column[str]" cannot be assigned to parameter "parent_expression" of type "str" in function "generate_iteration_candidates"
+    Type "Unknown | Column[str]" is not assignable to type "str"
+      "Column[str]" is not assignable to "str" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\routes\iteration_routes.py:249:12 - error: Invalid conditional operand of type "ColumnElement[bool]"
+    Method __bool__ for type "ColumnElement[bool]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+e:\fpga\量化gpt\quantgpt\routes\sessions.py
+  e:\fpga\量化gpt\quantgpt\routes\sessions.py:50:57 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\sessions.py:51:57 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\sessions.py:73:59 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\sessions.py:74:59 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\sessions.py:96:13 - error: Cannot assign to attribute "name" for class "Session"
+    Expression of type "str" cannot be assigned to attribute "name" of class "Session"
+      "str" is not assignable to "Column[str]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\sessions.py:101:57 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\sessions.py:127:35 - error: Cannot access attribute "delete" for class "FromClause[ReadOnlyColumnCollection[str, KeyedColumnElement[Any]]]"
+    Attribute "delete" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\sessions.py:130:35 - error: Cannot access attribute "delete" for class "FromClause[ReadOnlyColumnCollection[str, KeyedColumnElement[Any]]]"
+    Attribute "delete" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\routes\sessions.py:133:33 - error: Cannot access attribute "delete" for class "FromClause[ReadOnlyColumnCollection[str, KeyedColumnElement[Any]]]"
+    Attribute "delete" is unknown (reportAttributeAccessIssue)
+e:\fpga\量化gpt\quantgpt\routes\strategy.py
+  e:\fpga\量化gpt\quantgpt\routes\strategy.py:441:58 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\strategy.py:442:58 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\strategy.py:449:48 - error: Invalid conditional operand of type "Column[Unknown]"
+    Method __bool__ for type "Column[Unknown]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+  e:\fpga\量化gpt\quantgpt\routes\strategy.py:455:53 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+e:\fpga\量化gpt\quantgpt\routes\wq_brain.py
+  e:\fpga\量化gpt\quantgpt\routes\wq_brain.py:244:63 - error: Invalid conditional operand of type "Column[datetime]"
+    Method __bool__ for type "Column[datetime]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+e:\fpga\量化gpt\quantgpt\search_ledger.py
+  e:\fpga\量化gpt\quantgpt\search_ledger.py:181:13 - error: Argument of type "ColumnElement[bool]" cannot be assigned to parameter "object" of type "Never" in function "append"
+    Type "ColumnElement[bool]" is not assignable to type "Never" (reportArgumentType)
+e:\fpga\量化gpt\quantgpt\strategy\a_share_adapter.py
+  e:\fpga\量化gpt\quantgpt\strategy\a_share_adapter.py:74:16 - error: Type "Series | None" is not assignable to return type "Series"
+    Type "Series | None" is not assignable to type "Series"
+      "None" is not assignable to "Series" (reportReturnType)
+e:\fpga\量化gpt\quantgpt\strategy\backtest.py
+  e:\fpga\量化gpt\quantgpt\strategy\backtest.py:147:20 - error: No overloads for "dropna" match the provided arguments
+    Argument types: (list[str]) (reportCallIssue)
+  e:\fpga\量化gpt\quantgpt\strategy\backtest.py:521:60 - error: Argument of type "ndarray[_AnyShape, dtype[Any]]" cannot be assigned to parameter "ts_input" of type "integer[Any] | float | str | date | datetime | datetime64[Any]" in function "__new__"
+    Type "ndarray[_AnyShape, dtype[Any]]" is not assignable to type "integer[Any] | float | str | date | datetime | datetime64[Any]"
+      "ndarray[_AnyShape, dtype[Any]]" is not assignable to "integer[Any]"
+      "ndarray[_AnyShape, dtype[Any]]" is not assignable to "float"
+      "ndarray[_AnyShape, dtype[Any]]" is not assignable to "str"
+      "ndarray[_AnyShape, dtype[Any]]" is not assignable to "date"
+      "ndarray[_AnyShape, dtype[Any]]" is not assignable to "datetime"
+      "ndarray[_AnyShape, dtype[Any]]" is not assignable to "datetime64[Any]" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\strategy\backtest.py:536:43 - error: Cannot access attribute "trade_date" for class "tuple[Any, ...]"
+    Attribute "trade_date" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\strategy\backtest.py:538:20 - error: Argument of type "Unknown | tuple[Unknown, ...] | MultiIndex | int | Index" cannot be assigned to parameter "obj" of type "Sized" in function "len"
+    Type "Unknown | tuple[Unknown, ...] | MultiIndex | int | Index" is not assignable to type "Sized"
+      "int" is incompatible with protocol "Sized"
+        "__len__" is not present (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\strategy\backtest.py:540:30 - error: Cannot access attribute "turnover" for class "tuple[Any, ...]"
+    Attribute "turnover" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\strategy\backtest.py:543:25 - error: "__getitem__" method not defined on type "int" (reportIndexIssue)
+  e:\fpga\量化gpt\quantgpt\strategy\backtest.py:586:17 - error: Argument of type "Series | float" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Series | float" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex"
+    ... (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\strategy\backtest.py:586:17 - error: Argument of type "Series | float" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Series | float" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\strategy\backtest.py:589:20 - error: Argument of type "Series | float" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Series | float" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex"
+    ... (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\strategy\backtest.py:589:20 - error: Argument of type "Series | float" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Series | float" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex" (reportArgumentType)
+e:\fpga\量化gpt\quantgpt\strategy\risk.py
+  e:\fpga\量化gpt\quantgpt\strategy\risk.py:47:21 - error: Cannot access attribute "stock_code" for class "tuple[Any, ...]"
+    Attribute "stock_code" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\strategy\risk.py:47:44 - error: Cannot access attribute "target_weight" for class "tuple[Any, ...]"
+    Attribute "target_weight" is unknown (reportAttributeAccessIssue)
+e:\fpga\量化gpt\quantgpt\strategy\service.py
+  e:\fpga\量化gpt\quantgpt\strategy\service.py:210:34 - error: Argument of type "Hashable" cannot be assigned to parameter "ts_input" of type "integer[Any] | float | str | date | datetime | datetime64[Any]" in function "__new__"
+    Type "Hashable" is not assignable to type "integer[Any] | float | str | date | datetime | datetime64[Any]"
+      "Hashable" is not assignable to "integer[Any]"
+      "Hashable" is not assignable to "float"
+      "Hashable" is not assignable to "str"
+      "Hashable" is not assignable to "date"
+      "Hashable" is not assignable to "datetime"
+      "Hashable" is not assignable to "datetime64[Any]" (reportArgumentType)
+e:\fpga\量化gpt\quantgpt\strategy\signals.py
+  e:\fpga\量化gpt\quantgpt\strategy\signals.py:45:33 - error: Operator "*" not supported for types "int" and "float | None"
+    Operator "*" not supported for types "int" and "None" when expected type is "_SupportsCeil[int]" (reportOperatorIssue)
+e:\fpga\量化gpt\quantgpt\strategy\validator.py
+  e:\fpga\量化gpt\quantgpt\strategy\validator.py:54:52 - error: Argument of type "list[ErrorDetails]" cannot be assigned to parameter "errors" of type "list[dict[Unknown, Unknown]]" in function "_issues_from_pydantic_errors"
+    "list[ErrorDetails]" is not assignable to "list[dict[Unknown, Unknown]]"
+      Type parameter "_T@list" is invariant, but "ErrorDetails" is not the same as "dict[Unknown, Unknown]"
+      Consider switching from "list" to "Sequence" which is covariant (reportArgumentType)
+e:\fpga\量化gpt\quantgpt\task_store.py
+  e:\fpga\量化gpt\quantgpt\task_store.py:176:29 - error: Cannot assign to attribute "created_at" for class "Task"
+    Expression of type "datetime" cannot be assigned to attribute "created_at" of class "Task"
+      "datetime" is not assignable to "Column[datetime]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\task_store.py:178:29 - error: Cannot assign to attribute "updated_at" for class "Task"
+    Expression of type "datetime" cannot be assigned to attribute "updated_at" of class "Task"
+      "datetime" is not assignable to "Column[datetime]" (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\task_store.py:194:40 - error: Invalid conditional operand of type "Column[str]"
+    Method __bool__ for type "Column[str]" returns type "NoReturn" rather than "bool" (reportGeneralTypeIssues)
+e:\fpga\量化gpt\quantgpt\validation\oos_backtest.py
+  e:\fpga\量化gpt\quantgpt\validation\oos_backtest.py:82:23 - error: Argument of type "Series | float" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Series | float" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex"
+    ... (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\validation\oos_backtest.py:82:23 - error: Argument of type "Series | float" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Series | float" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\validation\oos_backtest.py:83:20 - error: Argument of type "Series | float" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Series | float" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex"
+    ... (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\validation\oos_backtest.py:83:20 - error: Argument of type "Series | float" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Series | float" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\validation\oos_backtest.py:84:20 - error: Argument of type "Series | float" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Series | float" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex"
+    ... (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\validation\oos_backtest.py:84:20 - error: Argument of type "Series | float" cannot be assigned to parameter "x" of type "ConvertibleToFloat" in function "__new__"
+    Type "Series | float" is not assignable to type "ConvertibleToFloat"
+      Type "Series" is not assignable to type "ConvertibleToFloat"
+        "Series" is not assignable to "str"
+        "Series" is incompatible with protocol "Buffer"
+          "__buffer__" is not present
+        "Series" is incompatible with protocol "SupportsFloat"
+          "__float__" is not present
+        "Series" is incompatible with protocol "SupportsIndex" (reportArgumentType)
+  e:\fpga\量化gpt\quantgpt\validation\oos_backtest.py:129:33 - error: Argument of type "Hashable" cannot be assigned to parameter "ts_input" of type "integer[Any] | float | str | date | datetime | datetime64[Any]" in function "__new__"
+    Type "Hashable" is not assignable to type "integer[Any] | float | str | date | datetime | datetime64[Any]"
+      "Hashable" is not assignable to "integer[Any]"
+      "Hashable" is not assignable to "float"
+      "Hashable" is not assignable to "str"
+      "Hashable" is not assignable to "date"
+      "Hashable" is not assignable to "datetime"
+      "Hashable" is not assignable to "datetime64[Any]" (reportArgumentType)
+e:\fpga\量化gpt\quantgpt\weekly_report.py
+  e:\fpga\量化gpt\quantgpt\weekly_report.py:175:23 - error: "Figure" is not exported from module "matplotlib.pyplot" (reportPrivateImportUsage)
+  e:\fpga\量化gpt\quantgpt\weekly_report.py:192:26 - error: "Axes" is not exported from module "matplotlib.pyplot" (reportPrivateImportUsage)
+  e:\fpga\量化gpt\quantgpt\weekly_report.py:413:27 - error: Argument of type "list[int | float]" cannot be assigned to parameter "rect" of type "tuple[float, float, float, float] | None" in function "tight_layout"
+    Type "list[int | float]" is not assignable to type "tuple[float, float, float, float] | None"
+      "list[int | float]" is not assignable to "tuple[float, float, float, float]"
+      "list[int | float]" is not assignable to "None" (reportArgumentType)
+e:\fpga\量化gpt\quantgpt\wq_simulate.py
+  e:\fpga\量化gpt\quantgpt\wq_simulate.py:174:45 - error: Cannot access attribute "unique" for class "ndarray[_AnyShape, dtype[Any]]"
+    Attribute "unique" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\wq_simulate.py:187:40 - error: Cannot access attribute "set_index" for class "ndarray[_AnyShape, dtype[Any]]"
+    Attribute "set_index" is unknown (reportAttributeAccessIssue)
+  e:\fpga\量化gpt\quantgpt\wq_simulate.py:199:32 - error: Cannot access attribute "set_index" for class "ndarray[_AnyShape, dtype[Any]]"
+    Attribute "set_index" is unknown (reportAttributeAccessIssue)
+436 errors, 0 warnings, 0 informations

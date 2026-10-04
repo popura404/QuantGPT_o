@@ -1,0 +1,98 @@
+{
+  "method": "synthetic inputs; original source functions; no network",
+  "findings": [
+    {
+      "finding": "scale_future_invariance",
+      "observed": {
+        "before": [
+          0.0,
+          0.99999999999
+        ],
+        "after_appending_future": [
+          0.0,
+          0.33333333333222226
+        ]
+      },
+      "expected": "identical historical values",
+      "reproduced": true
+    },
+    {
+      "finding": "neutralization_index_alignment",
+      "observed": [
+        1.0,
+        3.0,
+        2.0,
+        4.0
+      ],
+      "expected": [
+        1.0,
+        2.0,
+        3.0,
+        4.0
+      ],
+      "reproduced": true
+    },
+    {
+      "finding": "bollinger_cross_stock_contamination",
+      "observed": [
+        10.0,
+        15.0,
+        25.0,
+        35.0
+      ],
+      "expected": [
+        10.0,
+        15.0,
+        30.0,
+        35.0
+      ],
+      "reproduced": true
+    },
+    {
+      "finding": "snapshot_ignores_tradability_values",
+      "observed": true,
+      "expected": false,
+      "reproduced": true
+    },
+    {
+      "finding": "rebalance_anchor_slice_invariance",
+      "observed": [
+        "2024-01-05",
+        "2024-01-12"
+      ],
+      "expected": [
+        "2024-01-09",
+        "2024-01-16"
+      ],
+      "reproduced": true
+    },
+    {
+      "finding": "initial_loss_drawdown",
+      "observed": 0.0,
+      "expected": -0.1,
+      "reproduced": true
+    },
+    {
+      "finding": "holdings_drift_between_rebalances",
+      "observed": 0.125,
+      "expected": 0.0,
+      "reproduced": true
+    },
+    {
+      "finding": "initial_entry_cost",
+      "observed": {
+        "turnover": [
+          {
+            "trade_date": "2024-01-01 00:00:00",
+            "turnover": 0.0,
+            "requested_turnover": 0.0,
+            "skipped": false
+          }
+        ],
+        "cost_rows": 0
+      },
+      "expected": "nonzero initial entry cost for a funded-from-cash portfolio",
+      "reproduced": true
+    }
+  ]
+}

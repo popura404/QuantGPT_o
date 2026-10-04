@@ -1,0 +1,90 @@
+........................................................................ [ 10%]
+........................................................................ [ 20%]
+........................................................................ [ 31%]
+........................................................................ [ 41%]
+........................................................................ [ 51%]
+...F.................................................................... [ 62%]
+........................................................................ [ 72%]
+........................................................................ [ 82%]
+........................................................................ [ 93%]
+..............................................                           [100%]
+================================== FAILURES ===================================
+________ test_get_stock_history_missing_cache_returns_structured_error ________
+tests\test_mcp_stock_history.py:61: in test_get_stock_history_missing_cache_returns_structured_error
+    assert result["cache_path"].endswith("stocks/sh_600487.parquet")
+E   AssertionError: assert False
+E    +  where False = <built-in method endswith of str object at 0x000001A344526290>('stocks/sh_600487.parquet')
+E    +    where <built-in method endswith of str object at 0x000001A344526290> = 'C:\\Users\\gzyou\\AppData\\Local\\Temp\\pytest-of-gzyou\\pytest-0\\test_get_stock_history_missing0\\stocks\\sh_600487.parquet'.endswith
+============================== warnings summary ===============================
+tests/test_backtest.py::TestMonotonicity::test_flat
+  E:\fpga\����gpt\quantgpt\backtest.py:656: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+    corr, _ = sp_stats.spearmanr(ranks, group_means)
+
+tests/test_wq_brain.py::TestIsConfigured::test_not_configured_when_empty
+  tests\test_wq_brain.py:15: PytestWarning: The test <Function test_not_configured_when_empty> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_not_configured_when_empty(self):
+
+tests/test_wq_brain.py::TestIsConfigured::test_not_configured_when_missing
+  tests\test_wq_brain.py:19: PytestWarning: The test <Function test_not_configured_when_missing> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_not_configured_when_missing(self):
+
+tests/test_wq_brain.py::TestIsConfigured::test_configured_when_both_set
+  tests\test_wq_brain.py:26: PytestWarning: The test <Function test_configured_when_both_set> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_configured_when_both_set(self):
+
+tests/test_wq_brain.py::TestIsConfigured::test_configured_specific_account
+  tests\test_wq_brain.py:30: PytestWarning: The test <Function test_configured_specific_account> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_configured_specific_account(self):
+
+tests/test_wq_brain.py::TestIsConfigured::test_configured_alt_account
+  tests\test_wq_brain.py:38: PytestWarning: The test <Function test_configured_alt_account> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_configured_alt_account(self):
+
+tests/test_wq_brain.py::TestIsConfigured::test_configured_accounts
+  tests\test_wq_brain.py:47: PytestWarning: The test <Function test_configured_accounts> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_configured_accounts(self):
+
+tests/test_wq_brain.py::TestIsConfigured::test_get_client_primary
+  tests\test_wq_brain.py:56: PytestWarning: The test <Function test_get_client_primary> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_get_client_primary(self):
+
+tests/test_wq_brain.py::TestWQBrainClient::test_init_from_params
+  tests\test_wq_brain.py:68: PytestWarning: The test <Function test_init_from_params> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_init_from_params(self):
+
+tests/test_wq_brain.py::TestWQBrainClient::test_init_from_env
+  tests\test_wq_brain.py:73: PytestWarning: The test <Function test_init_from_env> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_init_from_env(self):
+
+tests/test_wq_brain.py::TestWQBrainClient::test_close_without_session
+  tests\test_wq_brain.py:79: PytestWarning: The test <Function test_close_without_session> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_close_without_session(self):
+
+tests/test_wq_brain.py::TestWQBrainClient::test_authenticate_success
+  tests\test_wq_brain.py:83: PytestWarning: The test <Function test_authenticate_success> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_authenticate_success(self):
+
+tests/test_wq_brain.py::TestWQBrainClient::test_authenticate_failure
+  tests\test_wq_brain.py:93: PytestWarning: The test <Function test_authenticate_failure> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_authenticate_failure(self):
+
+tests/test_wq_brain.py::TestWQBrainClient::test_authenticate_biometric
+  tests\test_wq_brain.py:102: PytestWarning: The test <Function test_authenticate_biometric> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_authenticate_biometric(self):
+
+tests/test_wq_brain_batch.py::TestBatchRequestModel::test_defaults
+  tests\test_wq_brain_batch.py:196: PytestWarning: The test <Function test_defaults> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_defaults(self):
+
+tests/test_wq_brain_batch.py::TestBatchRequestModel::test_custom_values
+  tests\test_wq_brain_batch.py:209: PytestWarning: The test <Function test_custom_values> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_custom_values(self):
+
+tests/test_wq_brain_batch.py::TestBatchRequestModel::test_submit_by_id_request_records_preflight_provenance
+  tests\test_wq_brain_batch.py:228: PytestWarning: The test <Function test_submit_by_id_request_records_preflight_provenance> is marked with '@pytest.mark.asyncio' but it is not an async function. Please remove the asyncio mark. If the test is not marked explicitly, check for global marks applied via 'pytestmark'.
+    def test_submit_by_id_request_records_preflight_provenance(self):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_mcp_stock_history.py::test_get_stock_history_missing_cache_returns_structured_error
+1 failed, 693 passed, 17 warnings in 108.83s (0:01:48)
