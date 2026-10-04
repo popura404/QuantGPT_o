@@ -5,6 +5,14 @@ __pycache__/
 dist/
 build/
 *.egg
+.venv*/
+venv/
+.tools/
+.uv-cache/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
 
 # Environment
 .env
@@ -28,6 +36,9 @@ frontend/dist/
 
 # Logs
 logs/
+*.log
+benchmark-results/
+test-results/
 
 # MCP config (local paths)
 .mcp.json
@@ -52,11 +63,34 @@ docs/factor_research/
 *.swo
 .DS_Store
 engine/target/
-engine/Cargo.lock
 
 # Database
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite-journal
+*.sqlite3-journal
+
+# Local credentials and platform sessions; never store these as test fixtures.
+.credentials/
+credentials.json
+credentials.local.json
+token.json
+tokens.json
+cookies.json
+session.json
+*.pem
+*.key
 
 # Coverage
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/

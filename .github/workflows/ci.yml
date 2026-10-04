@@ -7,55 +7,86 @@ on:
     branches: [main]
 
 jobs:
-  lint-and-test:
-    runs-on: ubuntu-latest
+  python:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            lock: linux-py312.lock
+          - os: windows-latest
+            lock: windows-py312.lock
+    runs-on: ${{ matrix.os }}
+    env:
+      QUANTGPT_RUST_ENGINE: "0"
+      QUANTGPT_CACHE_ONLY: "true"
+      PYTHONUTF8: "1"
+      JWT_SECRET_KEY: test-secret-for-ci-only
+      DATABASE_URL: "sqlite+aiosqlite://"
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Install dependencies
+          cache: pip
+          cache-dependency-path: requirements/${{ matrix.lock }}
+      - name: Install locked dependencies and project
         run: |
-          pip install -e ".[dev]"
-
+          python -m pip install --require-hashes -r requirements/${{ matrix.lock }}
+          python -m pip install --no-deps --no-build-isolation -e .
+          python -m pip check
+      - name: Import MCP/API and verify explicit Python path
+        run: python -c "import quantgpt.mcp_server, quantgpt.api_server; from quantgpt.rust_bridge import RUST_ENABLED; assert not RUST_ENABLED"
       - name: Lint
-        run: ruff check quantgpt/ tests/
-
-      - name: Type check
-        run: pyright quantgpt/
-
-      - name: Rust engine checks
-        run: make engine-check
-
+        run: python -m ruff check quantgpt tests scripts/check_pyright_baseline.py scripts/benchmark_research.py
+      - name: Reject new type diagnostics
+        run: python scripts/check_pyright_baseline.py
       - name: Test with coverage
-        env:
-          JWT_SECRET_KEY: test-secret-for-ci-only
-          DATABASE_URL: "sqlite+aiosqlite:///./test.db"
-        run: pytest tests/ -x -q --cov=quantgpt --cov-report=term-missing --cov-fail-under=33
+        run: python -m pytest tests -q --tb=short --cov=quantgpt --cov-report=term-missing --cov-fail-under=33
+      - name: Synthetic performance record
+        run: python scripts/benchmark_research.py --label ci-synthetic-unverified
+      - uses: actions/upload-artifact@v4
+        with:
+          name: performance-${{ matrix.os }}
+          path: benchmark-results/*.json
 
-      - name: Dependency audit
-        run: pip-audit --skip-editable --desc -f json 2>/dev/null | python3 -c "
-          import sys, json
-          data = json.load(sys.stdin)
-          vulns = data.get('dependencies', [])
-          own_pkgs = {'quantgpt','pandas','numpy','scipy','baostock','quantstats',
-                      'mcp','uvicorn','fastapi','openai','sqlalchemy','aiosqlite',
-                      'alembic','pyjwt','bcrypt','aiosmtplib','httpx','requests','akshare',
-                      'apscheduler','starlette','python-multipart'}
-          critical = [v for v in vulns if v.get('name','').lower() in own_pkgs and v.get('vulns')]
-          if critical:
-              for c in critical:
-                  for vuln in c['vulns']:
-                      print(f\"::warning ::{c['name']} {c['version']}: {vuln['id']} (fix: {vuln.get('fix_versions',['?'])})\")
-              print(f'{len(critical)} direct-dependency vulnerabilities found')
-              sys.exit(1)
-          else:
-              print('No direct-dependency vulnerabilities')
-          "
+  rust:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - run: |
+          python -m pip install --require-hashes -r requirements/linux-py312.lock
+          python -m pip install --no-deps --no-build-isolation -e .
+      - name: Compile and test with a supported PyO3 interpreter
+        run: |
+          export PYO3_PYTHON="$(command -v python)"
+          cargo check --manifest-path engine/Cargo.toml --locked --all-targets
+          cargo test --manifest-path engine/Cargo.toml --locked
+          python -m maturin build --manifest-path engine/Cargo.toml --locked --release --out engine/target/wheels
+          python -m pip install --no-deps engine/target/wheels/*.whl
+      - name: Test installed extension and safe bridge fallback
+        env:
+          QUANTGPT_RUST_ENGINE: "0"
+        run: |
+          python -c "import quantgpt_engine; print(quantgpt_engine.__file__)"
+          python -m pytest tests/test_rust_bridge.py -q
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --require-hashes -r requirements/linux-py312.lock
+      - name: Audit locked third-party dependencies
+        run: python -m pip_audit --skip-editable --desc
 
   frontend:
     runs-on: ubuntu-latest
@@ -64,16 +95,10 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
-
-      - name: Install
-        run: npm ci
-
-      - name: Type check
-        run: npx tsc --noEmit
-
-      - name: Build
-        run: npm run build
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build

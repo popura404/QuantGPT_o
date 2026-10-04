@@ -1,6 +1,7 @@
 """MCP single-stock local cache tools."""
 
 import json
+from pathlib import Path
 
 import pandas as pd
 
@@ -58,7 +59,7 @@ def test_get_stock_history_missing_cache_returns_structured_error(tmp_path, monk
     assert result["error_code"] == "STOCK_CACHE_MISSING"
     assert result["cache_status"] == "missing"
     assert result["stock_code"] == "sh.600487"
-    assert result["cache_path"].endswith("stocks/sh_600487.parquet")
+    assert Path(result["cache_path"]).parts[-2:] == ("stocks", "sh_600487.parquet")
 
 
 def test_get_stock_history_reports_partial_requested_coverage(tmp_path, monkeypatch):

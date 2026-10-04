@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "label": "known-incorrect-pre-fix-baseline",
+  "dataset_kind": "synthetic",
+  "correctness_oracle": false,
+  "known_limitations": [
+    "Business-day generator is not an exchange calendar.",
+    "Cold application reads do not flush the operating-system file cache.",
+    "This measures expression evaluation only, not service/provider/backtest performance.",
+    "Legacy parser timing includes known incorrect semantics when source-ref is the old baseline."
+  ],
+  "source_revision": "25bda5e667c20c5ec328495b23513ce8b39d0d73",
+  "source_from_git": true,
+  "working_tree_dirty": true,
+  "parser_sha256": "a866c907acc08ec7abc7ea13d6d3e30cbb87eb294ef20b72b07a9c68a6d753e9",
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "machine": "AMD64",
+    "logical_cpus": 20,
+    "packages": {
+      "pandas": "3.0.6",
+      "numpy": "2.5.3",
+      "pyarrow": "25.0.1",
+      "psutil": "7.2.2"
+    }
+  },
+  "config": {
+    "stocks": 20,
+    "sessions": 252,
+    "repeats": 5,
+    "seed": 20261005,
+    "expressions": [
+      "rank(close)",
+      "ts_mean(close, 20)",
+      "ts_std(close, 20)",
+      "ts_delta(close, 5)",
+      "scale(close)"
+    ]
+  },
+  "data_sha256": "78e074823b72366ce5a1d8440b355a4a5162a9b5760ae388c935c871e534cdb5",
+  "data_bytes": 233590,
+  "peak_rss_bytes": 108875776,
+  "peak_rss_sampling_seconds": 0.01,
+  "phases": {
+    "cold_application": {
+      "p50_seconds": 0.03619530000287341,
+      "p95_seconds": 0.06928374000126496
+    },
+    "warm_panel": {
+      "p50_seconds": 0.03013449999707518,
+      "p95_seconds": 0.03821637999644736
+    }
+  },
+  "samples": [
+    {
+      "phase": "cold_application",
+      "seconds": 0.07721640000090702,
+      "read_compile_seconds": 0.049897800003236625,
+      "compute_seconds": 0.027241499999945518,
+      "serialization_seconds": 7.709999772487208e-05,
+      "panel_reads": 1,
+      "read_bytes": 233590,
+      "expression_compiles": 5,
+      "expression_evaluations": 5,
+      "provider_requests": 0,
+      "summary_bytes": 307
+    },
+    {
+      "phase": "cold_application",
+      "seconds": 0.03755310000269674,
+      "read_compile_seconds": 0.007252000003063586,
+      "compute_seconds": 0.030256799997005146,
+      "serialization_seconds": 4.430000262800604e-05,
+      "panel_reads": 1,
+      "read_bytes": 233590,
+      "expression_compiles": 5,
+      "expression_evaluations": 5,
+      "provider_requests": 0,
+      "summary_bytes": 307
+    },
+    {
+      "phase": "cold_application",
+      "seconds": 0.03619530000287341,
+      "read_compile_seconds": 0.00479040000209352,
+      "compute_seconds": 0.0313767999978154,
+      "serialization_seconds": 2.8100002964492887e-05,
+      "panel_reads": 1,
+      "read_bytes": 233590,
+      "expression_compiles": 5,
+      "expression_evaluations": 5,
+      "provider_requests": 0,
+      "summary_bytes": 307
+    },
+    {
+      "phase": "cold_application",
+      "seconds": 0.035592000000178814,
+      "read_compile_seconds": 0.006079200000385754,
+      "compute_seconds": 0.029477299998688977,
+      "serialization_seconds": 3.550000110408291e-05,
+      "panel_reads": 1,
+      "read_bytes": 233590,
+      "expression_compiles": 5,
+      "expression_evaluations": 5,
+      "provider_requests": 0,
+      "summary_bytes": 307
+    },
+    {
+      "phase": "cold_application",
+      "seconds": 0.032402600001660176,
+      "read_compile_seconds": 0.004853999998886138,
+      "compute_seconds": 0.027522700002009515,
+      "serialization_seconds": 2.59000007645227e-05,
+      "panel_reads": 1,
+      "read_bytes": 233590,
+      "expression_compiles": 5,
+      "expression_evaluations": 5,
+      "provider_requests": 0,
+      "summary_bytes": 307
+    },
+    {
+      "phase": "warm_panel",
+      "seconds": 0.028271099996345583,
+      "read_compile_seconds": 3.239999932702631e-05,
+      "compute_seconds": 0.028206900002260227,
+      "serialization_seconds": 3.1799994758330286e-05,
+      "panel_reads": 0,
+      "read_bytes": 0,
+      "expression_compiles": 0,
+      "expression_evaluations": 5,
+      "provider_requests": 0,
+      "summary_bytes": 307
+    },
+    {
+      "phase": "warm_panel",
+      "seconds": 0.03013449999707518,
+      "read_compile_seconds": 2.9999500839039683e-07,
+      "compute_seconds": 0.030095100002654362,
+      "serialization_seconds": 3.909999941242859e-05,
+      "panel_reads": 0,
+      "read_bytes": 0,
+      "expression_compiles": 0,
+      "expression_evaluations": 5,
+      "provider_requests": 0,
+      "summary_bytes": 307
+    },
+    {
+      "phase": "warm_panel",
+      "seconds": 0.04002029999537626,
+      "read_compile_seconds": 2.9999500839039683e-07,
+      "compute_seconds": 0.03997850000450853,
+      "serialization_seconds": 4.149999585933983e-05,
+      "panel_reads": 0,
+      "read_bytes": 0,
+      "expression_compiles": 0,
+      "expression_evaluations": 5,
+      "provider_requests": 0,
+      "summary_bytes": 307
+    },
+    {
+      "phase": "warm_panel",
+      "seconds": 0.03100070000073174,
+      "read_compile_seconds": 3.00002284348011e-07,
+      "compute_seconds": 0.03095680000114953,
+      "serialization_seconds": 4.359999729786068e-05,
+      "panel_reads": 0,
+      "read_bytes": 0,
+      "expression_compiles": 0,
+      "expression_evaluations": 5,
+      "provider_requests": 0,
+      "summary_bytes": 307
+    },
+    {
+      "phase": "warm_panel",
+      "seconds": 0.02872909999859985,
+      "read_compile_seconds": 2.00001522898674e-07,
+      "compute_seconds": 0.02867569999943953,
+      "serialization_seconds": 5.319999763742089e-05,
+      "panel_reads": 0,
+      "read_bytes": 0,
+      "expression_compiles": 0,
+      "expression_evaluations": 5,
+      "provider_requests": 0,
+      "summary_bytes": 307
+    }
+  ]
+}
