@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Check, Loader2, Star } from "lucide-react";
 import { fetchFactors, type SavedFactor } from "../../api/factorLibrary";
+import { useResearchProject } from "../../hooks/useResearchProject";
 
 interface Props {
   open: boolean;
@@ -11,20 +12,25 @@ interface Props {
 }
 
 export default function FactorLibraryPicker({ open, title, existingExpressions, onClose, onConfirm }: Props) {
+  const projectId = useResearchProject();
   const [factors, setFactors] = useState<SavedFactor[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const existing = new Set(existingExpressions.filter(Boolean));
 
   useEffect(() => {
     if (!open) return;
+    let active = true;
     setLoading(true);
+    setError(null); setFactors([]);
     setSelected(new Set());
-    fetchFactors()
-      .then(setFactors)
-      .catch(() => setFactors([]))
-      .finally(() => setLoading(false));
-  }, [open]);
+    fetchFactors(projectId)
+      .then((items) => { if (active) setFactors(items); })
+      .catch((err) => { if (active) setError(err instanceof Error ? err.message : "因子池读取失败"); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [open, projectId]);
 
   if (!open) return null;
 
@@ -59,6 +65,7 @@ export default function FactorLibraryPicker({ open, title, existingExpressions, 
           </button>
         </div>
         <div className="space-y-1.5 overflow-y-auto px-5 py-3">
+          {error && <p role="alert" className="text-xs text-red-700">{error}</p>}
           {loading && <div className="py-8 text-center text-xs text-gray-400"><Loader2 className="mr-1 inline h-4 w-4 animate-spin" />加载中...</div>}
           {!loading && factors.length === 0 && (
             <div className="py-8 text-center">

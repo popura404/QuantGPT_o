@@ -1,8 +1,10 @@
 import type { BacktestRequest, Task, Session } from "../types/backtest";
+import { TERMINAL_TASK_STATUSES } from "../types/backtest";
 
 export const BASE = "";
 
 let _authDisabled = false;
+let refreshInFlight: Promise<string | null> | null = null;
 export function setAuthDisabled(v: boolean) { _authDisabled = v; }
 export function getAuthDisabled() { return _authDisabled; }
 
@@ -19,35 +21,51 @@ function authHeaders(): Record<string, string> {
 }
 
 export async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
-  const headers = { ...authHeaders(), ...options.headers };
+  const tokenAtStart = getAccessToken();
+  const headers = new Headers(authHeaders());
+  new Headers(options.headers).forEach((value, key) => headers.set(key, value));
   const res = await fetch(url, { ...options, headers });
 
   if (res.status === 401 && !_authDisabled) {
     // Guest tokens don't need refresh
     if (localStorage.getItem("quantgpt_is_guest") === "1") return res;
 
-    // Try refresh
+    // Share refresh among parallel panels; a second request may already have
+    // replaced the expired access token while this response was in flight.
+    const currentToken = getAccessToken();
+    if (currentToken && currentToken !== tokenAtStart) {
+      headers.set("Authorization", `Bearer ${currentToken}`);
+      return fetch(url, { ...options, headers });
+    }
     const refreshTokenStr = localStorage.getItem("quantgpt_refresh_token");
     if (refreshTokenStr) {
       try {
-        const refreshRes = await fetch(`${BASE}/api/v1/auth/refresh`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ refresh_token: refreshTokenStr }),
-        });
-        if (refreshRes.ok) {
-          const { access_token } = await refreshRes.json();
-          localStorage.setItem("quantgpt_access_token", access_token);
-          // Retry original request
-          const retryHeaders = { ...options.headers, "Content-Type": "application/json", Authorization: `Bearer ${access_token}` };
-          return fetch(url, { ...options, headers: retryHeaders });
+        if (!refreshInFlight) {
+          refreshInFlight = (async () => {
+            const refreshRes = await fetch(`${BASE}/api/v1/auth/refresh`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: refreshTokenStr }) });
+            if (!refreshRes.ok) return null;
+            const body = await refreshRes.json();
+            if (typeof body.access_token !== "string") return null;
+            // A logout or account change during refresh invalidates this response.
+            if (localStorage.getItem("quantgpt_refresh_token") !== refreshTokenStr) return null;
+            localStorage.setItem("quantgpt_access_token", body.access_token);
+            if (typeof body.refresh_token === "string") localStorage.setItem("quantgpt_refresh_token", body.refresh_token);
+            return body.access_token as string;
+          })().finally(() => { refreshInFlight = null; });
+        }
+        const refreshedToken = await refreshInFlight;
+        if (refreshedToken) {
+          headers.set("Authorization", `Bearer ${refreshedToken}`);
+          return fetch(url, { ...options, headers });
         }
       } catch { /* fall through */ }
     }
     // Refresh failed, redirect to login
-    localStorage.removeItem("quantgpt_access_token");
-    localStorage.removeItem("quantgpt_refresh_token");
-    window.location.href = "/login";
+    if (getAccessToken() === tokenAtStart) {
+      localStorage.removeItem("quantgpt_access_token");
+      localStorage.removeItem("quantgpt_refresh_token");
+      window.location.href = "/login";
+    }
   }
 
   return res;
@@ -59,7 +77,10 @@ export async function parseError(res: Response): Promise<string> {
     const detail = body.detail;
     if (typeof detail === "string") return detail;
     if (Array.isArray(detail)) return detail.map((d: { msg?: string }) => d.msg || JSON.stringify(d)).join("; ");
-    if (detail && typeof detail === "object") return JSON.stringify(detail);
+    if (detail && typeof detail === "object") {
+      const message = typeof detail.message === "string" ? detail.message : typeof detail.error_code === "string" ? detail.error_code : JSON.stringify(detail);
+      return typeof detail.next_action === "string" ? `${message}；下一步：${detail.next_action}` : message;
+    }
     return `请求失败 (${res.status})`;
   } catch {
     if (res.status === 429) return "请求过于频繁，请稍后再试";
@@ -128,7 +149,7 @@ export function streamTask(
         const task = await getTask(taskId);
         lastPollingError = null;
         onUpdate(task);
-        if (task.status === "completed" || task.status === "failed" || task.status === "cancelled" || task.status === "iteration_completed") {
+        if (TERMINAL_TASK_STATUSES.has(task.status)) {
           cleanup();
           onDone();
         }
@@ -174,6 +195,7 @@ export function streamTask(
     if (closed) return;
 
     const { ticket, error: ticketError, fatal } = await acquireTicket();
+    if (closed) return;
     if (ticketError) {
       lastStreamError = ticketError;
       if (fatal) {

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, Loader2, Play, RefreshCw } from "lucide-react";
-import { streamTask } from "../api/client";
+import { streamTask, cancelTask, getTask } from "../api/client";
+import { useResearchProject } from "../hooks/useResearchProject";
 import {
   exportStrategyCandidate,
   getStrategySpec,
@@ -17,6 +18,7 @@ import {
 } from "../api/strategy";
 import { useAuth } from "../contexts/AuthContext";
 import type { Task } from "../types/backtest";
+import { TERMINAL_TASK_STATUSES as TERMINAL_STATUSES } from "../types/backtest";
 import type {
   StrategyBacktestTaskResult,
   StrategyExportPayload,
@@ -41,14 +43,14 @@ const DEFAULT_DATES = {
   benchmark: "hs300",
 };
 
-const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled", "iteration_completed"]);
-
 function isStrategyTaskResult(result: Task["result"]): result is StrategyBacktestTaskResult {
   return Boolean(result && typeof result === "object" && "strategy_result" in result);
 }
 
 export default function StrategyWorkbench() {
   const { isGuest } = useAuth();
+  const projectId = useResearchProject();
+  const [dates, setDates] = useState(DEFAULT_DATES);
   const [templates, setTemplates] = useState<StrategyTemplateSummary[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState("");
   const [specText, setSpecText] = useState("");
@@ -66,6 +68,7 @@ export default function StrategyWorkbench() {
   const [exporting, setExporting] = useState(false);
   const [savingRun, setSavingRun] = useState(false);
   const closeStreamRef = useRef<(() => void) | null>(null);
+  const taskStorageKey = `quantgpt_strategy_task_${projectId ?? "personal"}`;
 
   const parsedSpec = useMemo(() => {
     try {
@@ -76,6 +79,10 @@ export default function StrategyWorkbench() {
   }, [specText]);
 
   const taskResult = isStrategyTaskResult(strategyTask?.result) ? strategyTask.result : null;
+  const markets = Array.isArray(marketMeta?.markets) ? marketMeta.markets as Record<string, unknown>[] : [];
+  const selectedMarket = markets.find((market) => market.market === parsedSpec?.market);
+  const benchmarks = Array.isArray(selectedMarket?.benchmarks) ? selectedMarket.benchmarks as string[] : [];
+  const fields = Array.isArray(dataFields?.data_fields) ? dataFields.data_fields as Record<string, unknown>[] : [];
 
   function stopStream() {
     closeStreamRef.current?.();
@@ -106,12 +113,41 @@ export default function StrategyWorkbench() {
     listStrategyTemplates()
       .then((items) => {
         setTemplates(items);
-        if (items[0]) setSelectedTemplate(items[0].id);
+        if (items[0] && !localStorage.getItem(taskStorageKey)) setSelectedTemplate(items[0].id);
       })
       .catch((err) => setError(err instanceof Error ? err.message : "模板加载失败"));
     listStrategyMarkets().then(setMarketMeta).catch(() => {});
-    listStrategyDataFields("a_share").then(setDataFields).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    const market = parsedSpec?.market;
+    if (typeof market !== "string") return;
+    let current = true;
+    setDataFields(null);
+    listStrategyDataFields(market).then((value) => { if (current) setDataFields(value); })
+      .catch((err) => { if (current) setError(err instanceof Error ? err.message : "字段能力读取失败"); });
+    return () => { current = false; };
+  }, [parsedSpec?.market]);
+
+  useEffect(() => {
+    if (benchmarks.length && !benchmarks.includes(dates.benchmark)) setDates((previous) => ({ ...previous, benchmark: String(selectedMarket?.default_benchmark ?? benchmarks[0]) }));
+  }, [selectedMarket]);
+
+  useEffect(() => {
+    const taskId = localStorage.getItem(taskStorageKey);
+    if (!taskId || isGuest) return;
+    let current = true;
+    getTask(taskId).then((task) => {
+      if (!current) return;
+      setStrategyTask(task);
+      if (isStrategyTaskResult(task.result) && task.result.strategy_result?.spec) setSpecText(JSON.stringify(task.result.strategy_result.spec, null, 2));
+      if (!TERMINAL_STATUSES.has(String(task.status))) {
+        setBusy(true);
+        closeStreamRef.current = streamTask(taskId, (updated) => { if (current) setStrategyTask(updated); }, () => { if (current) setBusy(false); }, (message) => { if (current) { setError(message); setBusy(false); } });
+      }
+    }).catch((err) => { if (current) { setError(err instanceof Error ? err.message : "任务恢复失败"); localStorage.removeItem(taskStorageKey); } });
+    return () => { current = false; stopStream(); };
+  }, [taskStorageKey, isGuest]);
 
   useEffect(() => {
     void refreshLibrary();
@@ -159,12 +195,17 @@ export default function StrategyWorkbench() {
       setValidation({ is_valid: false, issues: [{ code: "JSON_INVALID", message: "JSON 格式错误" }] });
       return;
     }
+    if (!dates.start_date || !dates.end_date || dates.start_date >= dates.end_date) {
+      setError("请填写有效研究日期，开始日期必须早于结束日期。");
+      return;
+    }
     stopStream();
     setBusy(true);
     setError(null);
     setExportPayload(null);
     try {
-      const result = await submitStrategyBacktest({ spec: parsedSpec, ...DEFAULT_DATES });
+      const result = await submitStrategyBacktest({ spec: parsedSpec, ...dates });
+      localStorage.setItem(taskStorageKey, result.task_id);
       const initialTask: Task = {
         task_id: result.task_id,
         status: "pending",
@@ -188,6 +229,12 @@ export default function StrategyWorkbench() {
       setError(err instanceof Error ? err.message : "策略回测提交失败");
       setBusy(false);
     }
+  }
+
+  async function handleCancel() {
+    if (!strategyTask) return;
+    try { await cancelTask(strategyTask.task_id); setStrategyTask(await getTask(strategyTask.task_id)); setBusy(false); }
+    catch (err) { setError(err instanceof Error ? err.message : "取消请求失败"); }
   }
 
   async function handleExport() {
@@ -261,7 +308,7 @@ export default function StrategyWorkbench() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold text-gray-900">策略工作台</h2>
-          <p className="text-sm text-gray-500">StrategySpec v1 structured workflow</p>
+          <p className="text-sm text-gray-500">研究配置、持仓回测与验证证据</p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -293,9 +340,21 @@ export default function StrategyWorkbench() {
 
       <StrategyTemplatePicker templates={templates} selectedId={selectedTemplate} onSelect={setSelectedTemplate} />
 
+      <section aria-label="研究范围" className="grid gap-3 rounded-lg border border-gray-200 bg-white p-4 sm:grid-cols-2 lg:grid-cols-4">
+        <label className="text-xs text-gray-500">开始日期<input aria-label="研究开始日期" type="date" value={dates.start_date} disabled={busy} onChange={(event) => setDates({ ...dates, start_date: event.target.value })} className="mt-1 block w-full rounded border border-gray-200 p-2 text-sm text-gray-800" /></label>
+        <label className="text-xs text-gray-500">结束日期<input aria-label="研究结束日期" type="date" value={dates.end_date} disabled={busy} onChange={(event) => setDates({ ...dates, end_date: event.target.value })} className="mt-1 block w-full rounded border border-gray-200 p-2 text-sm text-gray-800" /></label>
+        <label className="text-xs text-gray-500">市场<select aria-label="策略市场" value={String(parsedSpec?.market ?? "")} disabled={busy || !parsedSpec} onChange={(event) => {
+          const capability = markets.find((item) => item.market === event.target.value);
+          const universes = Array.isArray(capability?.universes) ? capability.universes : [];
+          setSpecText(JSON.stringify({ ...parsedSpec, schema_version: "strategy_spec/v1", market: event.target.value, universe: universes[0] ?? parsedSpec?.universe }, null, 2)); setValidation(null);
+        }} className="mt-1 block w-full rounded border border-gray-200 p-2 text-sm text-gray-800"><option value="" disabled>选择模板或市场</option>{markets.map((market) => <option key={String(market.market)} value={String(market.market)}>{String(market.market)}</option>)}</select></label>
+        <label className="text-xs text-gray-500">基准<select aria-label="策略基准" value={dates.benchmark} disabled={busy} onChange={(event) => setDates({ ...dates, benchmark: event.target.value })} className="mt-1 block w-full rounded border border-gray-200 p-2 text-sm text-gray-800">{!benchmarks.includes(dates.benchmark) && <option value={dates.benchmark}>{dates.benchmark}</option>}{benchmarks.map((benchmark) => <option key={benchmark} value={benchmark}>{benchmark}</option>)}</select></label>
+      </section>
+
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
         <div className="space-y-4">
-          <StrategySpecEditor value={specText} onChange={setSpecText} />
+          <StrategyParameterForm spec={parsedSpec} onChange={(next) => { setSpecText(JSON.stringify(next, null, 2)); setValidation(null); }} />
+          <details className="rounded-lg border border-gray-200 bg-white p-4"><summary className="cursor-pointer text-sm text-gray-600">高级：查看或编辑策略 JSON</summary><StrategySpecEditor value={specText} onChange={setSpecText} /></details>
         </div>
         <aside className="space-y-4">
           {busy && !strategyTask && (
@@ -304,15 +363,8 @@ export default function StrategyWorkbench() {
               处理中
             </div>
           )}
-          <StrategyParameterForm
-            spec={parsedSpec}
-            onChange={(next) => {
-              setSpecText(JSON.stringify(next, null, 2));
-              setValidation(null);
-            }}
-          />
           <StrategyValidationPanel validation={validation} />
-          {strategyTask && <TaskProgressPanel task={strategyTask} />}
+          {strategyTask && <TaskProgressPanel task={strategyTask} onCancel={() => void handleCancel()} />}
           <StrategyResultPanel
             result={taskResult}
             exportPayload={exportPayload}
@@ -333,9 +385,8 @@ export default function StrategyWorkbench() {
           {(marketMeta || dataFields) && (
             <div className="rounded-lg border border-gray-200 bg-white p-4">
               <div className="text-sm font-semibold text-gray-900">市场与字段</div>
-              <pre className="mt-2 max-h-52 overflow-auto rounded-md bg-gray-50 p-3 text-xs text-gray-700">
-                {JSON.stringify({ markets: marketMeta, data_fields: dataFields }, null, 2)}
-              </pre>
+              <p className="mt-1 text-xs text-gray-500">{String(parsedSpec?.market ?? "未选择市场")} · 字段是否可用于研究，以服务端能力检查为准</p>
+              <div className="mt-2 max-h-64 overflow-auto"><table className="w-full text-left text-xs"><thead><tr><th className="py-2">字段</th><th>单位</th><th>能力状态</th></tr></thead><tbody>{fields.map((field) => <tr key={String(field.name)} className="border-t border-gray-100"><td className="py-2 font-mono">{String(field.name)}</td><td>{String(field.unit ?? "未知")}</td><td>{String(field.status ?? field.availability ?? "unknown")}</td></tr>)}</tbody></table></div>
             </div>
           )}
         </aside>

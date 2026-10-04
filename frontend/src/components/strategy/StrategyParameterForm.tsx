@@ -24,6 +24,9 @@ export default function StrategyParameterForm({ spec, onChange }: Props) {
   const signalRules = (spec.signal_rules ?? {}) as Record<string, unknown>;
   const portfolioRule = (spec.portfolio_rule ?? {}) as Record<string, unknown>;
   const riskRules = (spec.risk_rules ?? {}) as Record<string, unknown>;
+  const costModel = (spec.cost_model ?? {}) as Record<string, unknown>;
+  const isV0 = spec.schema_version === "strategy_spec/v0";
+  const useTopN = !isV0 && signalRules.top_n != null;
 
   const patch = (mutator: (draft: Record<string, unknown>) => void) => {
     const draft = cloneSpec(spec);
@@ -37,10 +40,16 @@ export default function StrategyParameterForm({ spec, onChange }: Props) {
       <div className="grid grid-cols-2 gap-2">
         <TextField label="name" value={String(spec.name ?? "")} onChange={(v) => patch((d) => { d.name = v; })} />
         <TextField label="universe" value={String(spec.universe ?? "")} onChange={(v) => patch((d) => { d.universe = v; })} />
-        <NumberField label="top_n" value={Number(signalRules.top_n ?? 20)} onChange={(v) => patch((d) => { getObject(d, "signal_rules").top_n = v; })} />
-        <NumberField label="long_quantile" value={Number(signalRules.long_quantile ?? 0.2)} step={0.01} onChange={(v) => patch((d) => { getObject(d, "signal_rules").long_quantile = v; })} />
+        <label className="text-xs text-gray-500">选股方式<select aria-label="选股方式" disabled={isV0} value={useTopN ? "top_n" : "quantile"} onChange={(event) => patch((draft) => {
+          const rules = getObject(draft, "signal_rules");
+          if (event.target.value === "top_n") { delete rules.long_quantile; rules.top_n = 20; }
+          else { delete rules.top_n; rules.long_quantile = 0.2; }
+        })} className="mt-1 block w-full rounded border border-gray-200 p-2 text-sm"><option value="top_n">前 N 只</option><option value="quantile">前百分比</option></select></label>
+        {useTopN ? <NumberField label="选股数量" value={Number(signalRules.top_n ?? 20)} onChange={(v) => patch((d) => { const rules = getObject(d, "signal_rules"); delete rules.long_quantile; rules.top_n = v; })} />
+          : <NumberField label="选股比例 (0–1)" value={Number(signalRules.long_quantile ?? 0.2)} step={0.01} onChange={(v) => patch((d) => { const rules = getObject(d, "signal_rules"); delete rules.top_n; rules.long_quantile = v; })} />}
         <NumberField label="rebalance_period" value={Number(portfolioRule.rebalance_period ?? 5)} onChange={(v) => patch((d) => { getObject(d, "portfolio_rule").rebalance_period = v; })} />
         <NumberField label="max_asset_weight" value={Number(riskRules.max_asset_weight ?? 0.05)} step={0.01} onChange={(v) => patch((d) => { getObject(d, "risk_rules").max_asset_weight = v; })} />
+        <NumberField label="买卖费用 (bps)" value={Number(costModel.bps ?? 0)} step={1} onChange={(v) => patch((d) => { getObject(d, "cost_model").bps = v; })} />
       </div>
       <label className="block">
         <span className="text-xs text-gray-500">weighting</span>
@@ -52,7 +61,7 @@ export default function StrategyParameterForm({ spec, onChange }: Props) {
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <div className="text-xs font-medium text-gray-500">factors</div>
-          <button type="button" onClick={() => patch((d) => {
+          <button type="button" disabled={isV0} onClick={() => patch((d) => {
             const list = Array.isArray(d.factors) ? [...d.factors] : [];
             list.push({ id: `factor_${list.length + 1}`, expression: "", direction: "higher_is_better", weight: 1 });
             d.factors = list;

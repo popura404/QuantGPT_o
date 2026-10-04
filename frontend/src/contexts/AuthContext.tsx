@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import type { User } from "../types/auth";
 import { getMe, refreshToken } from "../api/auth";
 import { setAuthDisabled } from "../api/client";
+import { setResearchProjectId } from "../hooks/useResearchProject";
 
 interface AuthContextType {
   user: User | null;
@@ -33,6 +34,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [authDisabledFlag, setAuthDisabledFlag] = useState(false);
 
   const logout = useCallback(() => {
+    setResearchProjectId(null);
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(REFRESH_KEY);
     localStorage.removeItem(GUEST_FLAG_KEY);

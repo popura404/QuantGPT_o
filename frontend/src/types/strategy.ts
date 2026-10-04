@@ -84,6 +84,10 @@ export interface StrategyHolding {
 }
 
 export interface StrategyBacktestResultPayload {
+  project_id?: string;
+  strategy_run_id?: string;
+  signal_ref?: Record<string, unknown>;
+  signals?: Record<string, unknown>[];
   spec?: StrategySpec;
   spec_version?: string;
   strategy_name?: string;

@@ -1,130 +1,94 @@
-import { useState, useEffect, useCallback } from "react";
-import { Star, Trash2, ExternalLink } from "lucide-react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { Star, Trash2, ExternalLink, RefreshCw } from "lucide-react";
 import { useColorMode } from "../contexts/ColorModeContext";
 import type { SavedFactor } from "../api/factorLibrary";
-import { fetchFactors, deleteFactor } from "../api/factorLibrary";
+import { fetchFactors, deleteFactor, updateFactor } from "../api/factorLibrary";
+import { getResearchEvaluation, type ResearchEvaluation } from "../api/research";
+import { useResearchProject } from "../hooks/useResearchProject";
 import ReportLink from "./ReportLink";
 
-function pct(n: number): string {
-  return (n * 100).toFixed(1) + "%";
-}
-
-function FactorItem({
-  factor,
-  onDelete,
-}: {
-  factor: SavedFactor;
-  onDelete: (id: string) => void;
-}) {
-  const m = factor.metrics;
-  const bs = factor.backtest_summary as Record<string, number> | null;
-  const { isDark, positiveClass, negativeClass } = useColorMode();
-
-  return (
-    <div className={`group rounded-lg border border-gray-150 ${isDark ? "bg-gray-900" : "bg-white"} px-3 py-2.5 hover:shadow-sm transition-shadow`}>
-      {/* Expression — single line truncated */}
-      <div className="flex items-center gap-2 min-w-0">
-        <code className={`text-xs ${isDark ? "text-amber-400" : "text-blue-700"} font-mono truncate flex-1`} title={factor.expression}>
-          {factor.expression}
-        </code>
-        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-          {factor.report_url && (
-            <ReportLink
-              reportUrl={factor.report_url}
-              className="p-1 rounded text-gray-400 hover:text-blue-600"
-              title="查看报告"
-            >
-              <ExternalLink className="h-3 w-3" />
-            </ReportLink>
-          )}
-          <button
-            onClick={(e) => { e.stopPropagation(); if (confirm("确定删除？")) onDelete(factor.id); }}
-            className="p-1 rounded text-gray-400 hover:text-red-500"
-            title="删除"
-          >
-            <Trash2 className="h-3 w-3" />
-          </button>
-        </div>
-      </div>
-
-      {/* Compact metrics row */}
-      {m && (
-        <div className={`flex items-center gap-2 mt-1.5 text-[11px] ${isDark ? "text-gray-400" : "text-gray-500"}`}>
-          <span>S <span className={`${isDark ? "text-gray-300" : "text-gray-700"} font-medium`}>{m.sharpe.toFixed(2)}</span></span>
-          <span className="text-gray-200">|</span>
-          <span className={m.cagr >= 0 ? positiveClass : negativeClass}>{pct(m.cagr)}</span>
-          <span className="text-gray-200">|</span>
-          <span className={negativeClass}>{pct(m.max_drawdown)}</span>
-          {bs && (
-            <>
-              <span className="text-gray-200">|</span>
-              <span>M {(bs.monotonicity_score ?? 0).toFixed(1)}</span>
-            </>
-          )}
-        </div>
-      )}
-
-      {/* Meta line */}
-      <div className="flex items-center gap-2 mt-1 text-[10px] text-gray-400">
-        {factor.params && (
-          <span>{(factor.params as Record<string, string>).universe}</span>
-        )}
-        {factor.created_at && (
-          <span>{new Date(factor.created_at).toLocaleDateString("zh-CN")}</span>
-        )}
-      </div>
-    </div>
-  );
+function number(value: unknown, percentage = false): string {
+  return typeof value === "number" && Number.isFinite(value) ? (percentage ? `${(value * 100).toFixed(1)}%` : value.toFixed(2)) : "—";
 }
 
 export default function FactorLibrary() {
   const { isDark } = useColorMode();
+  const projectId = useResearchProject();
   const [factors, setFactors] = useState<SavedFactor[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [selected, setSelected] = useState<SavedFactor | null>(null);
+  const [evaluation, setEvaluation] = useState<ResearchEvaluation | null>(null);
+  const revision = useRef(0);
 
   const load = useCallback(async () => {
+    const current = ++revision.current;
+    setLoading(true); setError(null); setFactors([]); setSelected(null); setEvaluation(null);
     try {
-      setLoading(true);
-      const data = await fetchFactors();
-      setFactors(data);
-    } catch (e) {
-      console.error("Failed to load factors:", e);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+      const data = await fetchFactors(projectId);
+      if (revision.current === current) setFactors(data);
+    } catch (err) { if (revision.current === current) setError(err instanceof Error ? err.message : "因子池读取失败"); }
+    finally { if (revision.current === current) setLoading(false); }
+  }, [projectId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { void load(); return () => { revision.current++; }; }, [load]);
 
-  const handleDelete = async (id: string) => {
-    try {
-      await deleteFactor(id);
-      setFactors((prev) => prev.filter((f) => f.id !== id));
-    } catch (e) {
-      alert("删除失败: " + (e instanceof Error ? e.message : "未知错误"));
-    }
-  };
-
-  if (loading) {
-    return <div className="text-center py-8 text-xs text-gray-400">加载中...</div>;
+  async function remove(factor: SavedFactor) {
+    if (!window.confirm(projectId ? "删除此项目共享因子条目？所有项目成员将不可见。" : "删除此收藏？")) return;
+    const current = revision.current;
+    try { await deleteFactor(factor.id, projectId); if (current === revision.current) setFactors((items) => items.filter((item) => item.id !== factor.id)); }
+    catch (err) { if (current === revision.current) setError(err instanceof Error ? err.message : "删除失败"); }
   }
 
-  if (factors.length === 0) {
-    return (
-      <div className="text-center py-12">
-        <Star className="h-8 w-8 text-gray-200 mx-auto mb-2" />
-        <p className={`text-xs ${isDark ? "text-gray-400" : "text-gray-500"}`}>因子库为空</p>
-        <p className="text-[10px] text-gray-400 mt-1">回测结果页点击「收藏」保存因子</p>
-      </div>
-    );
+  async function favorite(factor: SavedFactor) {
+    const tags = factor.tags.includes("favorite") ? factor.tags.filter((tag) => tag !== "favorite") : [...factor.tags, "favorite"];
+    const current = revision.current;
+    try { const updated = await updateFactor(factor.id, { tags }, projectId); if (current === revision.current) setFactors((items) => items.map((item) => item.id === factor.id ? updated : item)); }
+    catch (err) { if (current === revision.current) setError(err instanceof Error ? err.message : "收藏更新失败"); }
   }
 
-  return (
-    <div className="space-y-1.5">
-      <p className="text-xs text-gray-400 px-1">{factors.length} 个因子</p>
-      {factors.map((f) => (
-        <FactorItem key={f.id} factor={f} onDelete={handleDelete} />
-      ))}
+  async function inspect(factor: SavedFactor) {
+    setSelected(factor); setEvaluation(null); setError(null);
+    const current = ++revision.current;
+    if (projectId && factor.evaluation_id) {
+      try { const result = await getResearchEvaluation(projectId, factor.evaluation_id); if (revision.current === current) setEvaluation(result); }
+      catch (err) { if (revision.current === current) setError(err instanceof Error ? err.message : "评价证据读取失败"); }
+    }
+  }
+
+  const shown = favoritesOnly && projectId ? factors.filter((factor) => factor.tags.includes("favorite")) : factors;
+  return <section aria-label="共同因子池" className="space-y-3">
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-xs font-medium text-gray-500">{projectId ? "项目共同因子池" : "个人旧收藏"} · {shown.length}</span>
+      <button type="button" aria-label="刷新因子池" onClick={() => void load()} disabled={loading} className="text-gray-500"><RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} /></button>
     </div>
-  );
+    {projectId && <label className="flex items-center gap-2 text-xs text-gray-500"><input type="checkbox" checked={favoritesOnly} onChange={(event) => setFavoritesOnly(event.target.checked)} />仅看项目收藏</label>}
+    {error && <p role="alert" className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">{error}</p>}
+    {loading && <p className="py-4 text-center text-xs text-gray-500">加载中…</p>}
+    {!loading && shown.length === 0 && <p className="py-6 text-center text-xs text-gray-500">{projectId ? "项目尚无因子；可从回测结果收藏，或通过同项目 MCP 保存。" : "旧收藏为空；可选择研究项目查看共同因子池。"}</p>}
+    {shown.map((factor) => <article key={factor.id} className={`rounded-lg border border-gray-200 p-3 ${isDark ? "bg-gray-900" : "bg-white"}`}>
+      <button type="button" onClick={() => void inspect(factor)} className="block w-full text-left" title="查看因子与评价证据">
+        {factor.name && <span className="mb-1 block text-xs font-medium text-gray-600">{factor.name}</span>}
+        <code className="block break-all text-xs text-blue-700">{factor.expression}</code>
+      </button>
+      <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-gray-500"><span>Sharpe {number(factor.metrics?.sharpe)}</span><span>年收益 {number(factor.metrics?.cagr, true)}</span><span>回撤 {number(factor.metrics?.max_drawdown, true)}</span></div>
+      <p className="mt-1 text-[10px] text-gray-500">{factor.market ?? "未记录市场"} · {factor.pool_status ?? "历史收藏"} · {factor.evaluation_id ? "评价证据待服务端核对" : "历史结果需重算"}</p>
+      <div className="mt-2 flex gap-3">
+        {projectId && <button type="button" aria-label={factor.tags.includes("favorite") ? "取消项目收藏" : "收藏到项目"} onClick={() => void favorite(factor)}><Star className={`h-3.5 w-3.5 ${factor.tags.includes("favorite") ? "fill-amber-400 text-amber-500" : "text-gray-400"}`} /></button>}
+        {factor.report_url && <ReportLink reportUrl={factor.report_url} title="查看报告"><ExternalLink className="h-3.5 w-3.5 text-gray-400" /></ReportLink>}
+        <button type="button" aria-label="删除因子" onClick={() => void remove(factor)}><Trash2 className="h-3.5 w-3.5 text-gray-400" /></button>
+      </div>
+    </article>)}
+    {factors.length === 200 && <p className="text-xs text-gray-500">当前显示前 200 条。</p>}
+    {selected && <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs text-gray-700">
+      <div className="mb-2 flex justify-between"><strong>因子详情</strong><button onClick={() => setSelected(null)}>关闭</button></div>
+      <p className="break-all">{selected.expression}</p>
+      <p className="mt-2">{selected.note || selected.main_reason || "尚无研究说明"}</p>
+      <p className="mt-2">证据状态：{evaluation?.evidence_status ?? selected.evidence_status ?? "legacy_unverified"}</p>
+      <p>研究结论：{evaluation?.summary?.research_decision ?? "尚未验证"}</p>
+      {evaluation?.summary?.blockers?.map((blocker, index) => <p key={index} className="mt-1 text-amber-800">{typeof blocker === "string" ? blocker : JSON.stringify(blocker)}</p>)}
+      <details className="mt-2"><summary>版本与引用</summary><p className="break-all">定义：{selected.definition_hash ?? "历史定义"}</p><p className="break-all">评价：{selected.evaluation_id ?? "无可信评价"}</p></details>
+    </div>}
+  </section>;
 }

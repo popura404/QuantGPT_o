@@ -1,9 +1,8 @@
 import { X } from "lucide-react";
 import type { Task } from "../../types/backtest";
+import { TERMINAL_TASK_STATUSES as TERMINAL } from "../../types/backtest";
 import { useColorMode } from "../../contexts/ColorModeContext";
 import TaskStatusBadge from "./TaskStatusBadge";
-
-const TERMINAL = new Set(["completed", "failed", "cancelled", "iteration_completed"]);
 
 function taskTypeLabel(taskType?: string): string {
   if (taskType === "strategy_backtest") return "策略回测";
@@ -23,7 +22,7 @@ interface Props {
 
 export default function TaskProgressPanel({ task, onCancel }: Props) {
   const { isDark } = useColorMode();
-  const canCancel = Boolean(onCancel && task.task_id !== "error" && !TERMINAL.has(String(task.status)));
+  const canCancel = Boolean(onCancel && task.task_id !== "error" && !task.cancel_requested && !TERMINAL.has(String(task.status)));
   const progress = typeof task.progress === "number" ? Math.max(0, Math.min(100, task.progress)) : null;
   const completed = task.completed ?? task.completed_combinations;
   const type = taskTypeLabel(task.task_type);
@@ -53,6 +52,12 @@ export default function TaskProgressPanel({ task, onCancel }: Props) {
           </button>
         )}
       </div>
+
+      {task.error && <p role="alert" className="mt-3 text-sm text-red-700">{task.error}</p>}
+      {task.status === "local_wait_cancelled" && <p className="mt-3 text-xs text-amber-700">已停止本地等待；远端任务是否停止仍需核对。</p>}
+      {["remote_outcome_unknown", "reconciliation_required"].includes(task.status) && <p className="mt-3 text-xs text-amber-700">远端结果尚未确认，请对账后再决定下一步，避免重复提交。</p>}
+      {task.status === "interrupted" && <p className="mt-3 text-xs text-amber-700">执行中断；当前结果不完整。{task.retryable ? "服务端标记为可重试。" : "请检查服务端任务状态。"}</p>}
+      {task.next_action && <p className="mt-2 text-xs text-gray-500">下一步：{task.next_action}</p>}
 
       {(progress != null || task.progress_message || completed != null || task.expression) && (
         <div className="mt-4 space-y-3">

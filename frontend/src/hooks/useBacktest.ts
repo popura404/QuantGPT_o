@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from "react";
 import type { BacktestResult, Task, BacktestRequest } from "../types/backtest";
-import { submitBacktest, streamTask, submitIteration, selectCandidate, cancelTask } from "../api/client";
+import { TERMINAL_TASK_STATUSES } from "../types/backtest";
+import { submitBacktest, streamTask, submitIteration, selectCandidate, cancelTask, getTask } from "../api/client";
 
 function isBacktestResult(result: Task["result"] | undefined): result is BacktestResult {
   return Boolean(result && "params" in result && "metrics" in result && "backtest_summary" in result);
@@ -36,7 +37,7 @@ export function useBacktest(onComplete?: (task: Task) => void, sessionId?: strin
           task_id,
           (task) => {
             setActiveTask(task);
-            if (task.status === "completed" || task.status === "failed" || task.status === "cancelled") {
+            if (TERMINAL_TASK_STATUSES.has(task.status)) {
               setIsLoading(false);
               onComplete?.(task);
             }
@@ -86,7 +87,7 @@ export function useBacktest(onComplete?: (task: Task) => void, sessionId?: strin
           task_id,
           (task) => {
             setIterationMap((prev) => ({ ...prev, [taskId]: task }));
-            if (task.status === "iteration_completed" || task.status === "failed") {
+            if (TERMINAL_TASK_STATUSES.has(task.status)) {
               setIsIterating(false);
             }
           },
@@ -143,10 +144,12 @@ export function useBacktest(onComplete?: (task: Task) => void, sessionId?: strin
     if (!activeTask || !activeTask.task_id || activeTask.task_id === "error") return;
     try {
       await cancelTask(activeTask.task_id);
-    } catch { /* ignore — task may already be done */ }
-    stopStream();
-    setIsLoading(false);
-    setActiveTask((prev) => prev ? { ...prev, status: "cancelled" } : prev);
+      const confirmed = await getTask(activeTask.task_id);
+      setActiveTask(confirmed);
+      if (TERMINAL_TASK_STATUSES.has(confirmed.status)) { stopStream(); setIsLoading(false); }
+    } catch (err) {
+      setActiveTask((prev) => prev ? { ...prev, error: err instanceof Error ? err.message : "取消请求失败，任务状态尚未确认" } : prev);
+    }
   }, [activeTask, stopStream]);
 
   return {

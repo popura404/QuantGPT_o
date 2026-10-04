@@ -1,5 +1,10 @@
 import type { StrategyBacktestTaskResult } from "./strategy";
 
+export const TERMINAL_TASK_STATUSES = new Set([
+  "completed", "failed", "cancelled", "iteration_completed", "remote_cancel_confirmed",
+  "local_wait_cancelled", "interrupted", "remote_outcome_unknown", "reconciliation_required",
+]);
+
 export type TaskStatus =
   | "pending"
   | "queued"
@@ -359,6 +364,12 @@ export interface Session {
 export interface Task {
   task_id: string;
   status: TaskStatus;
+  revision?: number;
+  snapshot?: boolean;
+  cancel_requested?: boolean;
+  retryable?: boolean;
+  error_code?: string;
+  next_action?: string;
   session_id?: string;
   params?: BacktestRequest;
   expression?: string;

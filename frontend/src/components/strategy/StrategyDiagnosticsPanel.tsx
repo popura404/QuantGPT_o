@@ -31,7 +31,7 @@ export default function StrategyDiagnosticsPanel({ result, spec }: Props) {
     }
   }
 
-  const signals = (Array.isArray(result?.target_weights) ? result?.target_weights : result?.latest_holdings ?? []) as Record<string, unknown>[];
+  const signals = (result?.signals ?? result?.latest_holdings ?? []).filter((item) => typeof item.score === "number" && Number.isFinite(item.score) && typeof item.stock_code === "string" && typeof item.trade_date === "string") as Record<string, unknown>[];
 
   return (
     <section className="space-y-3 rounded-lg border border-gray-200 bg-white p-4">
@@ -42,14 +42,15 @@ export default function StrategyDiagnosticsPanel({ result, spec }: Props) {
         <Action label="rolling validation" busy={busy} onClick={() => run("rolling validation", () => runStrategyRollingValidation(result as StrategyBacktestResultPayload, 3))} />
         <button
           type="button"
-          disabled={!result || busy !== null}
+          disabled={!result || busy !== null || !signals.length}
           onClick={() => run("optimize", () => optimizeStrategyCandidate(signals, spec ?? {}))}
           className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium disabled:opacity-50"
         >
           <SlidersHorizontal className="h-3.5 w-3.5" />
-          optimize
+          权重归一化预览
         </button>
       </div>
+      {result && !signals.length && <p className="text-xs text-amber-800">需要带原始评分的信号产物后才能调整权重。当前持仓权重不能代替信号评分。</p>}
       {error && <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
       {output && <pre className="max-h-72 overflow-auto rounded-md bg-gray-50 p-3 text-xs text-gray-700">{JSON.stringify(output, null, 2)}</pre>}
     </section>

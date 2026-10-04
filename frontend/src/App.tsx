@@ -13,6 +13,10 @@ import CompositeBuilder from "./components/CompositeBuilder";
 import FactorComparison from "./components/FactorComparison";
 import ResearchDashboard from "./components/ResearchDashboard";
 import StrategyWorkbench from "./components/StrategyWorkbench";
+import ResearchProjectSelector from "./components/ResearchProjectSelector";
+import FactorLibrary from "./components/FactorLibrary";
+import ResearchWorkflow from "./components/ResearchWorkflow";
+import { useResearchProject } from "./hooks/useResearchProject";
 import WQBrainWorkspace from "./components/wq/WQBrainWorkspace";
 import TabNavigation, { TABS } from "./components/TabNavigation";
 import type { MainTab } from "./components/TabNavigation";
@@ -36,6 +40,7 @@ function isBacktestResult(result: Task["result"] | undefined): result is Backtes
 export default function App() {
   const { isGuest } = useAuth();
   const { isDark } = useColorMode();
+  const researchProjectId = useResearchProject();
   const [activeTab, setActiveTab] = useState<MainTab>(getTabFromHash);
   const [sidebarTab, setSidebarTab] = useState<"sessions" | "factors">("sessions");
   const [factorLibKey, setFactorLibKey] = useState(0);
@@ -62,7 +67,7 @@ export default function App() {
     fetchFactors().then((factors) => {
       setSavedExpressions(new Set(factors.map((f) => f.expression)));
     }).catch(() => {});
-  }, [factorLibKey, isGuest]);
+  }, [factorLibKey, isGuest, researchProjectId]);
 
   const {
     sessions,
@@ -186,6 +191,7 @@ export default function App() {
   return (
     <div className={`min-h-screen ${isDark ? "bg-gray-950" : "bg-[#f9fafb]"}`}>
       <Header />
+      <ResearchProjectSelector />
 
       {/* Main navigation tabs */}
       <TabNavigation activeTab={activeTab} onTabChange={setActiveTab} isDark={isDark} />
@@ -193,6 +199,8 @@ export default function App() {
       <div className="mx-auto max-w-7xl px-6 py-6 flex gap-6">
         {/* Main content area — changes per tab */}
         <main className={`min-w-0 space-y-4 ${activeTab === "backtest" ? "flex-1" : "w-full"}`}>
+          {activeTab === "library" && <FactorLibrary />}
+          {activeTab === "research" && <ResearchWorkflow />}
           {activeTab === "dashboard" && (
             <ResearchDashboard />
           )}

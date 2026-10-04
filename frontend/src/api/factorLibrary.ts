@@ -1,22 +1,6 @@
 import type { BacktestMetrics } from "../types/backtest";
-
-const BASE = "";
-
-function getAccessToken(): string | null {
-  return localStorage.getItem("quantgpt_access_token");
-}
-
-function authHeaders(): Record<string, string> {
-  const token = getAccessToken();
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  return headers;
-}
-
-async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
-  const headers = { ...authHeaders(), ...options.headers };
-  return fetch(url, { ...options, headers });
-}
+import { authFetch, BASE, parseError } from "./client";
+import { getResearchProjectId } from "../hooks/useResearchProject";
 
 export interface SavedFactor {
   id: string;
@@ -30,6 +14,13 @@ export interface SavedFactor {
   params: Record<string, unknown> | null;
   report_url: string | null;
   created_at: string | null;
+  project_id?: string | null;
+  definition_hash?: string | null;
+  evaluation_id?: string | null;
+  evidence_status?: string;
+  pool_status?: string;
+  market?: string;
+  main_reason?: string | null;
 }
 
 export interface SaveFactorPayload {
@@ -45,40 +36,45 @@ export interface SaveFactorPayload {
 }
 
 export async function saveFactor(payload: SaveFactorPayload): Promise<SavedFactor> {
-  const res = await authFetch(`${BASE}/api/v1/factor-library`, {
+  const projectId = getResearchProjectId();
+  const data = projectId ? { ...payload, project_id: projectId, tags: [...(payload.tags ?? []), "favorite"], source: "web", market: payload.params?.market ?? "a_share" } : payload;
+  const res = await authFetch(`${BASE}/api/v1/${projectId ? "factor-pool" : "factor-library"}`, {
     method: "POST",
-    body: JSON.stringify(payload),
+    body: JSON.stringify(data),
   });
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail || `保存失败 (${res.status})`);
+    throw new Error(await parseError(res));
   }
-  return res.json();
+  const result = await res.json();
+  return projectId ? result.entry : result;
 }
 
-export async function fetchFactors(): Promise<SavedFactor[]> {
-  const url = `${BASE}/api/v1/factor-library`;
+export async function fetchFactors(projectId = getResearchProjectId()): Promise<SavedFactor[]> {
+  const url = projectId ? `${BASE}/api/v1/factor-pool?project_id=${encodeURIComponent(projectId)}&limit=200` : `${BASE}/api/v1/factor-library`;
   const res = await authFetch(url);
-  if (!res.ok) throw new Error(`获取因子库失败 (${res.status})`);
+  if (!res.ok) throw new Error(await parseError(res));
   const data = await res.json();
-  return data.factors;
+  return projectId ? data.entries : data.factors;
 }
 
 export async function updateFactor(
   factorId: string,
   updates: { name?: string; note?: string; tags?: string[] },
+  projectId = getResearchProjectId(),
 ): Promise<SavedFactor> {
-  const res = await authFetch(`${BASE}/api/v1/factor-library/${factorId}`, {
+  const suffix = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  const res = await authFetch(`${BASE}/api/v1/${projectId ? "factor-pool" : "factor-library"}/${encodeURIComponent(factorId)}${suffix}`, {
     method: "PATCH",
     body: JSON.stringify(updates),
   });
-  if (!res.ok) throw new Error(`更新失败 (${res.status})`);
+  if (!res.ok) throw new Error(await parseError(res));
   return res.json();
 }
 
-export async function deleteFactor(factorId: string): Promise<void> {
-  const res = await authFetch(`${BASE}/api/v1/factor-library/${factorId}`, {
+export async function deleteFactor(factorId: string, projectId = getResearchProjectId()): Promise<void> {
+  const suffix = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  const res = await authFetch(`${BASE}/api/v1/${projectId ? "factor-pool" : "factor-library"}/${encodeURIComponent(factorId)}${suffix}`, {
     method: "DELETE",
   });
-  if (!res.ok && res.status !== 204) throw new Error(`删除失败 (${res.status})`);
+  if (!res.ok && res.status !== 204) throw new Error(await parseError(res));
 }

@@ -1,10 +1,12 @@
-import { BrainCircuit, FlaskConical, Layers, BarChart3, LayoutDashboard, LineChart } from "lucide-react";
+import { BrainCircuit, FlaskConical, Layers, BarChart3, LayoutDashboard, LineChart, Library } from "lucide-react";
 
-export type MainTab = "backtest" | "composite" | "comparison" | "dashboard" | "strategy" | "wq";
+export type MainTab = "backtest" | "composite" | "comparison" | "dashboard" | "strategy" | "wq" | "library" | "research";
 
 export const TABS: { id: MainTab; label: string; icon: typeof FlaskConical; color: string }[] = [
   { id: "dashboard", label: "研究总览", icon: LayoutDashboard, color: "amber" },
   { id: "backtest", label: "单因子回测", icon: FlaskConical, color: "blue" },
+  { id: "library", label: "共同因子池", icon: Library, color: "blue" },
+  { id: "research", label: "项目研究", icon: FlaskConical, color: "blue" },
   { id: "composite", label: "多因子组合", icon: Layers, color: "purple" },
   { id: "strategy", label: "策略工作台", icon: LineChart, color: "teal" },
   { id: "wq", label: "WQ BRAIN", icon: BrainCircuit, color: "indigo" },
@@ -21,7 +23,7 @@ export default function TabNavigation({ activeTab, onTabChange, isDark }: Props)
   return (
     <div className={`border-b ${isDark ? "border-gray-800 bg-gray-900" : "border-gray-200 bg-white"}`}>
       <div className="mx-auto max-w-7xl px-6">
-        <nav className="flex items-center gap-1 -mb-px">
+        <nav className="flex items-center gap-1 -mb-px overflow-x-auto whitespace-nowrap">
           {/* Tab buttons */}
           {TABS.map((tab) => {
             const Icon = tab.icon;

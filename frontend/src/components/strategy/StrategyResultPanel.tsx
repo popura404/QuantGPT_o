@@ -40,12 +40,16 @@ export default function StrategyResultPanel({ result, exportPayload, exporting, 
             <Save className="h-3.5 w-3.5" />
             保存 run
           </button>
-          <button type="button" onClick={onExport} disabled={exporting || !strategy} className="inline-flex items-center gap-1.5 rounded-md bg-gray-900 px-3 py-1.5 text-xs text-white disabled:opacity-50">
+          <button type="button" onClick={onExport} disabled={exporting || !strategy?.strategy_run_id || !strategy?.project_id} className="inline-flex items-center gap-1.5 rounded-md bg-gray-900 px-3 py-1.5 text-xs text-white disabled:opacity-50">
             <Download className="h-3.5 w-3.5" />
             导出
           </button>
         </div>
       </div>
+      {strategy && <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+        {[["净收益", strategy.metrics?.total_return], ["基准收益", strategy.metrics?.benchmark_total_return], ["最大回撤", strategy.metrics?.max_drawdown], ["换手", strategy.metrics?.turnover]].map(([label, value]) => <Metric key={String(label)} label={String(label)} value={typeof value === "number" ? `${(value * 100).toFixed(2)}%` : "未提供"} />)}
+      </div>}
+      {strategy && !strategy.strategy_run_id && <p className="rounded bg-amber-50 p-2 text-xs text-amber-800">当前结果缺少已验证的项目策略运行引用，暂不可导出。旧结果与保存副本不能替代服务端验证证据。</p>}
       {score && (
         <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
           {[
@@ -71,11 +75,11 @@ export default function StrategyResultPanel({ result, exportPayload, exporting, 
         </div>
       )}
       {strategy?.promotion_blockers && strategy.promotion_blockers.length > 0 && (
-        <JsonBlock title="Promotion blockers" value={strategy.promotion_blockers} />
+        <ul className="list-disc space-y-1 pl-4 text-xs text-amber-800">{strategy.promotion_blockers.map((blocker, index) => <li key={index}>{blocker}</li>)}</ul>
       )}
       {strategy?.oos_result && <JsonBlock title="OOS summary" value={strategy.oos_result} />}
       {strategy?.data_quality && <JsonBlock title="Data quality" value={strategy.data_quality} />}
-      {holdings.length > 0 && <JsonBlock title="Latest holdings" value={holdings.slice(0, 12)} />}
+      {holdings.length > 0 && <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr className="text-gray-500"><th className="py-2">证券</th><th>持仓权重</th><th>数量</th></tr></thead><tbody>{holdings.slice(0, 12).map((holding) => <tr key={holding.stock_code} className="border-t border-gray-100"><td className="py-2">{holding.stock_code}</td><td>{numberPercent(holding.target_weight ?? holding.weight)}</td><td>{formatValue(holding.quantity)}</td></tr>)}</tbody></table></div>}
       {validationIssues.length > 0 && <JsonBlock title="Validation issues" value={validationIssues} />}
       {riskLogs.length > 0 && <JsonBlock title="Risk logs" value={riskLogs} />}
       {exportPayload && (
@@ -106,9 +110,13 @@ function Metric({ label, value }: { label: string; value: unknown }) {
 
 function JsonBlock({ title, value }: { title: string; value: unknown }) {
   return (
-    <div>
-      <div className="mb-2 text-xs font-medium uppercase text-gray-500">{title}</div>
+    <details>
+      <summary className="mb-2 cursor-pointer text-xs font-medium text-gray-500">{title} · 详细数据</summary>
       <pre className="max-h-72 overflow-auto rounded-md bg-gray-50 p-3 text-xs text-gray-700">{JSON.stringify(value, null, 2)}</pre>
-    </div>
+    </details>
   );
+}
+
+function numberPercent(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) ? `${(value * 100).toFixed(2)}%` : "—";
 }

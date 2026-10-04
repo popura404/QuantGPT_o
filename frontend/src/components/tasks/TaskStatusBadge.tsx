@@ -23,11 +23,17 @@ const LABELS: Record<string, string> = {
   cancelled: "已取消",
   iterating: "迭代中",
   iteration_completed: "迭代完成",
+  interrupted: "执行中断",
+  remote_outcome_unknown: "远端结果未知",
+  reconciliation_required: "需要对账",
+  local_wait_cancelled: "已停止本地等待",
+  remote_cancel_confirmed: "远端已确认取消",
 };
 
 function statusTone(status: string) {
   if (status === "completed" || status === "iteration_completed") return "success";
   if (status === "failed") return "danger";
+  if (["interrupted", "remote_outcome_unknown", "reconciliation_required", "local_wait_cancelled", "remote_cancel_confirmed"].includes(status)) return "muted";
   if (status === "cancelled") return "muted";
   if (status === "submitted" || status === "finalizing") return "purple";
   if (status === "pending" || status === "queued") return "neutral";

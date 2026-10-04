@@ -1,4 +1,5 @@
 import { authFetch, BASE, parseError } from "./client";
+import { exportResearchStrategy } from "./research";
 import type {
   StrategyBacktestPayload,
   StrategyBacktestResultPayload,
@@ -71,12 +72,8 @@ export async function submitStrategyBacktest(payload: StrategyBacktestPayload): 
 }
 
 export async function exportStrategyCandidate(result: StrategyBacktestResultPayload): Promise<StrategyExportPayload> {
-  const res = await authFetch(`${BASE}/api/v1/strategy/export`, {
-    method: "POST",
-    body: JSON.stringify({ result }),
-  });
-  if (!res.ok) throw new Error(await parseError(res));
-  return res.json();
+  if (!result.project_id || !result.strategy_run_id) throw new Error("缺少服务端策略运行引用；请先完成项目策略验证再导出。");
+  return await exportResearchStrategy(result.project_id, result.strategy_run_id) as unknown as StrategyExportPayload;
 }
 
 export async function diagnoseStrategy(result: StrategyBacktestResultPayload): Promise<Record<string, unknown>> {
