@@ -5,12 +5,16 @@ baostock path: fetches quarterly data from 6 APIs, aligns to daily via pubDate m
 """
 
 import logging
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
 import pandas as pd
+
+from .pit_data import DataCapabilityError
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +167,7 @@ class FundamentalDataFetcher:
             return
         path = self._cache_path(stock_code)
         try:
-            df.to_parquet(path, index=False)
+            _atomic_parquet(df, path)
         except Exception as e:
             logger.warning(f"Failed to save fundamental cache for {stock_code}: {e}")
 
@@ -251,9 +255,9 @@ class FundamentalDataFetcher:
         # Drop rows with no pub_date (unusable)
         result = result.dropna(subset=["pub_date"])
 
-        # Deduplicate on (stock_code, stat_date), keep latest pub_date
+        # Keep publication vintages; a restatement must not overwrite the past.
         result = result.sort_values("pub_date").drop_duplicates(
-            subset=["stock_code", "stat_date"], keep="last"
+            subset=["stock_code", "stat_date", "pub_date"], keep="last"
         )
 
         return result if len(result) > 0 else None
@@ -326,7 +330,7 @@ class FundamentalDataFetcher:
                                     if cached is not None:
                                         combined = pd.concat([cached, stock_df], ignore_index=True)
                                         combined = combined.sort_values("pub_date").drop_duplicates(
-                                            subset=["stock_code", "stat_date"], keep="last"
+                                            subset=["stock_code", "stat_date", "pub_date"], keep="last"
                                         )
                                         stock_df = combined
                                     self._save_cache(code, stock_df)
@@ -372,9 +376,14 @@ class FundamentalDataFetcher:
 
         # Filter quarterly_df to needed columns
         keep_cols = ["stock_code", "pub_date"] + [c for c in raw_cols if c in quarterly_df.columns]
+        keep_cols += [c for c in ("available_at", "stat_date", "revision_id") if c in quarterly_df.columns]
         qdf = quarterly_df[keep_cols].copy()
         qdf["pub_date"] = _as_datetime_ns(qdf["pub_date"])
         qdf = qdf.dropna(subset=["pub_date"])
+        # A date-only publication does not prove availability before that close.
+        # Conservatively use it from the next calendar day / observed session.
+        qdf["available_at"] = (_as_datetime_ns(qdf["available_at"]) if "available_at" in qdf
+                               else qdf["pub_date"].dt.normalize() + pd.Timedelta(days=1))
 
         # merge_asof requires the key column to be sorted.
         # Since we merge by stock_code, do it per-stock to avoid cross-stock sorting issues.
@@ -382,7 +391,7 @@ class FundamentalDataFetcher:
         market_df["trade_date"] = _as_datetime_ns(market_df["trade_date"])
         result_parts = []
         for code, mkt_group in market_df.groupby("stock_code", sort=False):
-            fund_group = qdf[qdf["stock_code"] == code].sort_values("pub_date")
+            fund_group = qdf[qdf["stock_code"] == code].sort_values("available_at")
             if len(fund_group) == 0:
                 result_parts.append(mkt_group)
                 continue
@@ -391,7 +400,7 @@ class FundamentalDataFetcher:
                 mkt_sorted,
                 fund_group.drop(columns=["stock_code"]),
                 left_on="trade_date",
-                right_on="pub_date",
+                right_on="available_at",
                 direction="backward",
             )
             result_parts.append(merged_group)
@@ -669,8 +678,6 @@ _RQ_FACTOR_MAP: dict[str, str] = {
     "eps_ttm":          "earnings_per_share",
     # Growth
     "yoy_ni":           "inc_net_profit",
-    "yoy_equity":       "inc_earnings_per_share",   # no direct equity growth; EPS growth as proxy
-    "yoy_asset":        "inc_operating_revenue",     # no direct asset growth; revenue growth as proxy
     "yoy_pni":          "inc_net_profit",
     # Balance
     "current_ratio":    "current_ratio",
@@ -683,7 +690,6 @@ _RQ_FACTOR_MAP: dict[str, str] = {
     "dupont_roe":       "return_on_equity",
     "dupont_asset_turn": "total_asset_turnover",
     # Cash flow
-    "cfo_to_np":        "operating_cash_flow_per_share",  # closest available
     # Valuation (rqdatac computes these directly as daily factors)
     "pe":               "pe_ratio",
     "pb":               "pb_ratio",
@@ -693,8 +699,6 @@ _RQ_FACTOR_MAP: dict[str, str] = {
     # Raw financials (for derived calculations)
     "net_profit":       "net_profit",
     "revenue":          "revenue",
-    "total_share":      "total_equity",          # total_shares unavailable; total_equity as proxy
-    "float_share":      "a_share_market_val",    # circulation_a_shares unavailable
 }
 
 # All unique rqdatac factor names (for prewarming)
@@ -751,7 +755,7 @@ def _save_factor_cache(stock_code: str, df: pd.DataFrame):
             existing["trade_date"] = _as_datetime_ns(existing["trade_date"])
             # Merge: new data takes precedence
             df = pd.concat([existing, df]).drop_duplicates("trade_date", keep="last").sort_values("trade_date")
-        df.to_parquet(path, index=False)
+        _atomic_parquet(df, path)
     except Exception as e:
         logger.warning(f"Factor cache save failed for {stock_code}: {e}")
 
@@ -890,8 +894,8 @@ def enrich_with_fundamentals_rq(
         cached = _load_factor_cache(code, start_date, end_date)
         if cached is not None:
             # Check if cache has the needed variable columns
-            needed_cols = set(var_to_rq.keys()) & set(cached.columns)
-            if needed_cols:
+            needed_cols = set(var_to_rq.keys())
+            if needed_cols.issubset(cached.columns):
                 cached_parts.append(cached)
                 if progress_callback:
                     progress_callback(checked, total, f"checked rq factor cache for {code}")
@@ -1006,6 +1010,9 @@ def enrich_market_data(
     if not fund_vars:
         return market_df
 
+    # Never trust daily cache columns written under the old proxy mapping.
+    # Non-equivalent fields use the quarterly provider or fail explicitly.
+
     rq_result = enrich_with_fundamentals_rq(
         market_df,
         fund_vars,
@@ -1017,7 +1024,11 @@ def enrich_market_data(
         progress_callback=progress_callback,
     )
     if rq_result is not None:
-        return rq_result
+        available = {name for name in fund_vars if name in rq_result and rq_result[name].notna().any()}
+        market_df = rq_result
+        fund_vars = fund_vars - available
+        if not fund_vars:
+            return market_df
 
     fetcher = FundamentalDataFetcher()
     non_div_vars = fund_vars - {"dividend_yield"}
@@ -1044,4 +1055,19 @@ def enrich_market_data(
         )
         if div_df is not None and len(div_df) > 0:
             market_df = fetcher.align_dividends_to_daily(div_df, market_df)
+    unavailable = [name for name in fund_vars if name not in market_df or not market_df[name].notna().any()]
+    if unavailable:
+        raise DataCapabilityError(unavailable, source="rqdatac/baostock")
     return market_df
+
+
+def _atomic_parquet(frame: pd.DataFrame, path: Path) -> None:
+    """Never expose a partially written provider cache."""
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    os.close(fd)
+    try:
+        frame.to_parquet(temporary, index=False)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)

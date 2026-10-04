@@ -120,7 +120,7 @@ def test_listing_age_window_is_filtered_when_listing_date_available():
     assert any(issue["rule"] == "new_listing_window" for issue in report["issues"])
 
 
-def test_high_missing_ratio_stock_is_filtered():
+def test_high_missing_ratio_stock_is_reported_without_retroactive_deletion():
     df = _base_market_df(days=10, stocks=("A", "B"))
     df = df[~((df["stock_code"] == "B") & (df["trade_date"] > df["trade_date"].min()))].copy()
 
@@ -129,7 +129,7 @@ def test_high_missing_ratio_stock_is_filtered():
         DataQualityConfig(adjustment="qfq", max_missing_ratio_per_stock=0.2),
     )
 
-    assert set(cleaned["stock_code"].unique()) == {"A"}
+    assert set(cleaned["stock_code"].unique()) == {"A", "B"}
     assert report["data_quality_scope"] == "full_requested_sample"
     assert any(issue["rule"] == "high_missing_ratio_stock" for issue in report["issues"])
 

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -137,7 +140,9 @@ def ensure_market_frame_snapshot(
 ) -> dict[str, Any]:
     """Return an existing frame snapshot or attach a deterministic fallback."""
     existing = frame.attrs.get("data_snapshot")
-    if isinstance(existing, dict) and existing.get("snapshot_id"):
+    if (isinstance(existing, dict) and existing.get("snapshot_id")
+            and existing.get("content_hash") == _frame_content_hash(frame)
+            and existing.get("field_schema") == _frame_field_schema(frame)):
         return existing
     metadata = source_metadata or frame.attrs.get("source_metadata") or {}
     snapshot = build_market_frame_snapshot(
@@ -212,6 +217,8 @@ def _snapshot_payload(payload: dict[str, Any], *, download_time: datetime | None
     }
     if "source_metadata" in payload:
         output["source_metadata"] = payload.get("source_metadata")
+    output["snapshot_schema_version"] = "data_snapshot/v2"
+    output["replayable"] = False
     return output
 
 
@@ -245,15 +252,62 @@ def _frame_date_bound(frame: pd.DataFrame, bound: str) -> str | None:
 def _frame_content_hash(frame: pd.DataFrame) -> str | None:
     if frame.empty:
         return "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    columns = [column for column in FRAME_HASH_COLUMNS if column in frame.columns]
-    if not columns:
-        columns = [str(column) for column in frame.columns]
+    columns = sorted(frame.columns, key=str)
     sample = frame.loc[:, columns].copy()
-    sort_columns = [column for column in ("trade_date", "stock_code") if column in sample.columns]
+    sort_columns = [column for column in ("session", "security_id", "trade_date", "stock_code",
+                                         "available_at", "period_end", "revision_id") if column in sample.columns]
     if sort_columns:
         sample = sample.sort_values(sort_columns).reset_index(drop=True)
-    raw = sample.to_json(orient="split", date_format="iso", default_handler=str)
+    raw = sample.to_json(orient="split", date_format="iso", date_unit="ns", double_precision=15, default_handler=str)
     return f"sha256:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
+
+
+def freeze_market_frame(frame: pd.DataFrame, root: str | Path, *, vendor: str,
+                        query_params: dict[str, Any] | None = None,
+                        source_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Persist a complete immutable panel, independent of mutable provider caches.
+
+    Publish a complete directory atomically; competing writers reuse the verified
+    winner. All vintage, membership and corporate-action input columns are retained.
+    """
+    snapshot = build_market_frame_snapshot(frame, vendor=vendor, query_params=query_params,
+                                           source_metadata=source_metadata)
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    destination = root / snapshot["snapshot_id"]
+    if destination.exists():
+        return load_frozen_market_frame(snapshot["snapshot_id"], root).attrs["data_snapshot"]
+    with tempfile.TemporaryDirectory(prefix=".snapshot-", dir=root) as temp:
+        staging = Path(temp) / "complete"
+        staging.mkdir()
+        data_path = staging / "market.parquet"
+        stored = frame.copy()
+        stored.attrs = {}
+        stored.to_parquet(data_path, index=False)
+        snapshot.update(replayable=True, files={"market.parquet": _file_hash(data_path)})
+        (staging / "manifest.json").write_text(json.dumps(snapshot, ensure_ascii=False, sort_keys=True,
+                                                         default=str), encoding="utf-8")
+        try:
+            os.rename(staging, destination)
+        except OSError:
+            if not destination.exists():
+                raise
+    return load_frozen_market_frame(snapshot["snapshot_id"], root).attrs["data_snapshot"]
+
+
+def load_frozen_market_frame(snapshot_id: str, root: str | Path) -> pd.DataFrame:
+    """Load and verify saved file bytes and logical identity before use."""
+    if not re.fullmatch(r"ds_[0-9a-f]{32}", snapshot_id):
+        raise ValueError("invalid snapshot_id")
+    directory = Path(root) / snapshot_id
+    snapshot = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    data_path = directory / "market.parquet"
+    if snapshot.get("snapshot_id") != snapshot_id or snapshot.get("files", {}).get("market.parquet") != _file_hash(data_path):
+        raise ValueError("snapshot file content hash mismatch")
+    frame = pd.read_parquet(data_path)
+    if snapshot.get("content_hash") != _frame_content_hash(frame):
+        raise ValueError("snapshot logical content hash mismatch")
+    return attach_data_snapshot(frame, snapshot)
 
 
 def _canonical_json_value(value: Any) -> Any:

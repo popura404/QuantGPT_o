@@ -1,6 +1,7 @@
 """Tests for quantgpt.fundamental_data — variable registry, detection, and quarter logic."""
 
 import pandas as pd
+import pytest
 
 from quantgpt import fundamental_data
 from quantgpt.fundamental_data import (
@@ -10,10 +11,11 @@ from quantgpt.fundamental_data import (
     FundamentalDataFetcher,
     _quarter_range,
     detect_fundamental_vars,
-    enrich_with_fundamentals_rq,
     enrich_market_data,
+    enrich_with_fundamentals_rq,
     get_needed_apis,
 )
+from quantgpt.pit_data import DataCapabilityError
 
 # ─── Variable registry consistency ───────────────────────────────
 
@@ -162,15 +164,16 @@ class TestEnrichMarketData:
         result = enrich_market_data(df, set(), ["sh.600519"], "2024-01-01", "2024-12-31")
         assert result is df
 
-    def test_missing_column_graceful(self):
+    def test_missing_column_is_a_structured_capability_failure(self, monkeypatch):
+        monkeypatch.setattr(fundamental_data, "_load_factor_cache", lambda *args: None)
+        monkeypatch.setattr(FundamentalDataFetcher, "_load_cache", lambda *args: None)
         df = pd.DataFrame({
             "trade_date": pd.to_datetime(["2024-01-02"]),
             "stock_code": ["sh.600519"],
             "close": [1800.0],
         })
-        result = enrich_market_data(df, {"roe"}, ["sh.600519"], "2024-01-01", "2024-01-31")
-        assert result is not None
-        assert len(result) >= 0
+        with pytest.raises(DataCapabilityError, match="roe"):
+            enrich_market_data(df, {"roe"}, ["sh.600519"], "2024-01-01", "2024-01-31", allow_remote_fetch=False)
 
     def test_align_to_daily_normalizes_datetime_units(self):
         market_df = pd.DataFrame({
@@ -225,14 +228,7 @@ class TestEnrichMarketData:
             "close": [1800.0],
         })
 
-        result = enrich_market_data(
-            market_df,
-            {"roe"},
-            ["sh.600519"],
-            "2024-01-01",
-            "2024-01-31",
-            allow_remote_fetch=False,
-        )
-
-        assert result is not None
-        assert "roe" not in result.columns
+        with pytest.raises(DataCapabilityError, match="roe"):
+            enrich_market_data(
+                market_df, {"roe"}, ["sh.600519"], "2024-01-01", "2024-01-31", allow_remote_fetch=False,
+            )

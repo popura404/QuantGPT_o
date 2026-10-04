@@ -130,6 +130,7 @@ def run_data_quality_gate(
         "dropped_stocks": 0,
         "adjustment": config.adjustment,
         "data_quality_scope": "full_requested_sample",
+        "eligibility_scope": "decision_time_history",
         "issues": [],
         "warnings": [],
     }
@@ -214,7 +215,7 @@ def run_data_quality_gate(
             invalid_masks.append(bad_amount)
 
     close_for_returns = df["close"].where(~bad_price)
-    decimal_ret = close_for_returns.groupby(df["stock_code"]).pct_change()
+    decimal_ret = close_for_returns.groupby(df["stock_code"]).pct_change(fill_method=None)
     bad_extreme = decimal_ret.abs() > config.max_abs_daily_ret
     bad_extreme = bad_extreme.fillna(False)
     if int(bad_extreme.sum()) > 0:
@@ -268,8 +269,10 @@ def run_data_quality_gate(
         cleaned = df.copy()
     else:
         cleaned = df[~row_invalid].copy()
-        if high_missing_stocks:
-            cleaned = cleaned[~cleaned["stock_code"].isin(high_missing_stocks)].copy()
+        # The full-sample report is diagnostic, never a historical universe filter.
+        # Only the prefix available at each decision can determine eligibility.
+        eligibility = historical_data_eligibility(df, config.max_missing_ratio_per_stock)
+        cleaned = cleaned[eligibility.reindex(cleaned.index, fill_value=False)].copy()
 
     report["after_rows"] = int(len(cleaned))
     report["dropped_rows"] = int(before_rows - len(cleaned))
@@ -282,3 +285,26 @@ def run_data_quality_gate(
             if isinstance(value, np.generic):
                 issue[key] = value.item()
     return cleaned, report
+
+
+def historical_data_eligibility(frame: pd.DataFrame, max_missing_ratio: float = 0.2) -> pd.Series:
+    """Use only observed session prefixes; future delisting cannot erase past rows.
+
+    Counting starts at the first observed session, not at an inferred listing date.
+    This is a data-availability filter, not a claim of historical universe coverage.
+    A provider calendar is needed to detect sessions missing from the entire panel.
+    """
+    if not 0 <= max_missing_ratio <= 1:
+        raise ValueError("max_missing_ratio must be between 0 and 1")
+    if frame.empty:
+        return pd.Series(True, index=frame.index, dtype=bool)
+    dates = pd.to_datetime(frame["trade_date"])
+    sessions = pd.Index(dates.unique()).sort_values()
+    positions = pd.Series(sessions.get_indexer(dates), index=frame.index)
+    first = positions.groupby(frame["stock_code"]).transform("min")
+    ordered = frame.assign(_session_position=positions).sort_values(["stock_code", "trade_date"])
+    if ordered.duplicated(["stock_code", "trade_date"]).any():
+        raise ValueError("duplicate security/session rows")
+    observed = (ordered.groupby("stock_code").cumcount() + 1).reindex(frame.index)
+    missing_ratio = 1 - observed / (positions - first + 1)
+    return (missing_ratio <= max_missing_ratio).astype(bool)
