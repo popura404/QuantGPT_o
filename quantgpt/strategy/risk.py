@@ -71,7 +71,7 @@ def apply_risk_rules(target_weights: pd.DataFrame, spec: StrategySpecV0 | Strate
                 "cash_weight": cash_weight,
             })
 
-        requested_turnover = 0.0 if previous is None else _turnover(previous, clipped)
+        requested_turnover = _turnover(previous or {}, clipped)
         skipped = False
         effective = clipped
         effective_cash = cash_weight

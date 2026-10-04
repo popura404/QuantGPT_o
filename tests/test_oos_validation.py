@@ -122,7 +122,7 @@ def test_run_factor_oos_backtest_uses_train_fixed_direction_and_public_payload(o
     assert oos["direction_basis"] == "cost_adjusted_group_mean"
     assert oos["fixed_direction"] == -1
     assert oos["valid"]["metrics"]["direction_adjusted_rank_ic_mean"] > 0
-    assert oos["test"]["metrics"]["turnover_source"] == "selected_group_holdings_eval_mask"
+    assert oos["test"]["metrics"]["turnover_source"] == "ledger_traded_notional_over_two_nav_daily"
     assert "valid_sharpe_decay" in oos["decay"]
 
     public = to_public_oos_result(oos)

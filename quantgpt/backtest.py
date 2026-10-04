@@ -16,6 +16,8 @@ import pandas as pd
 from scipy import stats as sp_stats
 
 from .expression_parser import parse_expression
+from .research.contracts import SEMANTICS_VERSION, SimulationConfigV1
+from .research.ledger import simulate_target_weights
 from .wq_simulate import wq_simulate
 
 logger = logging.getLogger(__name__)
@@ -78,19 +80,23 @@ def build_rebalance_dates(
     trade_dates,
     holding_period: int,
     rebalance_anchor: str | None = None,
+    calendar_sessions=None,
 ) -> list:
-    """Build rebalance dates using the existing anchor-offset semantics."""
-    all_dates = sorted(pd.Series(trade_dates).dropna().unique())
-    if rebalance_anchor and holding_period > 1:
-        anchor_ts = pd.Timestamp(rebalance_anchor)
-        first_date = all_dates[0]
-        if anchor_ts <= first_date:
-            bdays_gap = len(pd.bdate_range(anchor_ts, first_date, inclusive="left"))
-            offset = bdays_gap % holding_period
-        else:
-            offset = 0
-        return all_dates[offset::holding_period]
-    return all_dates[::holding_period]
+    """Stride a shared session calendar, then intersect the requested window."""
+    if holding_period < 1:
+        raise ValueError("holding_period must be positive")
+    all_dates = pd.DatetimeIndex(sorted(pd.to_datetime(pd.Series(trade_dates).dropna().unique())))
+    if all_dates.empty:
+        return []
+    calendar = pd.DatetimeIndex(sorted(pd.to_datetime(pd.Series(calendar_sessions).dropna().unique()))) if calendar_sessions is not None else all_dates
+    anchor = pd.Timestamp(rebalance_anchor) if rebalance_anchor else calendar[0]
+    if anchor not in calendar:
+        raise ValueError("CALENDAR_CONTEXT_REQUIRED: rebalance anchor must belong to the complete session sequence")
+    if not all_dates.isin(calendar).all():
+        raise ValueError("CALENDAR_CONTEXT_REQUIRED: input sessions are absent from the shared calendar")
+    anchor_index = int(np.flatnonzero(calendar == anchor)[0])
+    selected = calendar[np.arange(len(calendar)) % holding_period == anchor_index % holding_period]
+    return list(selected.intersection(all_dates))
 
 
 def assign_factor_quantiles(
@@ -99,33 +105,21 @@ def assign_factor_quantiles(
     n_groups: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list]:
     """Assign factor quantile groups with T+1 rebalance effectiveness."""
-    effective_groups = n_groups
-    use_value_grouping = False
-    distinct_counts = work.groupby("trade_date")["factor_value"].nunique()
-    median_distinct = int(distinct_counts.median()) if len(distinct_counts) > 0 else 0
-
-    if median_distinct < n_groups and median_distinct >= 2:
-        effective_groups = median_distinct
-        use_value_grouping = True
-        logger.warning(
-            f"Factor has only ~{median_distinct} distinct values per date, "
-            f"reducing groups from {n_groups} to {effective_groups}, using value-based grouping"
-        )
-
     def _assign_group(vals: pd.Series) -> pd.Series:
-        if use_value_grouping:
-            sorted_uniques = sorted(vals.dropna().unique())
-            if len(sorted_uniques) < 2:
-                return pd.Series(np.nan, index=vals.index)
-            mapping = {v: i for i, v in enumerate(sorted_uniques)}
+        # Same-date grouping must not inspect later cross-sections to choose bins.
+        distinct = vals.nunique()
+        if distinct < 2:
+            return pd.Series(np.nan, index=vals.index)
+        if distinct < n_groups:
+            mapping = {value: index for index, value in enumerate(sorted(vals.dropna().unique()))}
             return vals.map(mapping)
         try:
             ranks = vals.rank(method="first")
-            return pd.cut(ranks, bins=effective_groups, labels=False)
+            return pd.cut(ranks, bins=n_groups, labels=False)
         except ValueError:
             return pd.Series(np.nan, index=vals.index)
 
-    rebal_data = work[work["trade_date"].isin(rebalance_dates)].copy()
+    rebal_data = work[work["trade_date"].isin(rebalance_dates)].sort_values(["trade_date", "stock_code"]).copy()
     rebal_data["_group"] = rebal_data.groupby("trade_date")["factor_value"].transform(_assign_group)
     rebal_data = rebal_data.dropna(subset=["_group"])
     rebal_data["_group"] = rebal_data["_group"].astype(int)
@@ -205,6 +199,9 @@ def run_factor_backtest(
     rebalance_anchor: str | None = None,
     direction_mode: str = "auto_full",
     fixed_direction: int | None = None,
+    simulation_config: SimulationConfigV1 | None = None,
+    evaluation_start: str | None = None,
+    evaluation_end: str | None = None,
 ) -> dict:
     """Run quantile group backtest on a factor expression (long-only).
 
@@ -244,6 +241,12 @@ def run_factor_backtest(
     market_df["trade_date"] = pd.to_datetime(market_df["trade_date"])
     market_df = market_df.sort_values(["stock_code", "trade_date"])
     market_df["factor_value"] = compute_factor_values(market_df, expression, precomputed_factor)
+    market_df["factor_value"] = market_df["factor_value"].replace([np.inf, -np.inf], np.nan)
+    if expression is not None and precomputed_factor is None:
+        from .expression_parser import infer_expression_lookback
+        lookback = infer_expression_lookback(expression)
+        observations = market_df.groupby("stock_code").cumcount() + 1
+        market_df.loc[observations < lookback.required_observations, "factor_value"] = np.nan
 
     # Save raw factor values for IC computation (before neutralization).
     # IC should be computed on raw values (industry standard), while group
@@ -261,13 +264,14 @@ def run_factor_backtest(
         )
 
     # 3. Compute daily returns from close prices (T-1 close → T close)
-    market_df["daily_ret"] = market_df.groupby("stock_code")["close"].pct_change()
+    market_df["daily_ret"] = market_df.groupby("stock_code")["close"].pct_change(fill_method=None)
 
     # 4. Identify rebalance dates
     rebalance_dates = build_rebalance_dates(
         market_df["trade_date"].unique(),
         holding_period,
         rebalance_anchor,
+        calendar_sessions=market_df.attrs.get("calendar_sessions"),
     )
 
     # 5. On each rebalance date, assign groups based on factor value
@@ -277,35 +281,29 @@ def run_factor_backtest(
     ).copy()
     work, rebal_data, rebalance_dates_set = assign_factor_quantiles(work, rebalance_dates, n_groups)
 
-    # 6. Daily equal-weighted group returns
-    daily_group_ret = (
-        work.groupby(["trade_date", "_group"])["daily_ret"]
-        .mean()
-        .unstack(fill_value=0)
+    # 6. Each group is a quantity/cash book with open fills and explicit fees.
+    simulation = simulation_config or SimulationConfigV1(
+        rebalance_anchor_session=pd.Timestamp(rebalance_anchor or market_df["trade_date"].min()).date(),
+        fees_bps=cost_rate * 10000,
+        rebalance_every_sessions=holding_period,
+        currency="CNY",
     )
-
-    actual_groups = sorted(daily_group_ret.columns)
-
-    # 6a. Transaction cost deduction
-    cost_adjusted = False
-    total_cost_drag = 0.0
-    if cost_rate > 0:
-        per_group_turnover = _calc_per_group_turnover(work, rebalance_dates_set, len(actual_groups))
-        # For each group, on the first trading day after each rebalance, deduct turnover * cost_rate
-        for g in actual_groups:
-            if g not in per_group_turnover or per_group_turnover[g].empty:
-                continue
-            for rebal_date, turnover_val in per_group_turnover[g].items():
-                if turnover_val <= 0:
-                    continue
-                cost = turnover_val * cost_rate
-                # Find the first trading day AFTER rebal_date in daily_group_ret
-                future_dates = daily_group_ret.index[daily_group_ret.index > rebal_date]
-                if len(future_dates) > 0:
-                    first_day = future_dates[0]
-                    daily_group_ret.loc[first_day, g] -= cost
-                    total_cost_drag += cost
-        cost_adjusted = True
+    if simulation.evaluation_start_state == "carry_forward":
+        raise ValueError("CAPABILITY_BLOCKER: factor groups require separate carry-forward state per group")
+    actual_groups = sorted(rebal_data["_group"].unique())
+    ledgers = {}
+    first_fill = market_df.loc[market_df["trade_date"] > min(rebalance_dates_set), "trade_date"].min()
+    for group_id in actual_groups:
+        targets = rebal_data.loc[rebal_data["_group"] == group_id, ["trade_date", "stock_code"]].copy()
+        targets["target_weight"] = 1.0 / targets.groupby("trade_date")["stock_code"].transform("count")
+        ledgers[group_id] = simulate_target_weights(
+            market_df, targets, simulation,
+            evaluation_start=evaluation_start or first_fill,
+            evaluation_end=evaluation_end,
+        )
+    daily_group_ret = pd.DataFrame({group: ledger.returns for group, ledger in ledgers.items()})
+    cost_adjusted = simulation.fees_bps + simulation.slippage_bps > 0
+    total_cost_drag = sum(float(ledger.costs["cost"].sum()) for ledger in ledgers.values())
 
     top_g = actual_groups[-1]
     bot_g = actual_groups[0]
@@ -341,7 +339,12 @@ def run_factor_backtest(
     strategy_series.index = pd.to_datetime(strategy_series.index)
 
     # Also compute long-short for metrics (informational only)
-    ls_series = daily_group_ret[top_g] - daily_group_ret[bot_g]
+    # Informational 50% long / 50% short sleeve return: normalize gross exposure
+    # to one and subtract BOTH sleeves' costs, never subtract a net short return.
+    top_book, bottom_book = ledgers[top_g], ledgers[bot_g]
+    top_cost = top_book.costs.set_index("trade_date")["cost"]
+    bottom_cost = bottom_book.costs.set_index("trade_date")["cost"]
+    ls_series = (top_book.gross_returns - bottom_book.gross_returns - top_cost - bottom_cost) / 2
 
     # 8. Metrics
     annualize = np.sqrt(trading_days_per_year)
@@ -365,7 +368,9 @@ def run_factor_backtest(
     # Neutralization is for portfolio construction only, not IC measurement.
     # Primary IC metric is Rank IC (Spearman) — more robust to outliers,
     # consistent with industry convention (Barra, etc.).
-    work_ic = work.copy()
+    work_ic = market_df[["trade_date", "stock_code", "close", "factor_value"]].copy()
+    if evaluation_end is not None:
+        work_ic = work_ic[work_ic["trade_date"] <= pd.Timestamp(evaluation_end)]
     work_ic["factor_value"] = raw_factor_for_ic.reindex(work_ic.index)
     pearson_ic_series, rank_ic_series = _calc_ic_series(work_ic, holding_period)
     direction_adjusted_ic_series = pearson_ic_series * effective_direction
@@ -386,9 +391,9 @@ def run_factor_backtest(
     )
 
     # 10. Turnover rate (daily, WQ BRAIN-aligned)
-    turnover = _calc_turnover(work, top_g, rebalance_dates_set, holding_period)
+    turnover = float(ledgers[top_g].turnover["turnover"].mean())
     selected_group_holdings = _calc_group_holdings(work, top_g, rebalance_dates_set)
-    turnover_by_rebalance = _calc_turnover_by_rebalance(selected_group_holdings, holding_period)
+    turnover_by_rebalance = ledgers[top_g].turnover.set_index("trade_date")["turnover"]
 
     group_ret_summary = {}
     for g in actual_groups:
@@ -479,10 +484,16 @@ def run_factor_backtest(
         "ic_ir": ic_ir,
         "ic_win_rate": ic_win_rate,
         "turnover": turnover,
+        "turnover_source": "ledger_traded_notional_over_two_nav_daily",
         "wq_fitness": round(wq_fitness, 4),
         "wq_brain": wq_brain,
         "cost_adjusted": cost_adjusted,
         "cost_rate": cost_rate,
+        "semantics_version": SEMANTICS_VERSION,
+        "simulation_config": simulation.model_dump(mode="json"),
+        "long_short_gross_exposure": 1.0,
+        "long_short_scope": "informational_unfinanced_spread; not an executable short strategy",
+        "_group_ledgers": ledgers,
         "holding_period": holding_period,
         "total_cost_drag": round(total_cost_drag, 6),
         "_factor_df": factor_df,
@@ -498,21 +509,17 @@ def run_factor_backtest(
 
 
 def _safe_apply_factor(df: pd.DataFrame, factor_func) -> pd.Series:
-    """Apply factor function to a DataFrame, returning NaN on error."""
-    try:
-        result = factor_func(df)
-        if isinstance(result, pd.Series):
-            result.index = df.index
-        return result
-    except Exception as e:
-        logger.warning(f"Factor computation failed: {e}")
-        return pd.Series(np.nan, index=df.index)
+    """Apply with row alignment; capability/parse errors must fail the run."""
+    result = factor_func(df)
+    if isinstance(result, pd.Series):
+        return result.reindex(df.index)
+    return pd.Series(result, index=df.index, dtype=float)
 
 
 def _calc_max_drawdown(returns: pd.Series) -> float:
     """Calculate max drawdown from a return series."""
     cumulative = (1 + returns).cumprod()
-    peak = cumulative.cummax()
+    peak = cumulative.cummax().clip(lower=1.0)
     drawdown = (cumulative - peak) / peak
     return float(drawdown.min()) if len(drawdown) > 0 else 0.0
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pandas as pd
 
 from .spec import StrategySpecV0, StrategySpecV1
@@ -18,7 +19,8 @@ def build_rank_threshold_signals(factor_frame: pd.DataFrame, spec: StrategySpecV
 
     direction = spec.factors[0].direction if spec.schema_version == "strategy_spec/v0" else "higher_is_better"
     frames = []
-    for trade_date, group in factor_frame.dropna(subset=["factor_value"]).groupby("trade_date", sort=True):
+    finite_frame = factor_frame[np.isfinite(factor_frame["factor_value"])].copy()
+    for trade_date, group in finite_frame.groupby("trade_date", sort=True):
         ascending = direction == "lower_is_better"
         ordered = group.sort_values(["factor_value", "stock_code"], ascending=[ascending, True]).copy()
         count = len(ordered)

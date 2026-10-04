@@ -226,7 +226,7 @@ class SimulationConfigV1(ContractModel):
     slippage_bps: float = Field(default=0.0, ge=0, le=1000)
     fee_basis: Literal["absolute_buy_and_sell_notional"] = "absolute_buy_and_sell_notional"
     charge_initial_entry: Literal[True] = True
-    cash_rate: Literal[0.0] = 0.0
+    cash_rate: float = Field(default=0.0, ge=0.0, le=0.0)
     allow_short: Literal[False] = False
     allow_leverage: Literal[False] = False
     rebalance_every_sessions: int = Field(default=1, ge=1)

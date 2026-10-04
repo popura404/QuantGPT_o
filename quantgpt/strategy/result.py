@@ -35,6 +35,7 @@ class StrategyBacktestResult:
     oos_result: dict | None = None
     oos_summary: dict | None = None
     oos_score: dict | None = None
+    benchmark_returns: pd.Series | None = None
 
     def to_summary(self) -> dict:
         payload = {

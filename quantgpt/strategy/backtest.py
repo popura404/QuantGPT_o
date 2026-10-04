@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import cast
+from typing import Literal, cast
 
 import numpy as np
 import pandas as pd
@@ -14,7 +14,9 @@ from ..data_quality import DataQualityConfig, run_data_quality_gate
 from ..data_snapshots import ensure_market_frame_snapshot, snapshot_result_fields
 from ..fundamental_data import detect_fundamental_vars, enrich_market_data
 from ..neutralize import neutralize_factor
-from ..validation.oos_score import compute_oos_score
+from ..research.contracts import SEMANTICS_VERSION, SimulationConfigV1
+from ..research.ledger import simulate_target_weights
+from ..validation.oos_score import compute_oos_score, compute_oos_selection_score
 from ..validation.split import OOSConfig, split_by_dates
 from .adapters import get_adapter
 from .diagnosis import diagnose_strategy_result
@@ -39,6 +41,8 @@ class StrategyBacktestRequest(BaseModel):
     rebalance_anchor: str | None = None
     neutralize_industry: bool = False
     neutralize_cap: bool = False
+    simulation_config: SimulationConfigV1 | None = None
+    validation_stage: Literal["selection", "final"] = "selection"
 
     @field_validator("start_date", "end_date", "universe_date", "rebalance_anchor")
     @classmethod
@@ -52,6 +56,14 @@ class StrategyBacktestRequest(BaseModel):
     def validate_date_order(self):
         if self.start_date >= self.end_date:
             raise ValueError("start_date must be earlier than end_date")
+        if self.simulation_config is not None:
+            simulation = self.simulation_config
+            if simulation.rebalance_every_sessions != self.spec.portfolio_rule.rebalance_period:
+                raise ValueError("simulation_config and StrategySpec rebalance periods must match")
+            if simulation.fees_bps != self.spec.cost_model.bps:
+                raise ValueError("simulation_config and StrategySpec fees_bps must match")
+            if self.rebalance_anchor is not None and pd.Timestamp(self.rebalance_anchor).date() != simulation.rebalance_anchor_session:
+                raise ValueError("simulation_config and request rebalance anchors must match")
         return self
 
 
@@ -59,14 +71,20 @@ def run_strategy_backtest(
     request: StrategyBacktestRequest | dict,
     market_df: pd.DataFrame | None = None,
     stock_codes: list[str] | None = None,
+    benchmark_returns: pd.Series | None = None,
+    *,
+    final_authorized: bool = False,
 ) -> StrategyBacktestResult:
     req = request if isinstance(request, StrategyBacktestRequest) else StrategyBacktestRequest.model_validate(request)
+    if req.validation_stage == "final" and not final_authorized:
+        raise ValueError("FINAL_AUTHORIZATION_REQUIRED: use a registered project evaluation")
     validation = validate_strategy_spec(req.spec)
     if not validation.is_valid:
         raise StrategyValidationError(validation.issues)
 
     adapter = get_adapter(req.spec.market)
-    if market_df is None:
+    fetched_from_adapter = market_df is None
+    if fetched_from_adapter:
         market_df, stock_codes = adapter.fetch_market_data(
             req.spec.universe,
             req.start_date,
@@ -75,29 +93,31 @@ def run_strategy_backtest(
         )
     if market_df is None or len(market_df) == 0:
         raise ValueError("No market data available for strategy backtest")
-    market_frame = cast(pd.DataFrame, market_df)
+    market_frame = cast(pd.DataFrame, market_df).copy()
+    if "security_id" in market_frame:
+        market_frame["stock_code"] = market_frame["security_id"]
+    if "session" in market_frame:
+        market_frame["trade_date"] = market_frame["session"]
+    market_frame["trade_date"] = pd.to_datetime(market_frame["trade_date"])
+    if "calendar_sessions" not in market_frame.attrs:
+        market_frame.attrs["calendar_sessions"] = sorted(market_frame["trade_date"].unique())
     stock_codes = stock_codes or sorted(market_frame["stock_code"].dropna().astype(str).unique().tolist())
-    data_provenance = _strategy_data_provenance_fields(
-        market_frame,
-        universe=req.spec.universe,
-        market=req.spec.market,
-        start_date=req.start_date,
-        end_date=req.end_date,
-        stock_codes=stock_codes,
-    )
-
     data_quality_report = None
     dq_config = _data_quality_config_from_spec(req.spec)
     if dq_config is not None and dq_config.enabled:
-        market_frame, data_quality_report = run_data_quality_gate(market_frame, dq_config)
-    _annotate_data_provenance(data_quality_report, data_provenance)
+        eligible_frame, data_quality_report = run_data_quality_gate(market_frame, dq_config)
+        eligible_keys = pd.MultiIndex.from_frame(eligible_frame[["stock_code", "trade_date"]])
+        market_frame["_research_eligible"] = pd.MultiIndex.from_frame(market_frame[["stock_code", "trade_date"]]).isin(eligible_keys)
 
     expressions = [factor.expression for factor in req.spec.factors]
     fund_vars = set()
     for expression in expressions:
         fund_vars.update(detect_fundamental_vars(expression))
-    if fund_vars:
-        market_frame = enrich_market_data(market_frame, fund_vars, stock_codes, req.start_date, req.end_date)
+    missing_fund_vars = fund_vars - set(market_frame.columns)
+    if missing_fund_vars:
+        if market_frame.attrs.get("frozen_research_input"):
+            raise ValueError(f"FROZEN_FIELD_UNAVAILABLE: {sorted(missing_fund_vars)}")
+        market_frame = enrich_market_data(market_frame, missing_fund_vars, stock_codes, req.start_date, req.end_date)
         if data_quality_report is not None:
             missing_fundamentals = [
                 name for name in fund_vars
@@ -113,21 +133,70 @@ def run_strategy_backtest(
     market_frame["trade_date"] = pd.to_datetime(market_frame["trade_date"])
     market_frame = market_frame.sort_values(["stock_code", "trade_date"])
     if "daily_ret" not in market_frame.columns:
-        market_frame["daily_ret"] = market_frame.groupby("stock_code")["close"].pct_change()
+        market_frame["daily_ret"] = market_frame.groupby("stock_code")["close"].pct_change(fill_method=None)
+
+    # Freeze all consumed fields after financial enrichment, not the price-only precursor.
+    data_provenance = _strategy_data_provenance_fields(
+        market_frame, universe=req.spec.universe, market=req.spec.market,
+        start_date=req.start_date, end_date=req.end_date, stock_codes=stock_codes,
+    )
+    _annotate_data_provenance(data_quality_report, data_provenance)
 
     if _strategy_oos_enabled(req.spec):
-        return _run_strategy_oos_backtest(req, market_frame, stock_codes, data_quality_report, data_provenance)
-
-    result = _run_strategy_single_pass(req, market_frame)
+        result = _run_strategy_oos_backtest(req, market_frame, stock_codes, data_quality_report, data_provenance)
+    else:
+        result = _run_strategy_single_pass(req, market_frame)
     if data_quality_report is not None:
         result.data_quality = data_quality_report
     _apply_result_data_provenance(result, data_provenance)
+    if benchmark_returns is None and fetched_from_adapter:
+        try:
+            benchmark_returns = adapter.fetch_benchmark_returns(req.benchmark, req.start_date, req.end_date)
+        except Exception as exc:
+            result.diagnostics["benchmark_blocker"] = {"error_code": "BENCHMARK_UNAVAILABLE", "message": str(exc)}
+    _attach_benchmark(result, benchmark_returns)
     return result
+
+
+def _attach_benchmark(result: StrategyBacktestResult, benchmark: pd.Series | None) -> None:
+    if benchmark is None or benchmark.empty:
+        result.diagnostics["benchmark_status"] = "unavailable"
+        return
+    series = benchmark.copy()
+    series.index = pd.to_datetime(series.index)
+    if series.index.has_duplicates:
+        result.diagnostics["benchmark_status"] = "blocked_duplicate_sessions"
+        return
+    aligned = series.reindex(result.strategy_returns.index)
+    result.benchmark_returns = aligned
+    if not np.isfinite(aligned.to_numpy(dtype=float)).all():
+        result.diagnostics["benchmark_status"] = "blocked_incomplete_coverage"
+        return
+    result.diagnostics["benchmark_return_basis"] = benchmark.attrs.get("return_type", "unknown")
+    result.diagnostics["benchmark_currency"] = benchmark.attrs.get("currency", "unknown")
+    if benchmark.attrs.get("return_type") != "total_return":
+        result.diagnostics["benchmark_status"] = "unknown_return_basis"
+        return
+    expected_currency = result.diagnostics["simulation_config"]["currency"]
+    if benchmark.attrs.get("currency") != expected_currency:
+        result.diagnostics["benchmark_status"] = "blocked_currency_mismatch"
+        return
+    if not benchmark.attrs.get("dividend_reinvestment"):
+        result.diagnostics["benchmark_status"] = "unknown_reinvestment_policy"
+        return
+    if result.diagnostics["simulation_config"]["benchmark_cost_bps"] != 0:
+        result.diagnostics["benchmark_status"] = "blocked_unimplemented_benchmark_cost_model"
+        return
+    result.diagnostics["benchmark_status"] = "aligned_total_return"
+    result.diagnostics["benchmark_dividend_reinvestment"] = benchmark.attrs.get("dividend_reinvestment", "unknown")
+    result.metrics["benchmark_total_return"] = float((1 + aligned).prod() - 1)
+    result.metrics["excess_total_return"] = result.metrics["total_return"] - result.metrics["benchmark_total_return"]
 
 
 def _run_strategy_single_pass(
     req: StrategyBacktestRequest,
     market_frame: pd.DataFrame,
+    evaluation_window: dict | None = None,
 ) -> StrategyBacktestResult:
     market_frame, raw_factor_for_ic = _compute_strategy_factor_values(
         market_frame,
@@ -139,36 +208,71 @@ def _run_strategy_single_pass(
     all_rebalance_dates = build_rebalance_dates(
         market_frame["trade_date"].unique(),
         req.spec.portfolio_rule.rebalance_period,
-        req.rebalance_anchor,
+        str(req.simulation_config.rebalance_anchor_session) if req.simulation_config else req.rebalance_anchor,
+        calendar_sessions=market_frame.attrs.get("calendar_sessions"),
     )
-    if len(all_rebalance_dates) < 2:
-        raise ValueError("Not enough rebalance dates for strategy backtest")
-
-    factor_frame = market_frame[["trade_date", "stock_code", "factor_value", "daily_ret", "close"]].dropna(
-        subset=["factor_value"]
-    ).copy()
+    factor_frame = market_frame[["trade_date", "stock_code", "factor_value", "daily_ret", "close"]].copy()
     rebalance_frame = factor_frame[factor_frame["trade_date"].isin(all_rebalance_dates)].copy()
     signals = build_rank_threshold_signals(rebalance_frame, req.spec)
     raw_targets = build_strategy_portfolio(signals, req.spec)
     risk_result = apply_risk_rules(raw_targets, req.spec)
 
-    strategy_returns, cost_by_rebalance = _calculate_strategy_returns(
-        factor_frame,
-        risk_result.target_weights,
-        risk_result.turnover_by_rebalance,
-        req.spec.cost_model.bps,
+    simulation = req.simulation_config or SimulationConfigV1(
+        rebalance_anchor_session=pd.Timestamp(req.rebalance_anchor or market_frame["trade_date"].min()).date(),
+        fees_bps=req.spec.cost_model.bps,
+        rebalance_every_sessions=req.spec.portfolio_rule.rebalance_period,
+        currency="USD" if "us" in req.spec.market else "CNY",
     )
-    latest_holdings = _latest_holdings(risk_result.target_weights, signals)
+    # Turnover is checked against actual drifted holdings by the ledger. Static
+    # target-to-target risk checks are useful previews but cannot schedule fills.
+    ledger_targets = raw_targets.copy()
+    if not ledger_targets.empty:
+        ledger_targets["target_weight"] = ledger_targets["target_weight"].clip(upper=req.spec.risk_rules.max_asset_weight)
+    start = pd.Timestamp(evaluation_window["start"] if evaluation_window else req.start_date)
+    end = pd.Timestamp(evaluation_window["end"] if evaluation_window else req.end_date)
+    if evaluation_window is None and simulation.evaluation_start_state == "fresh_cash" and not ledger_targets.empty:
+        first_signal = pd.to_datetime(ledger_targets["trade_date"]).min()
+        future = market_frame.loc[market_frame["trade_date"] > first_signal, "trade_date"]
+        if not future.empty:
+            start = max(start, future.min())
+    ledger = simulate_target_weights(market_frame, ledger_targets, simulation, evaluation_start=start, evaluation_end=end,
+                                     max_turnover=req.spec.risk_rules.max_turnover)
+    strategy_returns = ledger.returns
+    cost_by_rebalance = ledger.costs
+    risk_result.turnover_by_rebalance = ledger.turnover
+    risk_result.target_weights = ledger_targets
+    risk_result.cash_weights = ledger.states[["trade_date"]].copy()
+    risk_result.cash_weights["cash_weight"] = ledger.states["cash"] / ledger.states["nav"]
+    risk_result.risk_logs = [row for row in risk_result.risk_logs if row["code"] != "TURNOVER_LIMIT_REBALANCE_SKIPPED"]
+    risk_result.risk_logs.extend({"trade_date": pd.Timestamp(row.trade_date).strftime("%Y-%m-%d"), "code": "LEDGER_REBALANCE_SKIPPED"}
+                                for row in ledger.states[ledger.states["skipped"]].itertuples(index=False))
+    latest_holdings = []
+    if not ledger.states.empty:
+        last_state = ledger.states.iloc[-1]
+        latest_date = pd.Timestamp(last_state["trade_date"])
+        last_prices = market_frame[market_frame["trade_date"] == latest_date].set_index("stock_code")["close"]
+        latest_holdings = [{"trade_date": latest_date.strftime("%Y-%m-%d"), "stock_code": stock,
+                            "quantity": quantity, "target_weight": quantity * float(last_prices.loc[stock]) / last_state["nav"],
+                            "factor_value": None, "score": None}
+                           for stock, quantity in last_state["positions"].items()]
 
     ic_frame = factor_frame.copy()
     ic_frame["factor_value"] = raw_factor_for_ic.reindex(ic_frame.index)
+    ic_frame = ic_frame[ic_frame["trade_date"] <= end]
     _, rank_ic_series = _calc_ic_series(ic_frame, req.spec.portfolio_rule.rebalance_period)
+    if not rank_ic_series.empty:
+        rank_ic_series = rank_ic_series[(rank_ic_series.index >= start) & (rank_ic_series.index <= end)]
     metrics = _strategy_metrics(strategy_returns, risk_result.turnover_by_rebalance, rank_ic_series)
 
     diagnostics = {
         "factor_flipped_observed": False,
         "strategy_anti_overfit": "not_run",
         "strategy_rolling_validation": "not_run",
+        "semantics_version": SEMANTICS_VERSION,
+        "simulation_config": simulation.model_dump(mode="json"),
+        "ledger": {**ledger.metadata, "trade_count": len(ledger.trades), "final_nav": float(ledger.states.iloc[-1]["nav"]) if not ledger.states.empty else simulation.initial_cash},
+        "ic_scope": "direction_adjusted_composite_signal",
+        "benchmark_status": "unavailable_for_supplied_fixture",
     }
     result = StrategyBacktestResult(
         spec=req.spec,
@@ -185,7 +289,7 @@ def _run_strategy_single_pass(
         metrics=metrics,
         validation_issues=[],
         diagnostics=diagnostics,
-        factor_frame=factor_frame[["trade_date", "stock_code", "factor_value", "daily_ret", "close"]].copy(),
+        factor_frame=ic_frame[["trade_date", "stock_code", "factor_value", "daily_ret", "close"]].copy(),
     )
     if req.spec.validation.run_strategy_anti_overfit:
         diagnostics["strategy_anti_overfit"] = run_strategy_anti_overfit(result)
@@ -295,8 +399,9 @@ def _run_strategy_oos_backtest(
     resolved_anchor = split["rebalance_anchor"]
     sub_req = req.model_copy(update={"rebalance_anchor": resolved_anchor})
     period_results = {
-        name: _run_strategy_single_pass(sub_req, frame)
+        name: _run_strategy_single_pass(sub_req, frame, split["eval_windows"][name])
         for name, frame in split["frames"].items()
+        if name != "test" or req.validation_stage == "final"
     }
     warnings = list(split.get("warnings") or [])
     period_payloads = {}
@@ -307,6 +412,10 @@ def _run_strategy_oos_backtest(
             "period": [window["start"], window["end"]],
             "metrics": metrics,
         }
+    if req.validation_stage == "selection":
+        test_window = split["eval_windows"]["test"]
+        period_payloads["test"] = {"period": [test_window["start"], test_window["end"]],
+                                   "status": "withheld", "metrics": {}}
 
     decay = {
         "valid_sharpe_decay": _safe_decay(
@@ -335,6 +444,7 @@ def _run_strategy_oos_backtest(
         ),
     }
     oos_result = {
+        "validation_stage": req.validation_stage,
         "validation_mode": "train_valid_test",
         "direction_policy": "train_fixed",
         "direction_source": "strategy_spec_factor_directions",
@@ -351,7 +461,8 @@ def _run_strategy_oos_backtest(
     if data_quality_report is not None:
         oos_result["data_quality"] = data_quality_report
 
-    oos_score = compute_oos_score(oos_result, data_quality=data_quality_report)
+    score_function = compute_oos_selection_score if req.validation_stage == "selection" else compute_oos_score
+    oos_score = score_function(oos_result, data_quality=data_quality_report)
     oos_summary = {
         "pass": oos_score["decision"] != "reject",
         "overfit_risk": oos_score["overfit_risk"],
@@ -360,8 +471,9 @@ def _run_strategy_oos_backtest(
         "score": oos_score["score"],
         "decision": oos_score["decision"],
     }
-    test_window = split["eval_windows"]["test"]
-    final = period_results["test"]
+    output_period = "valid" if req.validation_stage == "selection" else "test"
+    test_window = split["eval_windows"][output_period]
+    final = period_results[output_period]
     final.strategy_returns = _slice_series(final.strategy_returns, test_window)
     final.target_weights = _slice_frame_by_trade_date(final.target_weights, test_window)
     final.cash_weights = _slice_frame_by_trade_date(final.cash_weights, test_window)
@@ -369,7 +481,7 @@ def _run_strategy_oos_backtest(
     final.cost_by_rebalance = _slice_frame_by_trade_date(final.cost_by_rebalance, test_window)
     if final.factor_frame is not None:
         final.factor_frame = _slice_frame_by_trade_date(final.factor_frame, test_window)
-    final.metrics = period_payloads["test"]["metrics"]
+    final.metrics = period_payloads[output_period]["metrics"]
     final.start_date = req.start_date
     final.end_date = req.end_date
     final.validation_mode = "train_valid_test"
@@ -380,7 +492,8 @@ def _run_strategy_oos_backtest(
     final.oos_summary = oos_summary
     final.oos_score = oos_score
     final.diagnostics["oos_authoritative"] = True
-    final.diagnostics["legacy_single_period_metrics_scope"] = "test_period_compat"
+    final.diagnostics["legacy_single_period_metrics_scope"] = f"{output_period}_period_compat"
+    final.diagnostics["validation_stage"] = req.validation_stage
     return final
 
 
@@ -445,10 +558,16 @@ def _compute_strategy_factor_values(
     neutralize_cap: bool,
 ) -> tuple[pd.DataFrame, pd.Series]:
     market_df = market_df.copy()
+    from ..expression_parser import infer_expression_lookback
+
+    observations = market_df.groupby("stock_code").cumcount() + 1
+    eligibility = market_df.get("_research_eligible", pd.Series(True, index=market_df.index))
     if spec.schema_version == "strategy_spec/v0":
         factor = spec.factors[0]
         values = compute_factor_values(market_df, factor.expression)
-        raw_factor_for_ic = values.copy()
+        values = values.replace([np.inf, -np.inf], np.nan)
+        values = values.where((observations >= infer_expression_lookback(factor.expression).required_observations) & eligibility)
+        raw_factor_for_ic = values.copy() * (1 if factor.direction == "higher_is_better" else -1)
         if neutralize_industry or neutralize_cap:
             values = neutralize_factor(
                 values,
@@ -457,6 +576,7 @@ def _compute_strategy_factor_values(
                 market_cap=neutralize_cap,
             )
         market_df["factor_value"] = values
+        raw_factor_for_ic = values * (1 if factor.direction == "higher_is_better" else -1)
         return market_df, raw_factor_for_ic
 
     factor_cols = []
@@ -469,6 +589,9 @@ def _compute_strategy_factor_values(
         raw_col = f"factor_{idx}_raw"
         score_col = f"factor_{idx}_score"
         market_df[raw_col] = compute_factor_values(market_df, factor.expression)
+        market_df[raw_col] = market_df[raw_col].replace([np.inf, -np.inf], np.nan).where(
+            (observations >= infer_expression_lookback(factor.expression).required_observations) & eligibility
+        )
         values = market_df[raw_col]
         if neutralize_industry or neutralize_cap:
             values = neutralize_factor(
@@ -489,9 +612,12 @@ def _compute_strategy_factor_values(
 
     composite = pd.Series(0.0, index=market_df.index, dtype=float)
     for score_col, weight in weighted_cols:
-        composite = composite.add(market_df[score_col].fillna(0.0) * weight, fill_value=0.0)
+        composite = composite + market_df[score_col] * weight
+    # First version requires every declared component; missing factors are never
+    # silently treated as zero, and swapping factor order leaves composite IC unchanged.
     market_df["factor_value"] = composite
-    return market_df, market_df[factor_cols[0]].copy()
+    market_df["valid_factor_count"] = market_df[factor_cols].notna().sum(axis=1)
+    return market_df, composite.copy()
 
 
 def _calculate_strategy_returns(
@@ -500,51 +626,11 @@ def _calculate_strategy_returns(
     turnover_by_rebalance: pd.DataFrame,
     cost_bps: float,
 ) -> tuple[pd.Series, pd.DataFrame]:
-    if target_weights.empty:
-        return pd.Series(dtype=float, name="strategy"), pd.DataFrame(columns=["trade_date", "cost"])
-
-    daily = factor_frame.dropna(subset=["daily_ret"]).copy()
-    daily["trade_date"] = pd.to_datetime(daily["trade_date"])
-    weights = target_weights.copy()
-    weights["trade_date"] = pd.to_datetime(weights["trade_date"])
-    weights_by_date = {
-        date: group.set_index("stock_code")["target_weight"].astype(float).to_dict()
-        for date, group in weights.groupby("trade_date")
-    }
-    rebalance_dates = sorted(weights_by_date)
-    rebal_arr = np.array(rebalance_dates, dtype="datetime64[ns]")
-    rows = []
-    for trade_date, day in daily.groupby("trade_date", sort=True):
-        idx = np.searchsorted(rebal_arr, np.datetime64(trade_date), side="left") - 1
-        if idx < 0:
-            continue
-        weights_for_day = weights_by_date.get(pd.Timestamp(rebal_arr[idx]), {})
-        returns_by_stock = day.set_index("stock_code")["daily_ret"].astype(float)
-        value = sum(weight * float(returns_by_stock.get(stock_code, 0.0)) for stock_code, weight in weights_for_day.items())
-        rows.append((pd.Timestamp(trade_date), value))
-
-    strategy_returns = pd.Series(
-        data=[value for _, value in rows],
-        index=pd.to_datetime([date for date, _ in rows]),
-        name="strategy",
-        dtype=float,
-    )
-
-    cost_rows = []
-    if cost_bps > 0 and not turnover_by_rebalance.empty:
-        for row in turnover_by_rebalance.itertuples(index=False):
-            rebal_date = pd.Timestamp(row.trade_date)
-            future_dates = strategy_returns.index[strategy_returns.index > rebal_date]
-            if len(future_dates) == 0:
-                continue
-            cost = float(row.turnover) * cost_bps / 10000
-            if cost <= 0:
-                continue
-            first_day = future_dates[0]
-            strategy_returns.loc[first_day] -= cost
-            cost_rows.append({"trade_date": rebal_date, "cost": cost})
-
-    return strategy_returns, pd.DataFrame(cost_rows, columns=["trade_date", "cost"])
+    # Compatibility helper; the turnover argument is descriptive, never a fee oracle.
+    del turnover_by_rebalance
+    simulation = SimulationConfigV1(rebalance_anchor_session=pd.to_datetime(factor_frame["trade_date"]).min().date(), fees_bps=cost_bps)
+    result = simulate_target_weights(factor_frame, target_weights, simulation)
+    return result.returns, result.costs
 
 
 def _latest_holdings(target_weights: pd.DataFrame, signals: pd.DataFrame) -> list[dict]:

@@ -129,13 +129,15 @@ def test_strategy_backtest_returns_oos_result_and_json_safe_payload():
     assert payload["data_quality"]["data_snapshot_id"] == payload["data_snapshot_id"]
     assert payload["oos_result"]["train"]["period"]
     assert payload["oos_result"]["data_snapshot_id"] == payload["data_snapshot_id"]
-    assert payload["oos_result"]["test"]["metrics"]["turnover_source"] == "turnover_by_rebalance_eval_window"
+    assert payload["oos_result"]["test"]["status"] == "withheld"
+    assert payload["oos_result"]["test"]["metrics"] == {}
+    assert payload["oos_result"]["valid"]["metrics"]["turnover_source"] == "turnover_by_rebalance_eval_window"
     assert payload["oos_summary"]["decision"] in {"candidate", "watchlist", "reject"}
-    assert payload["oos_score"]["metrics_scope"] == "oos_train_valid_test"
+    assert payload["oos_score"]["metrics_scope"] == "oos_train_valid_selection"
     json.dumps(payload)
 
 
-def test_strategy_oos_top_level_series_are_clipped_to_test_window():
+def test_strategy_oos_default_series_are_clipped_to_selection_window():
     spec = _oos_spec()
     spec["validation"]["oos"]["warmup_days"] = 5
     result = run_strategy_backtest(
@@ -148,11 +150,17 @@ def test_strategy_oos_top_level_series_are_clipped_to_test_window():
         market_df=_market_df(),
     )
 
-    test_start, test_end = result.oos_result["test"]["period"]
+    test_start, test_end = result.oos_result["valid"]["period"]
     assert result.strategy_returns.index.min() >= pd.Timestamp(test_start)
     assert result.strategy_returns.index.max() <= pd.Timestamp(test_end)
     assert pd.to_datetime(result.target_weights["trade_date"]).min() >= pd.Timestamp(test_start)
-    assert result.metrics == result.oos_result["test"]["metrics"]
+    assert result.metrics == result.oos_result["valid"]["metrics"]
+
+
+def test_strategy_final_requires_server_authorization():
+    with pytest.raises(ValueError, match="FINAL_AUTHORIZATION_REQUIRED"):
+        run_strategy_backtest({"spec": _oos_spec(), "start_date": "2024-01-02", "end_date": "2024-05-31",
+                               "validation_stage": "final"}, market_df=_market_df())
 
 
 def test_oos_score_prioritizes_test_metrics_and_service_payload():

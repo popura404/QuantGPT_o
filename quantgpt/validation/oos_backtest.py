@@ -47,6 +47,9 @@ def _slice_series(series: pd.Series | None, window: dict) -> pd.Series:
 
 
 def _turnover_for_window(result: dict, window: dict) -> float:
+    if result.get("turnover_source") == "ledger_traded_notional_over_two_nav_daily":
+        actual = _slice_series(result.get("_turnover_by_rebalance"), window)
+        return float(actual.mean()) if len(actual) else 0.0
     holdings = result.get("_selected_group_holdings") or {}
     if len(holdings) < 2:
         return 0.0
@@ -97,7 +100,7 @@ def _metrics_for_window(result: dict, window: dict, trading_days_per_year: int, 
         "long_short_annual": float((1 + mean_ls) ** trading_days_per_year - 1) if len(ls_returns) else 0.0,
         "max_drawdown": float(_calc_max_drawdown(strategy)) if len(strategy) else 0.0,
         "turnover": _turnover_for_window(result, window),
-        "turnover_source": "selected_group_holdings_eval_mask",
+        "turnover_source": result.get("turnover_source", "selected_group_holdings_eval_mask"),
         "raw_rank_ic_mean": raw_rank_ic_mean,
         "direction_adjusted_rank_ic_mean": rank_ic_mean,
         "ic_ir": float(rank_ic_mean / ic_std) if ic_std > 0 else 0.0,
@@ -192,6 +195,8 @@ def run_factor_oos_backtest(
         split["frames"]["train"],
         expression=expression,
         direction_mode="auto_full",
+        evaluation_start=split["eval_windows"]["train"]["start"],
+        evaluation_end=split["eval_windows"]["train"]["end"],
         **common_kwargs,
     )
     train_direction = -1 if train_result.get("flipped") else 1
@@ -201,6 +206,8 @@ def run_factor_oos_backtest(
         expression=expression,
         direction_mode="fixed",
         fixed_direction=train_direction,
+        evaluation_start=split["eval_windows"]["valid"]["start"],
+        evaluation_end=split["eval_windows"]["valid"]["end"],
         **common_kwargs,
     )
     test_result = None
@@ -210,6 +217,8 @@ def run_factor_oos_backtest(
             expression=expression,
             direction_mode="fixed",
             fixed_direction=train_direction,
+            evaluation_start=split["eval_windows"]["test"]["start"],
+            evaluation_end=split["eval_windows"]["test"]["end"],
             **common_kwargs,
         )
 
