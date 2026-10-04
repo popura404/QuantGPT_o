@@ -27,6 +27,7 @@ factor的long-short指标只作研究差值展示，gross exposure=1，以一半
 
 全部组件因子默认都需有效；无穷视为缺失，nested lookback 通过AST推断并mask不足观测。多因子IC基于方向调整后的复合信号，交换因子顺序不改变结果。
 IC当前采用共同会话上的收盘到收盘horizon，属于预测指标，不冒充开盘可成交收益。递归指标初始化与跨缺口完整市场日历的上游补齐仍需能力证据。
+因子IC先截断评价终点以限制未来标签，再生成完整horizon标签，最后按信号日期裁去评价起点之前的warmup；原始IC、方向调整IC及汇总指标使用相同评分窗。预热因子和评价窗外未来价格均不进入评分。
 
 策略adapter读取行情时也读取benchmark；注入行情fixture时，可另外传 `benchmark_returns`。只有完整评分会话覆盖、total_return、同币种和分红再投资政策均明确时才输出基准总收益和超额总收益。
 未取得口径时显示 unavailable/unknown_return_basis 等状态；非零benchmark_cost_bps尚缺相应成交模型，因此明确阻断基准比较。
@@ -36,7 +37,7 @@ IC当前采用共同会话上的收盘到收盘horizon，属于预测指标，�
 
 ```powershell
 .\.venv312\Scripts\python.exe -m pytest tests/test_research_contracts.py tests/test_research_ledger.py tests/test_research_backtest_regressions.py tests/test_backtest.py tests/test_strategy_backtest.py tests/test_strategy_oos.py tests/test_oos_validation.py -q --basetemp=test-results/ledger -o cache_dir=test-results/pytest-cache-ledger
-.\.venv312\Scripts\python.exe -m pyright --pythonpath .\.venv312\Scripts\python.exe quantgpt/research/contracts.py quantgpt/research/ledger.py
+.\.venv312\Scripts\python.exe -m pyright --pythonpath .\.venv312\Scripts\python.exe quantgpt/research/contracts.py quantgpt/research/ledger.py quantgpt/backtest.py quantgpt/strategy/backtest.py quantgpt/strategy/signals.py
 ```
 
 测试消费同一份 `tests/fixtures/research/simulation_golden.json`，另覆盖恒价换仓成本、A/B价格100→200→100持有回归、停牌与缺价、全缺失信号、因子换序、完整会话锚点、warmup切窗和基准口径。

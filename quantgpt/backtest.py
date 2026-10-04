@@ -9,7 +9,8 @@ returns per group. The strategy return is the top group's daily return.
 
 import logging
 import threading
-from typing import cast
+from datetime import date
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -115,16 +116,16 @@ def assign_factor_quantiles(
             return vals.map(mapping)
         try:
             ranks = vals.rank(method="first")
-            return pd.cut(ranks, bins=n_groups, labels=False)
+            return cast(pd.Series, pd.cut(ranks, bins=n_groups, labels=False))
         except ValueError:
             return pd.Series(np.nan, index=vals.index)
 
-    rebal_data = work[work["trade_date"].isin(rebalance_dates)].sort_values(["trade_date", "stock_code"]).copy()
+    rebal_data = cast(pd.DataFrame, work.loc[work["trade_date"].isin(rebalance_dates)]).sort_values(["trade_date", "stock_code"]).copy()
     rebal_data["_group"] = rebal_data.groupby("trade_date")["factor_value"].transform(_assign_group)
     rebal_data = rebal_data.dropna(subset=["_group"])
     rebal_data["_group"] = rebal_data["_group"].astype(int)
 
-    group_lookup = rebal_data.set_index(["trade_date", "stock_code"])["_group"]
+    group_lookup = cast(pd.Series, rebal_data.set_index(["trade_date", "stock_code"])["_group"])
     rebalance_dates_set = sorted(set(rebal_data["trade_date"].unique()))
     if len(rebalance_dates_set) < 2:
         raise ValueError("Not enough rebalance dates for backtest")
@@ -133,7 +134,7 @@ def assign_factor_quantiles(
     trade_dates = work["trade_date"].values.astype("datetime64[ns]")
     indices = np.searchsorted(rebal_arr, trade_dates, side="left") - 1
     valid_mask = indices >= 0
-    work = work[valid_mask].copy()
+    work = cast(pd.DataFrame, work.loc[valid_mask]).copy()
     work["_rebal_date"] = rebal_arr[indices[valid_mask]]
     work = work.dropna(subset=["daily_ret"])
 
@@ -170,7 +171,7 @@ def calculate_turnover_from_weights(
     else:
         weight_map = weights_by_date
 
-    sorted_dates = sorted(weight_map.keys())
+    sorted_dates = sorted(cast(list[Any], list(weight_map)))
     if len(sorted_dates) < 2:
         return 0.0
 
@@ -251,13 +252,13 @@ def run_factor_backtest(
     # Save raw factor values for IC computation (before neutralization).
     # IC should be computed on raw values (industry standard), while group
     # formation uses neutralized values to control sector/cap risk.
-    raw_factor_for_ic = market_df["factor_value"].copy()
+    raw_factor_for_ic = cast(pd.Series, market_df["factor_value"]).copy()
 
     # 1b. Neutralize factor values (optional)
     if neutralize_industry or neutralize_cap:
         from .neutralize import neutralize_factor
         market_df["factor_value"] = neutralize_factor(
-            market_df["factor_value"],
+            cast(pd.Series, market_df["factor_value"]),
             market_df,
             industry=neutralize_industry,
             market_cap=neutralize_cap,
@@ -276,14 +277,14 @@ def run_factor_backtest(
 
     # 5. On each rebalance date, assign groups based on factor value
     #    Build a mapping: (trade_date, stock_code) -> group
-    work = market_df[["trade_date", "stock_code", "factor_value", "daily_ret", "close"]].dropna(
+    work = cast(pd.DataFrame, market_df[["trade_date", "stock_code", "factor_value", "daily_ret", "close"]]).dropna(
         subset=["factor_value"]
     ).copy()
     work, rebal_data, rebalance_dates_set = assign_factor_quantiles(work, rebalance_dates, n_groups)
 
     # 6. Each group is a quantity/cash book with open fills and explicit fees.
     simulation = simulation_config or SimulationConfigV1(
-        rebalance_anchor_session=pd.Timestamp(rebalance_anchor or market_df["trade_date"].min()).date(),
+        rebalance_anchor_session=cast(date, pd.Timestamp(str(rebalance_anchor or market_df["trade_date"].min())).date()),
         fees_bps=cost_rate * 10000,
         rebalance_every_sessions=holding_period,
         currency="CNY",
@@ -334,7 +335,7 @@ def run_factor_backtest(
             top_g, bot_g = bot_g, top_g
 
     # 7. Strategy = best-performing group (long-only, A-share)
-    strategy_series = daily_group_ret[top_g].copy()
+    strategy_series = cast(pd.Series, daily_group_ret[top_g]).copy()
     strategy_series.name = "strategy"
     strategy_series.index = pd.to_datetime(strategy_series.index)
 
@@ -355,7 +356,7 @@ def run_factor_backtest(
     ls_sharpe = float((ls_mean / ls_std * annualize) if ls_std > 0 else 0.0)
     ls_annual = float((1 + ls_mean) ** trading_days_per_year - 1)
 
-    group_means = [float(daily_group_ret[g].mean()) for g in actual_groups]
+    group_means = [float(cast(pd.Series, daily_group_ret[g]).mean()) for g in actual_groups]
     mono = _calc_monotonicity(group_means)
 
     # If flipped, reverse group_means for spread calculation so spread is always positive
@@ -368,11 +369,18 @@ def run_factor_backtest(
     # Neutralization is for portfolio construction only, not IC measurement.
     # Primary IC metric is Rank IC (Spearman) — more robust to outliers,
     # consistent with industry convention (Barra, etc.).
-    work_ic = market_df[["trade_date", "stock_code", "close", "factor_value"]].copy()
+    work_ic = cast(pd.DataFrame, market_df[["trade_date", "stock_code", "close", "factor_value"]]).copy()
     if evaluation_end is not None:
-        work_ic = work_ic[work_ic["trade_date"] <= pd.Timestamp(evaluation_end)]
+        work_ic = cast(pd.DataFrame, work_ic.loc[work_ic["trade_date"] <= pd.Timestamp(evaluation_end)])
     work_ic["factor_value"] = raw_factor_for_ic.reindex(work_ic.index)
     pearson_ic_series, rank_ic_series = _calc_ic_series(work_ic, holding_period)
+    # Warmup observations are inputs to the factor, not scored observations.
+    # Build complete labels first (already capped at end above), then retain
+    # only signal dates inside the registered evaluation window.
+    if evaluation_start is not None:
+        first_scored_session = pd.Timestamp(evaluation_start)
+        pearson_ic_series = pearson_ic_series.loc[pearson_ic_series.index >= first_scored_session]
+        rank_ic_series = rank_ic_series.loc[rank_ic_series.index >= first_scored_session]
     direction_adjusted_ic_series = pearson_ic_series * effective_direction
     direction_adjusted_rank_ic_series = rank_ic_series * effective_direction
     # Main IC metrics use Rank IC (Spearman)
@@ -397,7 +405,7 @@ def run_factor_backtest(
 
     group_ret_summary = {}
     for g in actual_groups:
-        s = daily_group_ret[g]
+        s = cast(pd.Series, daily_group_ret[g])
         std = s.std()
         group_ret_summary[int(g)] = {
             "group": f"G{int(g)+1}",
@@ -411,7 +419,7 @@ def run_factor_backtest(
     stock_factor_data = None
     if len(rebalance_dates_set) > 0:
         last_rebal = rebalance_dates_set[-1]
-        last_rebal_data = rebal_data[rebal_data["trade_date"] == last_rebal].copy()
+        last_rebal_data = cast(pd.DataFrame, rebal_data.loc[rebal_data["trade_date"] == last_rebal]).copy()
         if not last_rebal_data.empty:
             # Percentile rank: high rank = stronger signal (direction-aware)
             last_rebal_data["factor_rank"] = last_rebal_data["factor_value"].rank(
@@ -423,7 +431,7 @@ def run_factor_backtest(
                 .agg(lambda s: float((1 + s).prod() - 1))
             )
             stocks_list = []
-            for _, row in last_rebal_data.sort_values("factor_rank", ascending=False).iterrows():
+            for row in last_rebal_data.sort_values("factor_rank", ascending=False).to_dict(orient="records"):
                 g_idx = int(row["_group"])
                 sc = row["stock_code"]
                 stocks_list.append({
@@ -433,7 +441,7 @@ def run_factor_backtest(
                     "factor_rank": round(float(row["factor_rank"]), 4),
                     "group": g_idx,
                     "group_label": f"G{g_idx + 1}",
-                    "period_return": round(float(period_ret_by_stock.get(sc, 0.0)), 6),
+                    "period_return": round(float(cast(Any, period_ret_by_stock.get(sc, 0.0))), 6),
                 })
             stock_factor_data = {
                 "rebalance_date": str(last_rebal.date()) if hasattr(last_rebal, 'date') else str(last_rebal)[:10],
@@ -451,7 +459,7 @@ def run_factor_backtest(
         wq_fitness = float(ls_sharpe * np.sqrt(abs(ls_annual) / effective_turnover))
 
     # 13. WQ BRAIN dollar-neutral simulation (continuous weights, WQ-aligned metrics)
-    wq_work = work[["trade_date", "stock_code", "factor_value", "daily_ret"]].copy()
+    wq_work = cast(pd.DataFrame, work[["trade_date", "stock_code", "factor_value", "daily_ret"]]).copy()
     if effective_direction == -1:
         wq_work["factor_value"] = -wq_work["factor_value"]
     wq_brain = wq_simulate(wq_work, rebalance_dates_set, trading_days_per_year)
@@ -546,8 +554,8 @@ def _calc_ic_series(
         all_dates[i]: all_dates[i + holding_period]
         for i in range(len(all_dates) - holding_period)
     }
-    work["_fwd_date"] = work["trade_date"].map(date_fwd_map)
-    future_close = work[["trade_date", "stock_code", "close"]].rename(
+    work["_fwd_date"] = cast(pd.Series, work["trade_date"]).map(date_fwd_map)
+    future_close = cast(pd.DataFrame, work[["trade_date", "stock_code", "close"]]).rename(
         columns={"trade_date": "_fwd_date", "close": "_fwd_close"}
     )
     work = work.merge(future_close, on=["_fwd_date", "stock_code"], how="left")
@@ -600,7 +608,7 @@ def _calc_turnover(
 
     top_holdings = {}
     for d in rebalance_dates:
-        day_data = work[(work["_rebal_date"] == d) & (work["_group"] == top_group)]
+        day_data = cast(pd.DataFrame, work.loc[(work["_rebal_date"] == d) & (work["_group"] == top_group)])
         top_holdings[d] = set(day_data["stock_code"].unique())
 
     turnovers = []
@@ -627,7 +635,7 @@ def _calc_group_holdings(
     """Return selected-group holdings by rebalance date for masked OOS turnover."""
     holdings = {}
     for d in rebalance_dates:
-        day_data = work[(work["_rebal_date"] == d) & (work["_group"] == selected_group)]
+        day_data = cast(pd.DataFrame, work.loc[(work["_rebal_date"] == d) & (work["_group"] == selected_group)])
         holdings[pd.Timestamp(d)] = set(day_data["stock_code"].unique())
     return holdings
 
@@ -661,7 +669,8 @@ def _calc_monotonicity(group_means: list[float]) -> float:
         return 0.0
     ranks = list(range(len(group_means)))
     corr, _ = sp_stats.spearmanr(ranks, group_means)
-    return abs(corr) if not np.isnan(corr) else 0.0
+    coefficient = float(cast(float, corr))
+    return abs(coefficient) if not np.isnan(coefficient) else 0.0
 
 
 def _calc_per_group_turnover(
@@ -678,7 +687,7 @@ def _calc_per_group_turnover(
     holdings: dict[tuple, set] = {}
     for d in rebalance_dates:
         for g in range(n_groups):
-            day_data = work[(work["_rebal_date"] == d) & (work["_group"] == g)]
+            day_data = cast(pd.DataFrame, work.loc[(work["_rebal_date"] == d) & (work["_group"] == g)])
             holdings[(d, g)] = set(day_data["stock_code"].unique())
 
     sorted_dates = sorted(set(d for d, _ in holdings))

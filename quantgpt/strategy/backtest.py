@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal, cast
 
 import numpy as np
@@ -106,8 +106,8 @@ def run_strategy_backtest(
     dq_config = _data_quality_config_from_spec(req.spec)
     if dq_config is not None and dq_config.enabled:
         eligible_frame, data_quality_report = run_data_quality_gate(market_frame, dq_config)
-        eligible_keys = pd.MultiIndex.from_frame(eligible_frame[["stock_code", "trade_date"]])
-        market_frame["_research_eligible"] = pd.MultiIndex.from_frame(market_frame[["stock_code", "trade_date"]]).isin(eligible_keys)
+        eligible_keys = pd.MultiIndex.from_frame(cast(pd.DataFrame, eligible_frame[["stock_code", "trade_date"]]))
+        market_frame["_research_eligible"] = pd.MultiIndex.from_frame(cast(pd.DataFrame, market_frame[["stock_code", "trade_date"]])).isin(eligible_keys)
 
     expressions = [factor.expression for factor in req.spec.factors]
     fund_vars = set()
@@ -211,14 +211,14 @@ def _run_strategy_single_pass(
         str(req.simulation_config.rebalance_anchor_session) if req.simulation_config else req.rebalance_anchor,
         calendar_sessions=market_frame.attrs.get("calendar_sessions"),
     )
-    factor_frame = market_frame[["trade_date", "stock_code", "factor_value", "daily_ret", "close"]].copy()
-    rebalance_frame = factor_frame[factor_frame["trade_date"].isin(all_rebalance_dates)].copy()
+    factor_frame = cast(pd.DataFrame, market_frame[["trade_date", "stock_code", "factor_value", "daily_ret", "close"]]).copy()
+    rebalance_frame = cast(pd.DataFrame, factor_frame.loc[factor_frame["trade_date"].isin(all_rebalance_dates)]).copy()
     signals = build_rank_threshold_signals(rebalance_frame, req.spec)
     raw_targets = build_strategy_portfolio(signals, req.spec)
     risk_result = apply_risk_rules(raw_targets, req.spec)
 
     simulation = req.simulation_config or SimulationConfigV1(
-        rebalance_anchor_session=pd.Timestamp(req.rebalance_anchor or market_frame["trade_date"].min()).date(),
+        rebalance_anchor_session=cast(date, pd.Timestamp(str(req.rebalance_anchor or market_frame["trade_date"].min())).date()),
         fees_bps=req.spec.cost_model.bps,
         rebalance_every_sessions=req.spec.portfolio_rule.rebalance_period,
         currency="USD" if "us" in req.spec.market else "CNY",
@@ -241,11 +241,12 @@ def _run_strategy_single_pass(
     cost_by_rebalance = ledger.costs
     risk_result.turnover_by_rebalance = ledger.turnover
     risk_result.target_weights = ledger_targets
-    risk_result.cash_weights = ledger.states[["trade_date"]].copy()
+    risk_result.cash_weights = cast(pd.DataFrame, ledger.states[["trade_date"]]).copy()
     risk_result.cash_weights["cash_weight"] = ledger.states["cash"] / ledger.states["nav"]
     risk_result.risk_logs = [row for row in risk_result.risk_logs if row["code"] != "TURNOVER_LIMIT_REBALANCE_SKIPPED"]
-    risk_result.risk_logs.extend({"trade_date": pd.Timestamp(row.trade_date).strftime("%Y-%m-%d"), "code": "LEDGER_REBALANCE_SKIPPED"}
-                                for row in ledger.states[ledger.states["skipped"]].itertuples(index=False))
+    skipped_dates = cast(pd.Series, ledger.states.loc[ledger.states["skipped"], "trade_date"])
+    risk_result.risk_logs.extend({"trade_date": pd.Timestamp(value).strftime("%Y-%m-%d"), "code": "LEDGER_REBALANCE_SKIPPED"}
+                                for value in skipped_dates)
     latest_holdings = []
     if not ledger.states.empty:
         last_state = ledger.states.iloc[-1]
@@ -258,7 +259,7 @@ def _run_strategy_single_pass(
 
     ic_frame = factor_frame.copy()
     ic_frame["factor_value"] = raw_factor_for_ic.reindex(ic_frame.index)
-    ic_frame = ic_frame[ic_frame["trade_date"] <= end]
+    ic_frame = cast(pd.DataFrame, ic_frame.loc[ic_frame["trade_date"] <= end])
     _, rank_ic_series = _calc_ic_series(ic_frame, req.spec.portfolio_rule.rebalance_period)
     if not rank_ic_series.empty:
         rank_ic_series = rank_ic_series[(rank_ic_series.index >= start) & (rank_ic_series.index <= end)]
@@ -289,7 +290,7 @@ def _run_strategy_single_pass(
         metrics=metrics,
         validation_issues=[],
         diagnostics=diagnostics,
-        factor_frame=ic_frame[["trade_date", "stock_code", "factor_value", "daily_ret", "close"]].copy(),
+        factor_frame=cast(pd.DataFrame, ic_frame[["trade_date", "stock_code", "factor_value", "daily_ret", "close"]]).copy(),
     )
     if req.spec.validation.run_strategy_anti_overfit:
         diagnostics["strategy_anti_overfit"] = run_strategy_anti_overfit(result)
@@ -502,10 +503,10 @@ def _strategy_metrics_for_window(result: StrategyBacktestResult, window: dict) -
     turnover_frame = result.turnover_by_rebalance.copy()
     if not turnover_frame.empty and "trade_date" in turnover_frame.columns:
         turnover_frame["trade_date"] = pd.to_datetime(turnover_frame["trade_date"])
-        turnover_frame = turnover_frame[
+        turnover_frame = cast(pd.DataFrame, turnover_frame.loc[
             (turnover_frame["trade_date"] >= pd.Timestamp(window["start"]))
             & (turnover_frame["trade_date"] <= pd.Timestamp(window["end"]))
-        ]
+        ])
     rank_ic = pd.Series(dtype=float)
     if result.factor_frame is not None and not result.factor_frame.empty:
         _, rank_ic = _calc_ic_series(result.factor_frame, result.spec.portfolio_rule.rebalance_period)
@@ -520,7 +521,7 @@ def _slice_series(series: pd.Series, window: dict) -> pd.Series:
         return pd.Series(dtype=float)
     output = series.copy()
     output.index = pd.to_datetime(output.index)
-    return output[(output.index >= pd.Timestamp(window["start"])) & (output.index <= pd.Timestamp(window["end"]))]
+    return cast(pd.Series, output.loc[(output.index >= pd.Timestamp(window["start"])) & (output.index <= pd.Timestamp(window["end"]))])
 
 
 def _slice_frame_by_trade_date(frame: pd.DataFrame, window: dict) -> pd.DataFrame:
@@ -528,10 +529,10 @@ def _slice_frame_by_trade_date(frame: pd.DataFrame, window: dict) -> pd.DataFram
         return pd.DataFrame() if frame is None else frame.copy()
     output = frame.copy()
     output["trade_date"] = pd.to_datetime(output["trade_date"])
-    return output[
+    return cast(pd.DataFrame, output.loc[
         (output["trade_date"] >= pd.Timestamp(window["start"]))
         & (output["trade_date"] <= pd.Timestamp(window["end"]))
-    ]
+    ])
 
 
 def _safe_decay(train_value, sample_value, warnings: list[str], name: str) -> float | None:
@@ -592,7 +593,7 @@ def _compute_strategy_factor_values(
         market_df[raw_col] = market_df[raw_col].replace([np.inf, -np.inf], np.nan).where(
             (observations >= infer_expression_lookback(factor.expression).required_observations) & eligibility
         )
-        values = market_df[raw_col]
+        values = cast(pd.Series, market_df[raw_col])
         if neutralize_industry or neutralize_cap:
             values = neutralize_factor(
                 values,
@@ -637,23 +638,23 @@ def _latest_holdings(target_weights: pd.DataFrame, signals: pd.DataFrame) -> lis
     if target_weights.empty:
         return []
     latest_date = pd.to_datetime(target_weights["trade_date"]).max()
-    latest = target_weights[pd.to_datetime(target_weights["trade_date"]) == latest_date].copy()
-    latest_signals = signals[pd.to_datetime(signals["trade_date"]) == latest_date]
+    latest = cast(pd.DataFrame, target_weights.loc[pd.to_datetime(target_weights["trade_date"]) == latest_date]).copy()
+    latest_signals = cast(pd.DataFrame, signals.loc[pd.to_datetime(signals["trade_date"]) == latest_date])
     latest = latest.merge(
-        latest_signals[["stock_code", "factor_value", "score"]],
+        cast(pd.DataFrame, latest_signals[["stock_code", "factor_value", "score"]]),
         on="stock_code",
         how="left",
     )
     latest = latest.sort_values("target_weight", ascending=False)
     return [
         {
-            "trade_date": pd.Timestamp(row.trade_date).strftime("%Y-%m-%d"),
-            "stock_code": row.stock_code,
-            "target_weight": round(float(row.target_weight), 8),
-            "factor_value": None if pd.isna(row.factor_value) else round(float(row.factor_value), 8),
-            "score": None if pd.isna(row.score) else round(float(row.score), 8),
+            "trade_date": pd.Timestamp(row["trade_date"]).strftime("%Y-%m-%d"),
+            "stock_code": row["stock_code"],
+            "target_weight": round(float(row["target_weight"]), 8),
+            "factor_value": None if pd.isna(row["factor_value"]) else round(float(row["factor_value"]), 8),
+            "score": None if pd.isna(row["score"]) else round(float(row["score"]), 8),
         }
-        for row in latest.itertuples(index=False)
+        for row in latest.to_dict(orient="records")
     ]
 
 
@@ -669,10 +670,10 @@ def _strategy_metrics(strategy_returns: pd.Series, turnover_by_rebalance: pd.Dat
             "ic_ir": 0.0,
         }
     mean = float(strategy_returns.mean())
-    std = float(strategy_returns.std())
-    turnover = float(turnover_by_rebalance["turnover"].mean()) if not turnover_by_rebalance.empty else 0.0
+    std = float(cast(float, strategy_returns.std()))
+    turnover = float(cast(pd.Series, turnover_by_rebalance["turnover"]).mean()) if not turnover_by_rebalance.empty else 0.0
     ic_mean = float(rank_ic_series.mean()) if len(rank_ic_series) else 0.0
-    ic_std = float(rank_ic_series.std()) if len(rank_ic_series) else 0.0
+    ic_std = float(cast(float, rank_ic_series.std())) if len(rank_ic_series) else 0.0
     return {
         "total_return": float((1 + strategy_returns).prod() - 1),
         "annual_return": float((1 + mean) ** 252 - 1),

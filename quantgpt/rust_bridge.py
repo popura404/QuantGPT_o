@@ -14,6 +14,8 @@ import logging
 import os
 import platform
 from dataclasses import dataclass
+from importlib import import_module
+from typing import Protocol, cast
 
 import numpy as np
 import pandas as pd
@@ -22,12 +24,24 @@ from .expression_parser import OPERATOR_SEMANTICS_VERSION, _evaluate_panel, pars
 
 logger = logging.getLogger(__name__)
 
+
+class _RustEngine(Protocol):
+    def eval_expression(self, expression: str, columns: dict[str, np.ndarray],
+                        stock_offsets: list[tuple[int, int]], date_offsets: list[tuple[int, int]]) -> np.ndarray: ...
+
+    def compute_metrics(self, returns: np.ndarray, periods_per_year: float) -> dict[str, float]: ...
+
+
+_engine: _RustEngine | None
 try:
-    import quantgpt_engine as _engine
+    extension = import_module("quantgpt_engine")
+    if not all(callable(getattr(extension, name, None)) for name in ("eval_expression", "compute_metrics")):
+        raise ImportError("quantgpt_engine does not expose the required bridge API")
+    _engine = cast(_RustEngine, extension)
     RUST_AVAILABLE = True
     logger.info("Rust engine (quantgpt_engine) loaded")
 except ImportError:
-    _engine = None  # type: ignore[assignment]
+    _engine = None
     RUST_AVAILABLE = False
 
 RUST_ENABLED = RUST_AVAILABLE and os.environ.get("QUANTGPT_RUST_ENGINE", "1").lower() in ("1", "true", "yes")

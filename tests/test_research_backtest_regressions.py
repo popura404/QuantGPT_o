@@ -153,3 +153,31 @@ def test_verified_benchmark_uses_same_scoring_sessions_and_currency():
     wrong_currency = run_strategy_backtest(_request(), market_df=frame, benchmark_returns=benchmark)
     assert wrong_currency.diagnostics["benchmark_status"] == "blocked_currency_mismatch"
     assert "benchmark_total_return" not in wrong_currency.metrics
+
+
+def test_factor_ic_scores_only_registered_window_after_building_complete_labels():
+    frame = _market(days=14, stocks=12)
+    sessions = pd.DatetimeIndex(sorted(frame["trade_date"].unique()))
+    stock = frame["stock_code"].str[1:].astype(float) + 1
+    day = frame["trade_date"].rank(method="dense") - 1
+    frame["open"] = frame["close"] = 100 * (1 + stock * 0.001) ** day
+    start, end = sessions[6], sessions[-2]
+    factor = stock.where(frame["trade_date"] >= start, -stock)
+    options = dict(n_groups=2, holding_period=2, neutralize_industry=False, neutralize_cap=False,
+                   direction_mode="fixed", fixed_direction=1, cost_rate=0,
+                   evaluation_start=start.strftime("%Y-%m-%d"), evaluation_end=end.strftime("%Y-%m-%d"))
+    with api_context():
+        result = run_factor_backtest(frame, precomputed_factor=factor, **options)
+        # Warmup factors and out-of-window future closes cannot enter scored IC.
+        changed = frame.copy()
+        changed.loc[changed["trade_date"] > end, "close"] *= 1000
+        comparison = run_factor_backtest(changed, precomputed_factor=stock, **options)
+    for key in ["_raw_ic_series", "_raw_rank_ic_series", "_direction_adjusted_ic_series", "_direction_adjusted_rank_ic_series"]:
+        series = result[key]
+        assert len(series) == 5
+        assert series.index.min() == start
+        assert series.index.max() == sessions[-4]
+        pd.testing.assert_series_equal(series, comparison[key])
+    assert result["ic_mean"] == pytest.approx(1)
+    assert result["ic_mean"] == pytest.approx(result["_raw_rank_ic_series"].mean())
+    assert result["raw_ic_mean"] == pytest.approx(result["_raw_ic_series"].mean())
