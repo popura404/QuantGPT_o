@@ -2,6 +2,7 @@
 
 import pytest
 
+from quantgpt import task_executor
 from quantgpt.auth import create_guest_token
 from quantgpt.strategy.spec import example_strategy_spec
 from quantgpt.task_store import tasks
@@ -33,7 +34,7 @@ def _clean_tasks():
 
 
 class ImmediateThread:
-    def __init__(self, target, args=(), kwargs=None, daemon=None):
+    def __init__(self, target, args=(), kwargs=None, daemon=None, name=None):
         self.target = target
         self.args = args
         self.kwargs = kwargs or {}
@@ -41,6 +42,9 @@ class ImmediateThread:
 
     def start(self):
         self.target(*self.args, **self.kwargs)
+
+    def is_alive(self):
+        return False
 
 
 async def test_strategy_markets_and_fields(client):
@@ -81,7 +85,7 @@ async def test_strategy_backtest_task_result_contains_score_report(client, monke
         "latest_holdings": [],
         "strategy_score": {"score": 70, "grade": "B"},
     }
-    monkeypatch.setattr(strategy_route.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(task_executor.threading, "Thread", ImmediateThread)
     monkeypatch.setattr(strategy_route, "_execute_strategy_backtest", lambda request_data, user_id: payload)
     monkeypatch.setattr(strategy_route, "persist_task_to_db", lambda *args, **kwargs: None)
     monkeypatch.setattr(
@@ -114,7 +118,9 @@ async def test_strategy_backtest_task_result_contains_score_report(client, monke
 
     detail = await client.get(f"/api/v1/tasks/{response.json()['task_id']}", headers=auth_headers)
     assert detail.status_code == 200
-    assert detail.json()["result"]["report_url"] == "/api/v1/reports/backtest_report_strategy.html"
+    # Persistence is stubbed above: status must not claim durable completion.
+    assert detail.json()["status"] == "running"
+    assert detail.json()["result"] is None
 
 
 async def test_strategy_report_url_reads_owned_report(client, monkeypatch, test_user, auth_headers):
@@ -138,7 +144,7 @@ async def test_strategy_report_url_reads_owned_report(client, monkeypatch, test_
     report_file = report_dir / "backtest_report_strategy.html"
     report_file.write_text("<html>strategy report</html>", encoding="utf-8")
 
-    monkeypatch.setattr(strategy_route.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(task_executor.threading, "Thread", ImmediateThread)
     monkeypatch.setattr(strategy_route, "_execute_strategy_backtest", lambda request_data, user_id: payload)
     monkeypatch.setattr(strategy_route, "persist_task_to_db", lambda *args, **kwargs: None)
     monkeypatch.setattr(
@@ -207,9 +213,8 @@ async def test_strategy_post_mvp_result_endpoints(client, auth_headers):
         headers=auth_headers,
     )
 
-    assert export.status_code == 200
-    assert export.json()["schema_version"] == "strategy_signal.v1"
-    assert export.json()["signals"][0]["stock_code"] == "A"
+    assert export.status_code == 400
+    assert "SERVER_STRATEGY_RUN_REQUIRED" in export.json()["detail"]
     assert diagnosis.status_code == 200
     assert "diagnoses" in diagnosis.json()
     assert anti.status_code == 200
@@ -270,7 +275,7 @@ async def test_strategy_backtest_auth_disabled_allows_dev_user(client, monkeypat
         "latest_holdings": [],
         "strategy_score": {"score": 70, "grade": "B"},
     }
-    monkeypatch.setattr(strategy_route.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(task_executor.threading, "Thread", ImmediateThread)
     monkeypatch.setattr(strategy_route, "_execute_strategy_backtest", lambda request_data, user_id: payload)
     monkeypatch.setattr(strategy_route, "persist_task_to_db", lambda *args, **kwargs: None)
     monkeypatch.setattr(

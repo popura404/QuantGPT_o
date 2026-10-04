@@ -29,12 +29,11 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select, update
+from sqlalchemy import select
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import task_store
 from .db import close_db, init_db
-from .models import Task as TaskModel
 from .models import User
 
 logger = logging.getLogger(__name__)
@@ -54,15 +53,9 @@ async def lifespan(app: FastAPI):
     logger.info("Database initialized")
 
     from .db import _get_session_factory as _sf
-    async with _sf()() as session:
-        result = await session.execute(
-            update(TaskModel)
-            .where(TaskModel.status.in_(["pending", "running", "generating_expression", "validating", "fetching_data", "backtesting"]))
-            .values(status="failed", error="进程重启，任务中断")
-        )
-        if result.rowcount:
-            await session.commit()
-            logger.info(f"Cleaned up {result.rowcount} stale running tasks")
+    from .task_executor import start_task_dispatcher, stop_task_dispatcher
+
+    start_task_dispatcher()
 
     from .auth import (
         _DEV_USER_ID,
@@ -159,7 +152,10 @@ async def lifespan(app: FastAPI):
     async with _mcp_server.session_manager.run():
         logger.info("MCP streamable-http session manager started")
 
-        yield
+        try:
+            yield
+        finally:
+            await stop_task_dispatcher()
 
     scheduler.shutdown(wait=False)
     from .task_executor import shutdown_executor
@@ -197,7 +193,7 @@ app.add_middleware(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_list,
-    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["Content-Type", "Authorization"],
 )
 
@@ -213,6 +209,7 @@ from .routes.factor_pool import router as factor_pool_router
 from .routes.factor_values import router as factor_values_router
 from .routes.feedback import router as feedback_router
 from .routes.iteration_routes import router as iteration_router
+from .routes.research import router as research_router
 from .routes.sessions import router as sessions_router
 from .routes.strategy import router as strategy_router
 from .routes.wq_brain import router as wq_brain_router
@@ -223,6 +220,7 @@ app.include_router(sessions_router)
 app.include_router(admin_router)
 app.include_router(factor_library_router)
 app.include_router(factor_pool_router)
+app.include_router(research_router)
 app.include_router(composite_router)
 app.include_router(comparison_router)
 app.include_router(daily_summary_router)
@@ -307,19 +305,42 @@ def _request_scope_path(request: Request) -> str:
 @app.middleware("http")
 async def _protect_http_mcp(request: Request, call_next):
     if _is_http_mcp_path(_request_scope_path(request)) and request.method != "OPTIONS":
-        from .auth import is_auth_disabled
+        import uuid
 
+        from fastapi import HTTPException
+
+        from .auth import get_current_user, is_auth_disabled
+        from .db import _get_session_factory
+        from .research.projects import MCP_ACTOR, MCP_SYSTEM_ACTOR
+
+        actor = MCP_SYSTEM_ACTOR
         if not is_auth_disabled():
             expected = os.environ.get("QUANTGPT_MCP_HTTP_TOKEN", "")
             auth = request.headers.get("Authorization", "")
             token = auth[7:] if auth.startswith("Bearer ") else ""
-            if not expected:
+            # Existing deployment token has an explicit server-side identity.
+            # User JWT/API-key transport instead resolves the authenticated user.
+            if token and (token.startswith("qgpt_") or token.count(".") == 2):
+                try:
+                    async with _get_session_factory()() as session:
+                        user = await get_current_user(request, session)
+                        actor = uuid.UUID(str(user.id))
+                except HTTPException as exc:
+                    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+            elif not expected:
                 return JSONResponse(
                     {"detail": "HTTP MCP is disabled until QUANTGPT_MCP_HTTP_TOKEN is set"},
                     status_code=503,
                 )
-            if not token or not secrets.compare_digest(token, expected):
+            elif not token or not secrets.compare_digest(token, expected):
                 return JSONResponse({"detail": "Invalid HTTP MCP token"}, status_code=401)
+            else:
+                actor = uuid.UUID(os.environ.get("QUANTGPT_MCP_HTTP_USER_ID") or str(MCP_SYSTEM_ACTOR))
+        context_token = MCP_ACTOR.set(actor)
+        try:
+            return await call_next(request)
+        finally:
+            MCP_ACTOR.reset(context_token)
     return await call_next(request)
 
 

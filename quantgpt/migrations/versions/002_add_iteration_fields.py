@@ -16,10 +16,13 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("tasks", sa.Column("task_type", sa.String(20), nullable=True, server_default="backtest"))
-    op.add_column("tasks", sa.Column("parent_task_id", sa.String(12), sa.ForeignKey("tasks.id"), nullable=True))
+    with op.batch_alter_table("tasks") as batch:
+        batch.add_column(sa.Column("task_type", sa.String(20), nullable=True, server_default="backtest"))
+        batch.add_column(sa.Column("parent_task_id", sa.String(12), nullable=True))
+        batch.create_foreign_key("fk_tasks_parent_task", "tasks", ["parent_task_id"], ["id"])
 
 
 def downgrade() -> None:
-    op.drop_column("tasks", "parent_task_id")
-    op.drop_column("tasks", "task_type")
+    with op.batch_alter_table("tasks") as batch:
+        batch.drop_column("parent_task_id")
+        batch.drop_column("task_type")

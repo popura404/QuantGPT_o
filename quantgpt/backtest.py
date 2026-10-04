@@ -587,7 +587,8 @@ def _calc_ic_series(
         if fv.nunique() < 2 or fr.nunique() < 2:
             return np.nan
         corr, _ = sp_stats.spearmanr(fv.values, fr.values)
-        return corr if not np.isnan(corr) else 0.0
+        coefficient = cast(float, corr)
+        return coefficient if not np.isnan(coefficient) else 0.0
 
     ic_series = valid.groupby("trade_date")[["factor_value", "fwd_ret"]].apply(_pearson).dropna()
     rank_ic_series = valid.groupby("trade_date")[["factor_value", "fwd_ret"]].apply(_spearman).dropna()

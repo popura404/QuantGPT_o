@@ -6,6 +6,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
+from ..research.contracts import EvaluationRef, SimulationConfigV1
+
 FORBIDDEN_EXECUTION_FIELDS = {
     "execution",
     "broker",
@@ -224,6 +226,56 @@ class StrategySpecV1(StrictBaseModel):
             if forbidden:
                 raise ValueError(f"Forbidden execution fields: {sorted(forbidden)}")
         return data
+
+
+class StrategySpecV2(StrictBaseModel):
+    """Full research strategy with immutable factor evaluation lineage."""
+
+    schema_version: Literal["strategy_spec/v2"] = "strategy_spec/v2"
+    name: str = Field(min_length=1, max_length=120)
+    asset_class: Literal["equity"] = "equity"
+    market: str = Field(min_length=1)
+    frequency: Literal["daily"] = "daily"
+    universe: str = Field(min_length=1)
+    factors: list[FactorSpecV1] = Field(min_length=1, max_length=8)
+    factor_evaluations: tuple[EvaluationRef, ...] = Field(min_length=1, max_length=8)
+    semantics_version: Literal["factor_semantics/v2"] = "factor_semantics/v2"
+    simulation_config: SimulationConfigV1
+    signal_rules: RankThresholdSignalRuleV1
+    portfolio_rule: PortfolioRuleV1
+    risk_rules: RiskRules
+    cost_model: FixedBpsCostModel
+    validation: ValidationConfigV1
+    outputs: OutputConfigV1
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_live_fields(cls, data):
+        if isinstance(data, dict):
+            forbidden = _find_forbidden_keys(data)
+            if forbidden:
+                raise ValueError(f"Forbidden execution fields: {sorted(forbidden)}")
+        return data
+
+    @model_validator(mode="after")
+    def check_lineage(self):
+        if len(self.factor_evaluations) != len(self.factors):
+            raise ValueError("Each strategy component requires one evaluation reference in the same order")
+        if len({ref.project_id for ref in self.factor_evaluations}) != 1:
+            raise ValueError("Factor evaluations must belong to one research project")
+        if any(ref.backend != "local" for ref in self.factor_evaluations):
+            raise ValueError("WQ evidence cannot authorize local strategy lineage")
+        if self.simulation_config.rebalance_every_sessions != self.portfolio_rule.rebalance_period:
+            raise ValueError("Simulation and portfolio rebalance periods differ")
+        if self.simulation_config.fees_bps != self.cost_model.bps:
+            raise ValueError("Simulation and strategy fees differ")
+        return self
+
+    def calculation_spec(self) -> StrategySpecV1:
+        """Reuse numeric rules while the research service retains the full v2 identity."""
+        payload = self.model_dump(exclude={"factor_evaluations", "semantics_version", "simulation_config"})
+        payload["schema_version"] = "strategy_spec/v1"
+        return StrategySpecV1.model_validate(payload)
 
 
 StrategySpec = Annotated[StrategySpecV0 | StrategySpecV1, Field(discriminator="schema_version")]

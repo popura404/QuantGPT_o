@@ -85,6 +85,23 @@ async def test_mcp_compute_factor_values_returns_error(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_mcp_us_capability_blocker_retains_structured_fields(monkeypatch):
+    from quantgpt.us_data.contracts import DataCapabilityError
+
+    def unavailable(*args, **kwargs):
+        assert kwargs["market"] == "us" and kwargs["backend"] == "local"
+        raise DataCapabilityError("PRICE_COVERAGE_INCOMPLETE", "Compact feed lacks the requested history",
+                                  next_action="configure_licensed_history")
+
+    monkeypatch.setattr(mcp_server, "_compute_factor_values_payload", unavailable)
+    result = json.loads(await mcp_server.compute_factor_values("close", universe="ibm_demo", market="us",
+                                                              start_date="2024-01-02", end_date="2024-01-03"))
+    assert result["error_code"] == "PRICE_COVERAGE_INCOMPLETE"
+    assert result["retryable"] is False
+    assert result["next_action"] == "configure_licensed_history"
+
+
+@pytest.mark.asyncio
 async def test_mcp_compute_factor_values_explicit_universe_date_wins(monkeypatch):
     calls = {}
 

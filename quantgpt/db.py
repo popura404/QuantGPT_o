@@ -54,9 +54,28 @@ async def init_db():
     """Create all tables (dev convenience). Use Alembic for production."""
     engine = _get_engine()
     async with engine.begin() as conn:
+        await conn.run_sync(_check_research_schema)
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_migrate_add_columns)
     logger.info("Database tables created/verified")
+
+
+def _check_research_schema(connection):
+    """Never leave a pre-upgrade database with a partially created new schema."""
+    import sqlalchemy as sa
+
+    inspector = sa.inspect(connection)
+    requirements = {"experiments": {"project_id", "evaluation_hash", "evaluation_config"},
+                    "factor_pool_entries": {"project_id", "evaluation_id"},
+                    "strategies": {"project_id"}, "tasks": {"attempt_id", "dispatch_pending", "revision"}}
+    missing = []
+    for table, columns in requirements.items():
+        if inspector.has_table(table):
+            present = {column["name"] for column in inspector.get_columns(table)}
+            missing.extend(f"{table}.{column}" for column in sorted(columns - present))
+    if missing:
+        raise RuntimeError("DATABASE_MIGRATION_REQUIRED: back up the database and run Alembic upgrade head; "
+                           "see docs/RESEARCH_MIGRATION.md. Missing: " + ", ".join(missing))
 
 
 def _migrate_add_columns(connection):

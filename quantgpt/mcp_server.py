@@ -19,6 +19,7 @@ import sys
 import time
 import traceback
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from contextlib import asynccontextmanager
 from datetime import date
 from typing import Awaitable, Callable, Literal
 
@@ -28,12 +29,6 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from .data_quality import DataQualityConfig, run_data_quality_gate
 from .data_snapshots import ensure_market_frame_snapshot, persist_data_snapshot, snapshot_result_fields
-from .experiment_ledger import (
-    get_experiment as _ledger_get_experiment,
-)
-from .experiment_ledger import (
-    list_experiments as _ledger_list_experiments,
-)
 from .experiment_ledger import (
     record_experiment as _ledger_record_experiment,
 )
@@ -52,13 +47,9 @@ from .experiment_ledger import (
 from .experiment_ledger import (
     summarize_trial_counts as _ledger_summarize_trial_counts,
 )
-from .experiment_ledger import (
-    transition_status as _ledger_transition_status,
-)
 from .expression_parser import __doc__ as _expr_module_doc
 from .expression_parser import parse_expression
 from .factor_pool import (
-    MCP_SYSTEM_USER_ID,
     FactorPoolError,
     ensure_mcp_system_user,
     factor_pool_entry_to_dict,
@@ -99,7 +90,7 @@ from .market_data import (
 from .mcp_task_helper import (
     complete_mcp_task,
     force_mcp_task_id,
-    get_mcp_task_status_payload,
+    get_mcp_task_status_payload_async,
     request_mcp_task_cancel,
     reset_forced_mcp_task_id,
     start_mcp_task,
@@ -107,6 +98,16 @@ from .mcp_task_helper import (
     update_mcp_task_progress_sync,
 )
 from .report import generate_report
+from .research.access_ledger import (
+    get_experiment as _ledger_get_experiment,
+)
+from .research.access_ledger import (
+    list_experiments as _ledger_list_experiments,
+)
+from .research.access_ledger import (
+    transition_status as _ledger_transition_status,
+)
+from .research.projects import resolve_mcp_actor
 from .statistics.factor_similarity import factor_similarity_report as _factor_similarity_report
 from .statistics.multiple_testing import multiple_testing_report as _multiple_testing_report
 from .strategy.service import (
@@ -169,7 +170,7 @@ from .validation.policy import (
     OOS_SUMMARY_REQUIRED,
     classify_research_mode,
 )
-from .validation.promotion import AUTO_FULL_NOT_PROMOTABLE, evaluate_promotion_provenance, research_only_provenance
+from .validation.promotion import AUTO_FULL_NOT_PROMOTABLE, research_only_provenance
 from .validation.split import OOSConfig
 from .wq_brain_service import (
     run_batch_simulation,
@@ -184,14 +185,32 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 logger = logging.getLogger(__name__)
 _MCP_BACKGROUND_TASKS: set[asyncio.Task] = set()
 
+
+@asynccontextmanager
+async def _research_mcp_lifespan(server):
+    from .db import _get_session_factory, init_db
+    from .task_executor import start_task_dispatcher, stop_task_dispatcher
+
+    await init_db()
+    async with _get_session_factory()() as session:
+        await ensure_mcp_system_user(session)
+        await session.commit()
+    start_task_dispatcher()
+    try:
+        yield {}
+    finally:
+        await stop_task_dispatcher()
+
 mcp = FastMCP(
     "quantgpt",
+    lifespan=_research_mcp_lifespan,
     instructions=(
         "QuantGPT — A 股因子回测服务。先用 list_operators 了解可用算子。"
         "单股研究先用 get_stock_history/check_market_cache 读本地缓存，"
         "不要直接把单股问题升级为全 CSI500 因子回测。"
         "用于研究结论或候选选择时，score_factor/run_backtest 默认走 OOS selection："
-        "train 定方向，valid 选候选，test 仅在 validation_stage=final 时最终验收。"
+        "train 定方向，valid 选候选。新的共享研究使用 list_research_projects/evaluate_factors，"
+        "strategy_spec/v2 通过 run_research_strategy 运行；最终窗口在项目服务端预注册并锁定。"
     ),
     streamable_http_path="/",
     stateless_http=True,
@@ -611,9 +630,11 @@ async def _record_mcp_experiment_result(
             snapshot = payload.get("data_source_metadata")
             if isinstance(snapshot, dict) and snapshot.get("snapshot_id"):
                 await persist_data_snapshot(session, snapshot)
+            await ensure_mcp_system_user(session)
             experiment = await _ledger_record_experiment(
                 session,
                 expression=expression,
+                user_id=resolve_mcp_actor(),
                 params=params,
                 status=status,
                 task_id=task_id,
@@ -1183,7 +1204,7 @@ async def validate_expression(expression: str, mode: str = "local") -> str:
 async def get_mcp_task_status(task_id: str, include_result: bool = False) -> str:
     """查询 MCP 后台任务状态、进度和可选最终结果。"""
     return json.dumps(
-        get_mcp_task_status_payload(task_id, include_result=include_result),
+        await get_mcp_task_status_payload_async(task_id, include_result=include_result),
         ensure_ascii=False,
         indent=2,
         default=str,
@@ -2322,7 +2343,7 @@ async def summarize_trial_counts(
         async with factory() as session:
             counts = await _ledger_summarize_trial_counts(
                 session,
-                user_id=user_id,
+                user_id=resolve_mcp_actor(),
                 universe=universe,
                 factor_hash=factor_hash,
             )
@@ -2397,21 +2418,34 @@ async def run_multiple_testing_check(
 
 @mcp.tool()
 async def promote_experiment(experiment_id: str, boundary: str = "candidate", provenance: dict | None = None) -> str:
-    """运行 promotion provenance 检查并记录 promotion event。"""
+    """按服务端证据晋级；旧provenance参数仅保留兼容，不作为通过证明。"""
     try:
+        if boundary not in {"candidate", "export"}:
+            raise ValueError("Unknown promotion boundary")
         factory = _get_ledger_session_factory()
         async with factory() as session:
             row = await _ledger_get_experiment(session, experiment_id)
             if row is None:
                 return json.dumps({"error_code": "EXPERIMENT_NOT_FOUND", "experiment_id": experiment_id}, ensure_ascii=False)
-            decision = evaluate_promotion_provenance(provenance, boundary)
+            from .research.validation import evaluate_profile
+
+            if row.project_id is None or row.evaluation_hash is None:
+                decision = {"allowed": False, "boundary": boundary, "blockers": ["LEGACY_RECOMPUTE_REQUIRED"],
+                            "next_action": "Create a project evaluation under the current semantics"}
+            else:
+                profile = "wq_remote" if row.backend == "wq" else "local_factor"
+                decision = await evaluate_profile(session, resolve_mcp_actor(), row.project_id, experiment_id, profile=profile)
+                if row.backend == "wq" and boundary == "export":
+                    decision["allowed"] = False
+                    decision["blockers"].append("EVIDENCE_SCOPE_MISMATCH")
             await _ledger_record_promotion_event(
                 session,
                 experiment_id=experiment_id,
                 boundary=boundary,
                 decision="allowed" if decision["allowed"] else "blocked",
                 blockers=decision["blockers"],
-                provenance=provenance,
+                provenance={"source": "server_evaluation", "evaluation_hash": row.evaluation_hash,
+                            "caller_provenance_ignored": provenance is not None},
             )
             if decision["allowed"] and boundary == "candidate":
                 await _ledger_transition_status(session, experiment_id, "candidate", promotion_stage=boundary)
@@ -2465,6 +2499,7 @@ async def save_factor_pool_entry(
     report_url: str | None = None,
     factor_card_path: str | None = None,
     entry_id: str | None = None,
+    project_id: str | None = None,
 ) -> str:
     """保存或更新研究因子池条目；accepted 仅表示研究池状态，不触发 promotion。"""
     payload = _compact_factor_pool_payload(
@@ -2497,7 +2532,7 @@ async def save_factor_pool_entry(
             await ensure_mcp_system_user(session)
             row, created = await _pool_save_factor_pool_entry(
                 session,
-                owner_user_id=MCP_SYSTEM_USER_ID,
+                owner_user_id=resolve_mcp_actor(), project_id=project_id,
                 entry_id=entry_id,
                 data=payload,
             )
@@ -2528,6 +2563,7 @@ async def list_factor_pool_entries(
     q: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    project_id: str | None = None,
 ) -> str:
     """按状态、category tag、tags、股票池、hash、experiment 或关键词查询研究因子池。"""
     try:
@@ -2535,7 +2571,7 @@ async def list_factor_pool_entries(
         async with factory() as session:
             rows, total = await _pool_list_factor_pool_entries(
                 session,
-                owner_user_id=MCP_SYSTEM_USER_ID,
+                owner_user_id=resolve_mcp_actor(), project_id=project_id,
                 pool_status=pool_status,
                 category=category,
                 tag=tag,
@@ -2566,12 +2602,12 @@ async def list_factor_pool_entries(
 
 
 @mcp.tool()
-async def get_factor_pool_entry(entry_id: str) -> str:
+async def get_factor_pool_entry(entry_id: str, project_id: str | None = None) -> str:
     """查询单个研究因子池条目。"""
     try:
         factory = _get_ledger_session_factory()
         async with factory() as session:
-            row = await _pool_get_factor_pool_entry(session, owner_user_id=MCP_SYSTEM_USER_ID, entry_id=entry_id)
+            row = await _pool_get_factor_pool_entry(session, owner_user_id=resolve_mcp_actor(), project_id=project_id, entry_id=entry_id)
             return json.dumps(factor_pool_entry_to_dict(row), ensure_ascii=False, indent=2, default=str)
     except FactorPoolError as exc:
         return json.dumps({"error_code": "FACTOR_POOL_ERROR", "hint": str(exc)}, ensure_ascii=False)
@@ -2602,6 +2638,7 @@ async def update_factor_pool_entry(
     validation_provenance: dict | None = None,
     report_url: str | None = None,
     factor_card_path: str | None = None,
+    project_id: str | None = None,
 ) -> str:
     """更新研究因子池条目；状态变更不写 experiment ledger。"""
     payload = _compact_factor_pool_payload(
@@ -2631,7 +2668,7 @@ async def update_factor_pool_entry(
         async with factory() as session:
             row = await _pool_update_factor_pool_entry(
                 session,
-                owner_user_id=MCP_SYSTEM_USER_ID,
+                owner_user_id=resolve_mcp_actor(), project_id=project_id,
                 entry_id=entry_id,
                 data=payload,
             )
@@ -2645,12 +2682,12 @@ async def update_factor_pool_entry(
 
 
 @mcp.tool()
-async def delete_factor_pool_entry(entry_id: str) -> str:
+async def delete_factor_pool_entry(entry_id: str, project_id: str | None = None) -> str:
     """删除研究因子池条目。"""
     try:
         factory = _get_ledger_session_factory()
         async with factory() as session:
-            await _pool_delete_factor_pool_entry(session, owner_user_id=MCP_SYSTEM_USER_ID, entry_id=entry_id)
+            await _pool_delete_factor_pool_entry(session, owner_user_id=resolve_mcp_actor(), project_id=project_id, entry_id=entry_id)
             await session.commit()
             return json.dumps({"deleted": True, "entry_id": entry_id}, ensure_ascii=False, indent=2)
     except FactorPoolError as exc:
@@ -2664,6 +2701,7 @@ async def list_factor_pool_tags(
     pool_status: str | None = None,
     universe: str | None = None,
     market: str | None = None,
+    project_id: str | None = None,
 ) -> str:
     """查询研究因子池 tags、category 和 status facets。"""
     try:
@@ -2671,7 +2709,7 @@ async def list_factor_pool_tags(
         async with factory() as session:
             facets = await _pool_list_factor_pool_tags(
                 session,
-                owner_user_id=MCP_SYSTEM_USER_ID,
+                owner_user_id=resolve_mcp_actor(), project_id=project_id,
                 pool_status=pool_status,
                 universe=universe,
                 market=market,
@@ -3668,6 +3706,8 @@ async def compute_factor_values(
     universe_date: str | None = None,
     allow_remote_fetch: bool = False,
     submit_only: bool = False,
+    market: str = "a_share",
+    backend: str = "local",
 ) -> str:
     """计算因子截面值，返回每个交易日所有股票的因子得分。
 
@@ -3684,6 +3724,8 @@ async def compute_factor_values(
         JSON string with trading_days and data: [{date, values: {symbol: score}, count}].
     """
     task_params = {
+        "market": market,
+        "backend": backend,
         "universe": universe,
         "start_date": start_date,
         "end_date": end_date,
@@ -3709,6 +3751,8 @@ async def compute_factor_values(
                 universe_date=universe_date,
                 allow_remote_fetch=allow_remote_fetch,
                 submit_only=False,
+                market=market,
+                backend=backend,
             ),
         ))
         return _submitted_mcp_task_response(task_id)
@@ -3723,13 +3767,13 @@ async def compute_factor_values(
             stage="validating",
         )
         _mcp_cancel_check(task_id)
-        req = _validate_factor_values_request(expression, universe, start_date, end_date)
+        req = _validate_factor_values_request(expression, universe, start_date, end_date, market=market, backend=backend)
         resolved_universe_date = _resolve_universe_date(universe_date, req.end_date)
         task_params["start_date"] = req.start_date
         task_params["end_date"] = req.end_date
         task_params["fetch_start"] = req.fetch_start
         task_params["universe_date"] = resolved_universe_date
-        if allow_remote_fetch:
+        if allow_remote_fetch and market == "a_share":
             _mcp_cancel_check(task_id)
             stock_codes = await asyncio.to_thread(
                 get_universe,
@@ -3755,6 +3799,8 @@ async def compute_factor_values(
         _result = await asyncio.to_thread(
             _compute_factor_values_payload,
             expression,
+            market=market,
+            backend=backend,
             universe=universe,
             start_date=start_date,
             end_date=end_date,
@@ -3795,10 +3841,127 @@ async def compute_factor_values(
     except Exception as e:
         _error_msg = str(e)
         _result = {"error": str(e)}
+        structured_error = getattr(e, "to_dict", None)
+        if callable(structured_error):
+            details = structured_error()
+            if isinstance(details, dict):
+                _result.update(details)
         logger.warning(f"compute_factor_values failed: {e}")
         return json.dumps(_result, ensure_ascii=False)
     finally:
         await complete_mcp_task(task_id, _result, _error_msg, expression)
+
+
+@mcp.tool()
+async def list_research_projects() -> str:
+    """List only the authenticated principal's shared research projects."""
+    from .db import _get_session_factory
+    from .research.projects import list_projects
+
+    async with _get_session_factory()() as session:
+        projects = await list_projects(session, resolve_mcp_actor())
+        return _strategy_dumps({"projects": [{"id": str(row.id), "name": row.name, "market": row.market}
+                                             for row in projects]})
+
+
+@mcp.tool()
+async def evaluate_factors(project_id: str, definitions: list[dict], config: dict,
+                            submit_only: bool = True, idempotency_key: str | None = None) -> str:
+    """Evaluate frozen local or WQ definitions; return compact references and durable task IDs."""
+    import uuid
+
+    from .db import _get_session_factory
+    from .research.jobs import execute_research_request, submit_research_request
+
+    params = {"kind": "factor", "definitions": definitions, "config": config}
+    try:
+        async with _get_session_factory()() as session:
+            if submit_only:
+                from .task_executor import start_task_dispatcher
+
+                result = await submit_research_request(session, resolve_mcp_actor(), uuid.UUID(project_id),
+                                                       params, idempotency_key)
+                start_task_dispatcher()
+            else:
+                result = await execute_research_request(session, resolve_mcp_actor(), uuid.UUID(project_id), params)
+        return _strategy_dumps(result)
+    except Exception as exc:
+        return _strategy_dumps({"error_code": "RESEARCH_EVALUATION_BLOCKED", "message": str(exc), "retryable": False})
+
+
+@mcp.tool()
+async def run_research_strategy(project_id: str, spec: dict, config: dict,
+                                submit_only: bool = True, idempotency_key: str | None = None) -> str:
+    """Run strategy_spec/v2 against immutable server-owned factor references."""
+    import uuid
+
+    from .db import _get_session_factory
+    from .research.jobs import execute_research_request, submit_research_request
+
+    params = {"kind": "strategy", "spec": spec, "config": config}
+    try:
+        async with _get_session_factory()() as session:
+            if submit_only:
+                from .task_executor import start_task_dispatcher
+
+                result = await submit_research_request(session, resolve_mcp_actor(), uuid.UUID(project_id),
+                                                       params, idempotency_key)
+                start_task_dispatcher()
+            else:
+                result = await execute_research_request(session, resolve_mcp_actor(), uuid.UUID(project_id), params)
+        return _strategy_dumps(result)
+    except Exception as exc:
+        return _strategy_dumps({"error_code": "RESEARCH_STRATEGY_BLOCKED", "message": str(exc), "retryable": False})
+
+
+@mcp.tool()
+async def get_research_artifact(project_id: str, artifact_id: str) -> str:
+    """Read a content-verified artifact after checking live project membership."""
+    import uuid
+
+    from .db import _get_session_factory
+    from .research.evaluations import read_artifact
+
+    try:
+        async with _get_session_factory()() as session:
+            return _strategy_dumps(await read_artifact(session, resolve_mcp_actor(), uuid.UUID(project_id),
+                                                       uuid.UUID(artifact_id)))
+    except Exception as exc:
+        return _strategy_dumps({"error_code": "ARTIFACT_UNAVAILABLE", "message": str(exc)})
+
+
+@mcp.tool()
+async def optimize_research_portfolio(project_id: str, signal_ref: dict, config: dict) -> str:
+    """Optimize saved signals with explicit constraints; cannot authorize strategy export."""
+    import uuid
+
+    from .db import _get_session_factory
+    from .research.portfolio import PortfolioOptimizationConfig, optimize_signal_reference
+    from .research.runtime import snapshot_root
+
+    try:
+        async with _get_session_factory()() as session:
+            result = await optimize_signal_reference(session, resolve_mcp_actor(), uuid.UUID(project_id), signal_ref,
+                PortfolioOptimizationConfig.model_validate(config), snapshot_root=snapshot_root())
+            return _strategy_dumps(result)
+    except Exception as exc:
+        return _strategy_dumps({"error_code": "PORTFOLIO_OPTIMIZATION_BLOCKED", "message": str(exc), "retryable": False})
+
+
+@mcp.tool()
+async def export_research_strategy(project_id: str, strategy_run_id: str) -> str:
+    """Export using server evidence only; never accepts caller validation booleans."""
+    import uuid
+
+    from .db import _get_session_factory
+    from .research.strategies import export_strategy_run
+
+    try:
+        async with _get_session_factory()() as session:
+            return _strategy_dumps(await export_strategy_run(session, resolve_mcp_actor(), uuid.UUID(project_id),
+                                                             uuid.UUID(strategy_run_id)))
+    except Exception as exc:
+        return _strategy_dumps({"error_code": "STRATEGY_EXPORT_BLOCKED", "message": str(exc)})
 
 
 # Operator documentation fallback

@@ -6,13 +6,11 @@ import json
 
 import pandas as pd
 
-from ..validation.oos_score import compute_oos_score
-from ..validation.promotion import BOUNDARY_EXPORT, assert_promotion_ready_for_boundary
+from ..validation.oos_score import compute_oos_score, compute_oos_selection_score
 from .adapters import list_data_fields as _list_data_fields
 from .adapters import list_markets as _list_markets
 from .backtest import StrategyBacktestRequest, run_strategy_backtest
 from .diagnosis import diagnose_strategy_metrics, diagnose_strategy_result
-from .export import export_strategy_candidate
 from .optimizer import optimize_candidate_weights
 from .report import generate_strategy_report
 from .result import StrategyBacktestResult
@@ -57,7 +55,9 @@ def run_strategy_backtest_payload(request_data: dict) -> dict:
     result = run_strategy_backtest(StrategyBacktestRequest.model_validate(request_data))
     payload = strategy_result_to_payload(result)
     if payload.get("oos_result"):
-        payload["strategy_score"] = compute_oos_score(payload["oos_result"], payload.get("data_quality"))
+        score = (compute_oos_selection_score if payload["oos_result"].get("validation_stage") == "selection"
+                 else compute_oos_score)
+        payload["strategy_score"] = score(payload["oos_result"], payload.get("data_quality"))
     else:
         payload["strategy_score"] = compute_strategy_score_from_metrics(
             payload["metrics"],
@@ -70,7 +70,9 @@ def run_strategy_backtest_payload(request_data: dict) -> dict:
 
 def score_strategy_payload(result_payload: dict) -> dict:
     if result_payload.get("oos_result"):
-        return compute_oos_score(result_payload["oos_result"], result_payload.get("data_quality"))
+        score = (compute_oos_selection_score if result_payload["oos_result"].get("validation_stage") == "selection"
+                 else compute_oos_score)
+        return score(result_payload["oos_result"], result_payload.get("data_quality"))
     return compute_strategy_score_from_metrics(
         result_payload.get("metrics", {}),
         result_payload.get("risk_logs", []),
@@ -85,28 +87,9 @@ def generate_strategy_report_payload(result_payload: dict, output_dir: str | Non
 
 
 def export_strategy_candidate_payload(result_payload: dict, output_dir: str | None = None) -> dict:
-    assert_promotion_ready_for_boundary(result_payload.get("validation_provenance"), BOUNDARY_EXPORT)
-    experiment_id = result_payload.get("experiment_id")
-    factor_hash = result_payload.get("factor_hash")
-    data_snapshot_id = result_payload.get("data_snapshot_id")
-    if not experiment_id:
-        raise ValueError("strategy_signal.v1 export requires experiment_id")
-    if not factor_hash:
-        raise ValueError("strategy_signal.v1 export requires factor_hash")
-    if not data_snapshot_id:
-        raise ValueError("strategy_signal.v1 export requires data_snapshot_id")
-    result = strategy_result_from_payload(result_payload)
-    payload = export_strategy_candidate(
-        result,
-        output_dir=output_dir,
-        experiment_id=experiment_id,
-        factor_hash=factor_hash,
-        data_snapshot_id=data_snapshot_id,
-        strategy_id=result_payload.get("strategy_id"),
-        validation_summary=_export_validation_summary(result_payload),
-    )
-    payload["validation_provenance"] = result_payload["validation_provenance"]
-    return payload
+    """Legacy results remain readable; caller-provided proofs cannot authorize export."""
+    raise ValueError("SERVER_STRATEGY_RUN_REQUIRED: export through the project strategy_run_id endpoint; "
+                     "legacy payloads require recomputation and server-owned validation evidence")
 
 
 def diagnose_strategy_payload(result_payload: dict) -> dict:

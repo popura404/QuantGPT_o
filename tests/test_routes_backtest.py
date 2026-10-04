@@ -332,12 +332,15 @@ def _route_backtest_result(oos: bool = False) -> dict:
 
 
 class _ImmediateThread:
-    def __init__(self, target, args=(), daemon=None):
+    def __init__(self, target, args=(), daemon=None, name=None):
         self._target = target
         self._args = args
 
     def start(self):
         self._target(*self._args)
+
+    def is_alive(self):
+        return False
 
 
 class _FakeFetcher:
@@ -386,7 +389,7 @@ class TestAutoBacktestOOSResults:
         }, headers=auth_headers)
 
         assert resp.status_code == 202
-        assert set(resp.json()) == {"task_id", "status"}
+        assert set(resp.json()) == {"task_id", "status", "reused"}
         task = tasks[resp.json()["task_id"]]
         assert task["status"] == "completed"
         result = task["result"]

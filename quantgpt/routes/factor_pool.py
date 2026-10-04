@@ -25,6 +25,8 @@ router = APIRouter(prefix="/api/v1/factor-pool", tags=["factor-pool"])
 
 
 class SaveFactorPoolRequest(BaseModel):
+    project_id: str | None = None
+    evaluation_id: str | None = None
     entry_id: str | None = None
     expression: str
     name: str | None = None
@@ -53,6 +55,7 @@ class SaveFactorPoolRequest(BaseModel):
 
 
 class UpdateFactorPoolRequest(BaseModel):
+    evaluation_id: str | None = None
     expression: str | None = None
     name: str | None = None
     note: str | None = None
@@ -88,10 +91,12 @@ async def save_factor_pool(
 ):
     payload = _model_to_dict(req, exclude_unset=True)
     entry_id = payload.pop("entry_id", None)
+    project_id = payload.pop("project_id", None)
     try:
         entry, created = await save_factor_pool_entry(
             db,
             owner_user_id=user.id,
+            project_id=project_id,
             entry_id=entry_id,
             data=payload,
         )
@@ -108,6 +113,7 @@ async def save_factor_pool(
 
 @router.get("", summary="查询因子池列表")
 async def list_factor_pool(
+    project_id: str | None = None,
     pool_status: str | None = None,
     status: str | None = None,
     category: str | None = None,
@@ -127,6 +133,7 @@ async def list_factor_pool(
         entries, total = await list_factor_pool_entries(
             db,
             owner_user_id=user.id,
+            project_id=project_id,
             pool_status=pool_status or status,
             category=category,
             tag=tag,
@@ -151,6 +158,7 @@ async def list_factor_pool(
 
 @router.get("/tags", summary="查询因子池 tag/category facets")
 async def list_factor_pool_tag_facets(
+    project_id: str | None = None,
     pool_status: str | None = None,
     status: str | None = None,
     universe: str | None = None,
@@ -162,6 +170,7 @@ async def list_factor_pool_tag_facets(
         return await list_factor_pool_tags(
             db,
             owner_user_id=user.id,
+            project_id=project_id,
             pool_status=pool_status or status,
             universe=universe,
             market=market,
@@ -173,11 +182,12 @@ async def list_factor_pool_tag_facets(
 @router.get("/{entry_id}", summary="查询单个因子池条目")
 async def get_factor_pool(
     entry_id: str,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        entry = await get_factor_pool_entry(db, owner_user_id=user.id, entry_id=entry_id)
+        entry = await get_factor_pool_entry(db, owner_user_id=user.id, entry_id=entry_id, project_id=project_id)
     except FactorPoolValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FactorPoolNotFoundError as exc:
@@ -189,12 +199,13 @@ async def get_factor_pool(
 async def update_factor_pool(
     entry_id: str,
     req: UpdateFactorPoolRequest,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     payload = _model_to_dict(req, exclude_unset=True)
     try:
-        entry = await update_factor_pool_entry(db, owner_user_id=user.id, entry_id=entry_id, data=payload)
+        entry = await update_factor_pool_entry(db, owner_user_id=user.id, entry_id=entry_id, data=payload, project_id=project_id)
         await db.commit()
         await db.refresh(entry)
     except FactorPoolValidationError as exc:
@@ -207,11 +218,12 @@ async def update_factor_pool(
 @router.delete("/{entry_id}", status_code=204, summary="删除因子池条目")
 async def delete_factor_pool(
     entry_id: str,
+    project_id: str | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        await delete_factor_pool_entry(db, owner_user_id=user.id, entry_id=entry_id)
+        await delete_factor_pool_entry(db, owner_user_id=user.id, entry_id=entry_id, project_id=project_id)
         await db.commit()
     except FactorPoolValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

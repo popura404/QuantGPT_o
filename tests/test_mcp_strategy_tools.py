@@ -92,8 +92,8 @@ async def test_mcp_run_score_report_strategy_flow(monkeypatch, tmp_path):
     assert backtest["latest_holdings"][0]["stock_code"] == "A"
     assert 0 <= score["score"] <= 100
     assert report["summary_json_path"].endswith("summary.json")
-    assert export["schema_version"] == "strategy_signal.v1"
-    assert export["signals"][0]["stock_code"] == "A"
+    assert export["error_code"] == "STRATEGY_EXPORT_FAILED"
+    assert "SERVER_STRATEGY_RUN_REQUIRED" in export["hint"]
     assert "diagnoses" in diagnosis
     assert anti["type"] == "strategy_anti_overfit"
     assert rolling["type"] == "strategy_rolling_validation"

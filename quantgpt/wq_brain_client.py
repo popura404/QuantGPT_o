@@ -9,6 +9,7 @@ import logging
 import os
 import time
 from typing import Callable
+from urllib.parse import urljoin, urlsplit
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -72,7 +73,8 @@ class WQBrainClient:
         if self._session is None:
             self._session = requests.Session()
             self._session.trust_env = False
-            retry = Retry(total=3, backoff_factor=1, status_forcelist=[502, 503, 504])
+            retry = Retry(total=3, connect=0, backoff_factor=1,
+                          allowed_methods=frozenset({"GET", "HEAD", "OPTIONS"}), status_forcelist=[502, 503, 504])
             adapter = HTTPAdapter(max_retries=retry)
             self._session.mount("https://", adapter)
             self._session.mount("http://", adapter)
@@ -89,6 +91,7 @@ class WQBrainClient:
             r = s.post(
                 f"{API_BASE}/authentication",
                 auth=(self.email, self.password),
+                timeout=(10, 30), allow_redirects=False,
             )
             if r.status_code == 429:
                 retry = int(r.headers.get("Retry-After", "60"))
@@ -115,139 +118,123 @@ class WQBrainClient:
         r = self._get_session().get(f"{API_BASE}/users/self")
         return r.json() if r.status_code == 200 else {}
 
-    def simulate(
-        self,
-        expression: str,
-        region: str = "USA",
-        universe: str = "TOP3000",
-        delay: int = 1,
-        decay: int = 0,
-        neutralization: str = "SUBINDUSTRY",
-        truncation: float = 0.08,
-        progress_callback: Callable[[int, str], None] | None = None,
-    ) -> dict:
-        s = self._get_session()
-        payload = {
-            "type": "REGULAR",
-            "settings": {
-                "instrumentType": "EQUITY",
-                "region": region,
-                "universe": universe,
-                "delay": delay,
-                "decay": decay,
-                "neutralization": neutralization,
-                "truncation": truncation,
-                "pasteurization": "ON",
-                "unitHandling": "VERIFY",
-                "nanHandling": "OFF",
-                "language": "FASTEXPR",
-                "visualization": False,
-            },
-            "regular": expression,
-        }
+    @staticmethod
+    def simulation_payload(expression: str, region: str = "USA", universe: str = "TOP3000",
+                           delay: int = 1, decay: int = 0, neutralization: str = "SUBINDUSTRY",
+                           truncation: float = 0.08) -> dict:
+        return {"type": "REGULAR", "regular": expression, "settings": {
+            "instrumentType": "EQUITY", "region": region, "universe": universe,
+            "delay": delay, "decay": decay, "neutralization": neutralization,
+            "truncation": truncation, "pasteurization": "ON", "unitHandling": "VERIFY",
+            "nanHandling": "OFF", "language": "FASTEXPR", "visualization": False,
+        }}
 
-        for attempt in range(_MAX_RETRIES):
+    @staticmethod
+    def simulation_url(reference: str) -> str:
+        url = urljoin(API_BASE + "/", reference)
+        parsed = urlsplit(url)
+        if (parsed.scheme != "https" or parsed.netloc != urlsplit(API_BASE).netloc
+                or not parsed.path.startswith("/simulations/") or parsed.query or parsed.fragment):
+            raise ValueError("Invalid WQ simulation reference")
+        return url
+
+    def start_simulation(self, expression: str, region: str = "USA", universe: str = "TOP3000",
+                         delay: int = 1, decay: int = 0, neutralization: str = "SUBINDUSTRY",
+                         truncation: float = 0.08) -> dict:
+        """One POST. An uncertain response never authorizes another submission."""
+        payload = self.simulation_payload(expression, region, universe, delay, decay, neutralization, truncation)
+        try:
+            response = self._get_session().post(f"{API_BASE}/simulations", json=payload,
+                                                timeout=(10, 60), allow_redirects=False)
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            return {"ok": False, "status": "remote_outcome_unknown", "retryable": False,
+                    "error": str(exc), "next_action": "reconcile_remote_request"}
+        if response.status_code not in (200, 201, 202):
+            unknown = response.status_code >= 500 or 300 <= response.status_code < 400
+            return {"ok": False, "status": "remote_outcome_unknown" if unknown else "failed",
+                    "retryable": response.status_code == 429, "status_code": response.status_code,
+                    "error": f"HTTP {response.status_code}: {response.text[:300]}",
+                    "next_action": "reconcile_remote_request" if unknown else "inspect_platform_rejection"}
+        try:
+            location = response.headers.get("Location", "")
+            if not location:
+                raise ValueError("No Location header in accepted response")
+            url = self.simulation_url(location)
+        except ValueError as exc:
+            return {"ok": False, "status": "remote_outcome_unknown", "retryable": False,
+                    "error": str(exc), "next_action": "reconcile_remote_request"}
+        return {"ok": True, "status": "remote_pending", "remote_run_ref": url,
+                "simulation_id": url.rsplit("/", 1)[-1]}
+
+    def simulate(self, expression: str, region: str = "USA", universe: str = "TOP3000",
+                 delay: int = 1, decay: int = 0, neutralization: str = "SUBINDUSTRY",
+                 truncation: float = 0.08, progress_callback: Callable[[int, str], None] | None = None,
+                 accepted_callback: Callable[[dict], None] | None = None,
+                 cancel_check: Callable[[], bool] | None = None) -> dict:
+        accepted = self.start_simulation(expression, region, universe, delay, decay, neutralization, truncation)
+        if not accepted.get("ok"):
+            return accepted
+        if accepted_callback:
+            accepted_callback(accepted)  # Persist the reference before the first GET.
+        return self.poll_simulation(accepted["remote_run_ref"], expression=expression,
+                                    progress_callback=progress_callback, cancel_check=cancel_check)
+
+    def poll_simulation(self, remote_run_ref: str, *, expression: str = "",
+                        progress_callback: Callable[[int, str], None] | None = None,
+                        cancel_check: Callable[[], bool] | None = None,
+                        max_polls: int | None = None) -> dict:
+        """Resume using GET only; a timeout retains the reference for later reconciliation."""
+        url = self.simulation_url(remote_run_ref)
+        for i in range(_POLL_MAX_ATTEMPTS if max_polls is None else max_polls):
+            if cancel_check and cancel_check():
+                return {"ok": False, "status": "local_wait_cancelled", "remote_run_ref": url,
+                        "remote_cancel_confirmed": False, "retryable": False, "error": "Local wait cancelled"}
             try:
-                r = s.post(f"{API_BASE}/simulations", json=payload)
-            except (requests.ConnectionError, requests.Timeout) as e:
-                wait = _CONCURRENT_BACKOFF * (attempt + 1)
-                logger.warning(f"WQ connection error (attempt {attempt+1}/{_MAX_RETRIES}): {e}, retrying in {wait}s")
-                if progress_callback:
-                    progress_callback(0, f"连接异常，等待 {wait}s（第 {attempt+1} 次重试）")
-                time.sleep(wait)
-                continue
-
-            if r.status_code in (200, 201, 202):
-                break
-
-            if r.status_code == 429:
-                detail = ""
-                try:
-                    detail = r.json().get("detail", "")
-                except Exception:
-                    pass
-
-                if "CONCURRENT_SIMULATION_LIMIT" in detail:
-                    wait = _CONCURRENT_BACKOFF * (attempt + 1)
-                    logger.info(f"WQ concurrent limit, waiting {wait}s (attempt {attempt+1}/{_MAX_RETRIES})")
-                    if progress_callback:
-                        progress_callback(0, f"并发限制，等待 {wait}s（第 {attempt+1} 次重试）")
-                    time.sleep(wait)
-                    continue
-
-                retry = int(r.headers.get("Retry-After", "60"))
-                logger.info(f"WQ rate-limited, waiting {retry}s")
-                if progress_callback:
-                    progress_callback(0, f"速率限制，等待 {retry}s")
-                time.sleep(retry + 1)
-                continue
-
-            return {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:300]}"}
-        else:
-            return {"ok": False, "error": "WQ concurrent retry limit exceeded"}
-
-        location = r.headers.get("Location", "")
-        if not location:
-            return {"ok": False, "error": "No Location header in response"}
-
-        url = location if location.startswith("http") else f"{API_BASE}{location}"
-
-        for i in range(_POLL_MAX_ATTEMPTS):
-            try:
-                r = s.get(url)
-            except (requests.ConnectionError, requests.Timeout):
-                logger.warning(f"WQ poll connection error (attempt {i+1}), retrying...")
-                time.sleep(_POLL_INTERVAL)
-                continue
-            if r.status_code != 200:
-                time.sleep(_POLL_INTERVAL)
-                continue
-
-            try:
-                data = r.json()
-            except Exception:
-                time.sleep(_POLL_INTERVAL)
-                continue
-            status = data.get("status", "").upper()
-            progress = data.get("progress", 0)
-
+                response = self._get_session().get(url, timeout=(10, 30), allow_redirects=False)
+                data = response.json() if response.status_code == 200 else {}
+                if not isinstance(data, dict):
+                    data = {}
+            except (requests.RequestException, ValueError):
+                data = {}
+            status = str(data.get("status", "")).upper()
             if progress_callback:
-                pct = int(progress * 100) if isinstance(progress, float) and progress <= 1 else int(progress)
+                progress = data.get("progress", 0)
+                try:
+                    pct = int(progress * 100) if isinstance(progress, float) and progress <= 1 else int(progress or 0)
+                except (ValueError, TypeError, OverflowError):
+                    pct = 0
                 progress_callback(min(pct, 99), f"模拟进行中 ({pct}%)")
-
             if status in ("DONE", "COMPLETE"):
                 alpha_raw = data.get("alpha", "")
-                alpha_id = alpha_raw.split("/")[-1] if alpha_raw else None
-
-                is_data = data.get("is", {})
-                oos_data = data.get("oos", {})
-
+                alpha_id = str(alpha_raw).split("/")[-1] if alpha_raw else None
+                is_data, oos_data = data.get("is", {}), data.get("oos", {})
+                alpha_detail = {}
                 if alpha_id and not is_data:
                     alpha_detail = self._fetch_alpha(alpha_id)
-                    is_data = alpha_detail.get("is", {})
-                    oos_data = alpha_detail.get("oos", {})
-
+                    is_data, oos_data = alpha_detail.get("is", {}), alpha_detail.get("oos", {})
                 if progress_callback:
                     progress_callback(100, "模拟完成")
-
-                return {
-                    "ok": True,
-                    "expression": expression,
-                    "is": is_data,
-                    "oos": oos_data,
-                    "settings": data.get("settings", {}),
-                    "alpha_id": alpha_id,
-                    "simulation_id": data.get("id", ""),
-                }
-            elif status in ("ERROR", "FAILED"):
-                return {"ok": False, "error": f"WQ simulation failed: {data.get('message', status)}"}
-
-            time.sleep(_POLL_INTERVAL)
-
-        return {"ok": False, "error": "WQ simulation polling timeout (6min)"}
+                return {"ok": True, "status": "completed", "expression": expression,
+                        "is": is_data, "oos": oos_data, "settings": data.get("settings", {}),
+                        "alpha_id": alpha_id, "simulation_id": data.get("id") or url.rsplit("/", 1)[-1],
+                        "remote_run_ref": url, "raw_platform_result": data, "raw_alpha_result": alpha_detail}
+            if status in ("ERROR", "FAILED"):
+                return {"ok": False, "status": "failed", "remote_run_ref": url,
+                        "raw_platform_result": data, "error": f"WQ simulation failed: {data.get('message', status)}"}
+            if status in ("CANCELLED", "CANCELED"):
+                return {"ok": False, "status": "remote_cancel_confirmed", "remote_run_ref": url,
+                        "remote_cancel_confirmed": True, "raw_platform_result": data,
+                        "error": "Platform reports cancellation"}
+            if i + 1 < (_POLL_MAX_ATTEMPTS if max_polls is None else max_polls):
+                time.sleep(_POLL_INTERVAL)
+        return {"ok": False, "status": "remote_outcome_unknown", "retryable": False,
+                "remote_run_ref": url, "error": "WQ simulation polling timeout", "next_action": "resume_polling"}
 
     def _fetch_alpha(self, alpha_id: str) -> dict:
-        r = self._get_session().get(f"{API_BASE}/alphas/{alpha_id}")
+        try:
+            r = self._get_session().get(f"{API_BASE}/alphas/{alpha_id}", timeout=(10, 30))
+        except requests.RequestException:
+            return {}
         if r.status_code == 200:
             try:
                 return r.json()
@@ -275,80 +262,29 @@ class WQBrainClient:
         }
 
     def submit_alpha(self, alpha_id: str) -> dict:
-        s = self._get_session()
-
-        for submit_try in range(3):
-            r = None
-            for attempt in range(3):
-                try:
-                    r = s.post(f"{API_BASE}/alphas/{alpha_id}/submit")
-                    body = r.text[:500]
-                    logger.info(f"Submit {alpha_id}: HTTP {r.status_code}, body={body}")
-                    break
-                except (requests.ConnectionError, requests.Timeout) as e:
-                    logger.warning(f"Submit {alpha_id}: connection error (attempt {attempt+1}): {e}")
-                    time.sleep(5 * (attempt + 1))
-            else:
-                return {"status_code": 0, "ok": False, "detail": "connection failed after retries"}
-
-            if r.status_code == 403:
-                try:
-                    resp = r.json()
-                    checks = resp.get("is", {}).get("checks", [])
-                    sc = next((c for c in checks if c.get("name") == "SELF_CORRELATION"), None)
-                    if sc and sc.get("result") == "FAIL":
-                        logger.warning(f"Submit {alpha_id}: SC FAIL value={sc.get('value')} limit={sc.get('limit')}")
-                        return {
-                            "status_code": 403,
-                            "ok": False,
-                            "detail": f"SC FAIL: value={sc.get('value')} > limit={sc.get('limit')}",
-                            "sc_value": sc.get("value"),
-                            "sc_limit": sc.get("limit"),
-                            "checks": checks,
-                        }
-                except Exception:
-                    pass
-                return {"status_code": 403, "ok": False, "detail": body}
-
-            if r.status_code == 429:
-                wait = 30 * (submit_try + 1)
-                logger.warning(f"Submit {alpha_id}: rate limited (429), waiting {wait}s before retry")
-                time.sleep(wait)
-                continue
-
-            if r.status_code not in (200, 201, 202):
-                logger.warning(f"Submit {alpha_id}: unexpected HTTP {r.status_code}, waiting 15s before retry")
-                time.sleep(15)
-                continue
-
-            poll_result = self._poll_alpha_submission(alpha_id)
-
-            if poll_result.get("ok"):
-                return poll_result
-
-            if poll_result.get("platform_status") == "TIMEOUT":
-                alpha_data = self._fetch_alpha(alpha_id)
-                actual_status = (alpha_data.get("status") or "").upper()
-                if actual_status == "UNSUBMITTED":
-                    logger.warning(f"Submit {alpha_id}: platform still UNSUBMITTED after poll, retrying submit (try {submit_try+1})")
-                    time.sleep(10)
-                    continue
-                logger.info(f"Submit {alpha_id}: poll timeout but platform status={actual_status}, treating as submitted")
-                poll_result["ok"] = True
-                poll_result["detail"] = f"poll timeout but platform accepted (status={actual_status})"
-                return poll_result
-
-            return poll_result
-
-        return {"status_code": 200, "ok": False, "detail": "submit failed after 3 outer retries, alpha still UNSUBMITTED"}
+        """Submit once. Only a platform ACTIVE result confirms success."""
+        try:
+            response = self._get_session().post(f"{API_BASE}/alphas/{alpha_id}/submit",
+                                                timeout=(10, 60), allow_redirects=False)
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            return {"status_code": 0, "ok": False, "detail": str(exc),
+                    "status": "remote_outcome_unknown", "retryable": False,
+                    "remote_run_ref": f"alpha:{alpha_id}", "next_action": "check_alpha_status"}
+        if response.status_code not in (200, 201, 202):
+            unknown = response.status_code >= 500 or 300 <= response.status_code < 400
+            return {"status_code": response.status_code, "ok": False, "detail": response.text[:500],
+                    "status": "remote_outcome_unknown" if unknown else "failed",
+                    "retryable": response.status_code == 429, "remote_run_ref": f"alpha:{alpha_id}"}
+        return self._poll_alpha_submission(alpha_id)
 
     def _poll_alpha_submission(self, alpha_id: str, max_polls: int = 12, interval: int = 10) -> dict:
         """Poll alpha status until platform confirms submission or SC check completes."""
         s = self._get_session()
+        status, sc_result = "UNKNOWN", "MISSING"
         for i in range(max_polls):
             time.sleep(interval)
             try:
-                r = s.get(f"{API_BASE}/alphas/{alpha_id}")
+                r = s.get(f"{API_BASE}/alphas/{alpha_id}", timeout=(10, 30))
             except (requests.ConnectionError, requests.Timeout):
                 logger.warning(f"Submit poll {alpha_id}: connection error at poll #{i}")
                 continue
@@ -388,18 +324,14 @@ class WQBrainClient:
                     "sc_value": sc_value,
                     "sc_limit": sc_limit,
                 }
-            elif sc_result == "PASS" and status == "UNSUBMITTED":
-                logger.info(f"Submit {alpha_id}: SC PASS but still UNSUBMITTED, retrying submit...")
-                try:
-                    s.post(f"{API_BASE}/alphas/{alpha_id}/submit")
-                except Exception:
-                    pass
 
         return {
             "status_code": 200,
             "ok": False,
             "detail": f"submission polling timeout ({max_polls * interval}s), last status={status}, SC={sc_result}",
             "platform_status": "TIMEOUT",
+            "status": "remote_outcome_unknown", "retryable": False,
+            "remote_run_ref": f"alpha:{alpha_id}", "next_action": "check_alpha_status",
         }
 
     def delete_alpha(self, alpha_id: str) -> dict:

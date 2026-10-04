@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import math
 import time
 from typing import Any, Callable
 
@@ -30,7 +31,8 @@ def safe_float(val: Any) -> float | None:
     if val is None:
         return None
     try:
-        return float(val)
+        result = float(val)
+        return result if math.isfinite(result) else None
     except (TypeError, ValueError):
         return None
 
@@ -104,7 +106,7 @@ def run_single_simulation(
     )
 
     if not result.get("ok"):
-        return {"ok": False, "error": result.get("error", "Simulation failed")}
+        return {**result, "ok": False, "error": result.get("error", "Simulation failed")}
 
     alpha_id = result.get("alpha_id")
     is_data = result.get("is", {})
@@ -146,6 +148,10 @@ def run_single_simulation(
         "settings": result.get("settings", {}),
         "submitted": submitted,
         "simulation_id": result.get("simulation_id"),
+        "remote_run_ref": result.get("remote_run_ref"),
+        "evidence_scope": "platform_only",
+        "data_version_status": "unknown",
+        "raw_platform_result": result.get("raw_platform_result", {}),
     }
     if submission_preflight is not None:
         out["submission_preflight"] = submission_preflight

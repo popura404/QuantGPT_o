@@ -8,12 +8,13 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import desc, or_, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .experiment_ledger import compute_factor_hash
 from .expression_parser import normalize_expression
-from .models import FactorPoolEntry, User
+from .models import Experiment, FactorPoolEntry, User
+from .research.projects import ProjectAccessError, require_project_member
 
 MCP_SYSTEM_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000002")
 MCP_SYSTEM_USER_EMAIL = "mcp@system.internal"
@@ -97,12 +98,18 @@ async def save_factor_pool_entry(
     owner_user_id: str | uuid.UUID,
     data: dict[str, Any],
     entry_id: str | uuid.UUID | None = None,
+    project_id: str | uuid.UUID | None = None,
 ) -> tuple[FactorPoolEntry, bool]:
     """Create or update a pool entry using factor_hash/expression identity."""
     owner_id = _coerce_uuid(owner_user_id, "owner_user_id")
     payload = dict(data)
+    project = await _check_project(session, owner_id, project_id, write=True)
+    await _validate_evaluation_reference(session, payload, project)
     if entry_id is not None:
-        row = await get_factor_pool_entry(session, owner_user_id=owner_id, entry_id=entry_id)
+        row = await get_factor_pool_entry(session, owner_user_id=owner_id, entry_id=entry_id, project_id=project)
+        if "expression" in payload and payload["expression"] != row.expression and not payload.get("evaluation_id"):
+            payload["evaluation_id"] = None
+            payload["definition_hash"] = None
         _apply_entry_fields(row, payload, creating=False)
         await session.flush()
         return row, False
@@ -118,10 +125,13 @@ async def save_factor_pool_entry(
         expression_normalized=expression_normalized,
         universe=payload.get("universe"),
         holding_period=payload.get("holding_period"),
+        market=payload.get("market") or "a_share",
+        project_id=project,
+        evaluation_id=payload.get("evaluation_id"),
     )
     created = row is None
     if row is None:
-        row = FactorPoolEntry(id=uuid.uuid4(), owner_user_id=owner_id)
+        row = FactorPoolEntry(id=uuid.uuid4(), owner_user_id=owner_id, project_id=project)
         session.add(row)
     _apply_entry_fields(row, payload, creating=created)
     await session.flush()
@@ -133,13 +143,15 @@ async def get_factor_pool_entry(
     *,
     owner_user_id: str | uuid.UUID,
     entry_id: str | uuid.UUID,
+    project_id: str | uuid.UUID | None = None,
 ) -> FactorPoolEntry:
     owner_id = _coerce_uuid(owner_user_id, "owner_user_id")
+    project = await _check_project(session, owner_id, project_id)
     row_id = _coerce_uuid(entry_id, "entry_id")
     result = await session.execute(
         select(FactorPoolEntry).where(
             FactorPoolEntry.id == row_id,
-            FactorPoolEntry.owner_user_id == owner_id,
+            *_pool_scope(owner_id, project),
         )
     )
     row = result.scalar_one_or_none()
@@ -154,9 +166,16 @@ async def update_factor_pool_entry(
     owner_user_id: str | uuid.UUID,
     entry_id: str | uuid.UUID,
     data: dict[str, Any],
+    project_id: str | uuid.UUID | None = None,
 ) -> FactorPoolEntry:
-    row = await get_factor_pool_entry(session, owner_user_id=owner_user_id, entry_id=entry_id)
-    _apply_entry_fields(row, dict(data), creating=False)
+    await _check_project(session, _coerce_uuid(owner_user_id, "owner_user_id"), project_id, write=True)
+    row = await get_factor_pool_entry(session, owner_user_id=owner_user_id, entry_id=entry_id, project_id=project_id)
+    payload = dict(data)
+    await _validate_evaluation_reference(session, payload, row.project_id)
+    if "expression" in payload and payload["expression"] != row.expression and not payload.get("evaluation_id"):
+        payload["evaluation_id"] = None
+        payload["definition_hash"] = None
+    _apply_entry_fields(row, payload, creating=False)
     await session.flush()
     return row
 
@@ -166,8 +185,10 @@ async def delete_factor_pool_entry(
     *,
     owner_user_id: str | uuid.UUID,
     entry_id: str | uuid.UUID,
+    project_id: str | uuid.UUID | None = None,
 ) -> None:
-    row = await get_factor_pool_entry(session, owner_user_id=owner_user_id, entry_id=entry_id)
+    await _check_project(session, _coerce_uuid(owner_user_id, "owner_user_id"), project_id, write=True)
+    row = await get_factor_pool_entry(session, owner_user_id=owner_user_id, entry_id=entry_id, project_id=project_id)
     await session.delete(row)
     await session.flush()
 
@@ -187,9 +208,11 @@ async def list_factor_pool_entries(
     q: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    project_id: str | uuid.UUID | None = None,
 ) -> tuple[list[FactorPoolEntry], int]:
     owner_id = _coerce_uuid(owner_user_id, "owner_user_id")
-    stmt = select(FactorPoolEntry).where(FactorPoolEntry.owner_user_id == owner_id)
+    project = await _check_project(session, owner_id, project_id)
+    stmt = select(FactorPoolEntry).where(*_pool_scope(owner_id, project))
 
     if pool_status:
         stmt = stmt.where(FactorPoolEntry.pool_status == validate_pool_status(pool_status))
@@ -214,6 +237,13 @@ async def list_factor_pool_entries(
             )
         )
 
+    tag_filters = _normalize_filter_tags(tag=tag, tags=tags)
+    bounded_limit = _coerce_int(limit, default=50, minimum=1, maximum=200)
+    bounded_offset = _coerce_int(offset, default=0, minimum=0)
+    if not tag_filters:
+        total = int((await session.scalar(select(func.count()).select_from(stmt.subquery()))) or 0)
+        stmt = stmt.order_by(desc(FactorPoolEntry.updated_at), desc(FactorPoolEntry.id)).offset(bounded_offset).limit(bounded_limit)
+        return list((await session.scalars(stmt)).all()), total
     stmt = stmt.order_by(desc(FactorPoolEntry.updated_at), desc(FactorPoolEntry.created_at))
     result = await session.execute(stmt)
     rows = list(result.scalars().all())
@@ -235,9 +265,11 @@ async def list_factor_pool_tags(
     pool_status: str | None = None,
     universe: str | None = None,
     market: str | None = None,
+    project_id: str | uuid.UUID | None = None,
 ) -> dict[str, Any]:
     owner_id = _coerce_uuid(owner_user_id, "owner_user_id")
-    stmt = select(FactorPoolEntry).where(FactorPoolEntry.owner_user_id == owner_id)
+    project = await _check_project(session, owner_id, project_id)
+    stmt = select(FactorPoolEntry).where(*_pool_scope(owner_id, project))
     if pool_status:
         stmt = stmt.where(FactorPoolEntry.pool_status == validate_pool_status(pool_status))
     if universe:
@@ -274,6 +306,10 @@ def factor_pool_entry_to_dict(row: FactorPoolEntry) -> dict[str, Any]:
     return {
         "id": str(row.id),
         "owner_user_id": str(row.owner_user_id),
+        "project_id": str(row.project_id) if row.project_id else None,
+        "definition_hash": row.definition_hash,
+        "evaluation_id": row.evaluation_id,
+        "evidence_status": "legacy_unverified" if not row.evaluation_id else "requires_server_verification",
         "expression": row.expression,
         "expression_normalized": row.expression_normalized,
         "name": row.name,
@@ -311,11 +347,16 @@ async def _find_upsert_target(
     expression_normalized: str,
     universe: str | None,
     holding_period: int | None,
+    market: str,
+    project_id: uuid.UUID | None,
+    evaluation_id: str | None,
 ) -> FactorPoolEntry | None:
     if factor_hash:
         result = await session.execute(
             select(FactorPoolEntry).where(
-                FactorPoolEntry.owner_user_id == owner_user_id,
+                *_pool_scope(owner_user_id, project_id),
+                FactorPoolEntry.market == market,
+                FactorPoolEntry.evaluation_id == evaluation_id,
                 FactorPoolEntry.factor_hash == factor_hash,
             ).limit(1)
         )
@@ -325,7 +366,9 @@ async def _find_upsert_target(
 
     result = await session.execute(
         select(FactorPoolEntry).where(
-            FactorPoolEntry.owner_user_id == owner_user_id,
+            *_pool_scope(owner_user_id, project_id),
+            FactorPoolEntry.market == market,
+            FactorPoolEntry.evaluation_id == evaluation_id,
             FactorPoolEntry.expression_normalized == expression_normalized,
             FactorPoolEntry.universe == universe,
             FactorPoolEntry.holding_period == holding_period,
@@ -361,6 +404,8 @@ def _apply_entry_fields(row: FactorPoolEntry, data: dict[str, Any], *, creating:
         row.tags, row.category_tag = normalize_tags(tags, category)
 
     scalar_fields = (
+        "evaluation_id",
+        "definition_hash",
         "name",
         "note",
         "main_reason",
@@ -391,6 +436,36 @@ def _apply_entry_fields(row: FactorPoolEntry, data: dict[str, Any], *, creating:
         row.source = "manual"
 
     row.updated_at = datetime.now(timezone.utc)
+
+
+async def _check_project(session: AsyncSession, actor: uuid.UUID, project_id: str | uuid.UUID | None,
+                         *, write: bool = False) -> uuid.UUID | None:
+    if project_id is None:
+        return None
+    try:
+        await require_project_member(session, actor, project_id, write=write)
+    except ProjectAccessError as exc:
+        raise FactorPoolNotFoundError(str(exc)) from exc
+    return _coerce_uuid(project_id, "project_id")
+
+
+def _pool_scope(actor: uuid.UUID, project: uuid.UUID | None) -> list:
+    if project is not None:
+        return [FactorPoolEntry.project_id == project]
+    return [FactorPoolEntry.owner_user_id == actor, FactorPoolEntry.project_id.is_(None)]
+
+
+async def _validate_evaluation_reference(session: AsyncSession, payload: dict, project_id: uuid.UUID | None) -> None:
+    payload.pop("definition_hash", None)  # server-derived only
+    if not payload.get("evaluation_id"):
+        return
+    evaluation = (await session.scalars(select(Experiment).where(
+        Experiment.experiment_id == payload["evaluation_id"], Experiment.project_id == project_id,
+    ))).one_or_none()
+    if (project_id is None or evaluation is None or not evaluation.evaluation_hash
+            or (payload.get("expression") and normalize_expression(payload["expression"]) != evaluation.expression_normalized)):
+        raise FactorPoolValidationError("Evaluation reference does not match project and definition")
+    payload["definition_hash"] = evaluation.definition_hash
 
 
 def _resolve_factor_hash(data: dict[str, Any], expression: str) -> str:

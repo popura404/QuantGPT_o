@@ -223,9 +223,9 @@ async def test_promote_and_reject_experiment_record_events(mcp_ledger_fakes):
             await session.execute(select(PromotionEvent).where(PromotionEvent.experiment_id == result["experiment_id"]))
         ).scalars().all()
 
-    assert promote["allowed"] is True
+    assert promote["allowed"] is False
     assert rejected["status"] == "rejected"
-    assert [event.decision for event in events] == ["allowed", "rejected"]
+    assert [event.decision for event in events] == ["blocked", "rejected"]
 
 
 @pytest.mark.asyncio
@@ -308,13 +308,13 @@ async def test_export_strategy_candidate_records_export_event(mcp_ledger_fakes):
         ).scalar_one()
         export_event = (
             await session.execute(select(ExportEvent).where(ExportEvent.experiment_id == result["experiment_id"]))
-        ).scalar_one()
+        ).scalar_one_or_none()
 
-    assert promote["allowed"] is True
-    assert export["schema_version"] == "strategy_signal.v1"
-    assert experiment.status == "exported"
-    assert export_event.schema_version == "strategy_signal.v1"
-    assert export_event.payload_hash is not None
+    assert promote["allowed"] is False
+    assert export["error_code"] == "STRATEGY_EXPORT_FAILED"
+    assert "SERVER_STRATEGY_RUN_REQUIRED" in export["hint"]
+    assert experiment.status != "exported"
+    assert export_event is None
 
 
 @pytest.mark.asyncio

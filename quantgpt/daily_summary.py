@@ -60,7 +60,8 @@ def _get_today_index_changes(date: str | None = None) -> dict:
                     metrics[f"{name}_change"] = round(float(ret.loc[target]) * 100, 2)
                 else:
                     # Fallback to last date, but log warning
-                    logger.warning(f"[daily_summary] {name} has no data for {today}, latest is {ret.index[-1].strftime('%Y-%m-%d')}")
+                    latest = pd.Timestamp(str(ret.index[-1])).strftime("%Y-%m-%d")
+                    logger.warning(f"[daily_summary] {name} has no data for {today}, latest is {latest}")
                     metrics[f"{name}_change"] = round(float(ret.iloc[-1]) * 100, 2)
             else:
                 metrics[f"{name}_change"] = 0.0

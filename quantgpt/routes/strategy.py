@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
-import time
 import traceback
 import uuid
 from pathlib import Path
@@ -19,7 +17,9 @@ from ..auth import get_current_user
 from ..db import get_db
 from ..models import Strategy as StrategyModel
 from ..models import StrategyRun as StrategyRunModel
+from ..models import Task as TaskModel
 from ..models import User
+from ..research.projects import ProjectAccessError
 from ..strategy.service import (
     diagnose_strategy_payload,
     export_strategy_candidate_payload,
@@ -35,14 +35,19 @@ from ..strategy.service import (
     run_strategy_rolling_validation_payload,
     validate_strategy_payload,
 )
+from ..task_executor import dispatch_durable_task
 from ..task_store import (
     MAX_ACTIVE_TASKS,
+    CancelledException,
+    TaskConflictError,
     active_task_count,
+    check_cancelled,
     check_rate_limit,
     cleanup_tasks,
     persist_task_to_db,
-    tasks,
-    tasks_lock,
+    snapshot_task,
+    submit_durable_task,
+    transition_task,
 )
 
 logger = logging.getLogger(__name__)
@@ -102,6 +107,8 @@ class StrategyBacktestRequestBody(BaseModel):
     benchmark: str = "hs300"
     universe_date: str | None = None
     rebalance_anchor: str | None = None
+    project_id: str | None = None
+    idempotency_key: str | None = Field(None, min_length=1, max_length=160)
 
 
 class StrategyResultRequest(BaseModel):
@@ -200,6 +207,7 @@ async def strategy_backtest(
     req: StrategyBacktestRequestBody,
     request: Request,
     user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     client_ip = request.client.host if request.client else "unknown"
     if not check_rate_limit(client_ip):
@@ -209,28 +217,24 @@ async def strategy_backtest(
 
     cleanup_tasks()
     user_id = str(user.id)
-    body = req.model_dump()
+    body = req.model_dump(exclude={"project_id", "idempotency_key"})
 
     validation = validate_strategy_payload(body["spec"])
     if not validation["is_valid"]:
         raise HTTPException(status_code=400, detail=validation)
 
-    task_id = uuid.uuid4().hex[:12]
-    with tasks_lock:
-        tasks[task_id] = {
-            "task_id": task_id,
-            "user_id": user_id,
-            "status": "pending",
-            "cancelled": False,
-            "task_type": "strategy_backtest",
-            "params": body,
-            "created_at": time.time(),
-            "is_guest": False,
-        }
-
-    thread = threading.Thread(target=_run_strategy_backtest_task, args=(task_id, body, user_id), daemon=True)
-    thread.start()
-    return {"task_id": task_id, "status": "pending"}
+    try:
+        task, created = await submit_durable_task(
+            db, actor_id=user_id, task_type="strategy_backtest", params=body,
+            project_id=req.project_id, idempotency_key=req.idempotency_key,
+        )
+    except TaskConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if created:
+        await dispatch_durable_task(db, task["task_id"])
+    return {"task_id": task["task_id"], "status": task["status"], "reused": not created}
 
 
 @router.post("/export")
@@ -316,7 +320,7 @@ async def list_strategy_specs(
 ):
     result = await db.execute(
         select(StrategyModel)
-        .where(StrategyModel.user_id == user.id)
+        .where(StrategyModel.user_id == user.id, StrategyModel.project_id.is_(None))
         .order_by(desc(StrategyModel.updated_at))
     )
     return {"strategies": [_strategy_model_to_dict(strategy) for strategy in result.scalars().all()]}
@@ -342,6 +346,12 @@ async def save_strategy_run(
     if req.strategy_id:
         strategy = await _get_owned_strategy(db, user, req.strategy_id)
         strategy_uuid = strategy.id
+    if req.task_id:
+        task = (await db.scalars(select(TaskModel).where(
+            TaskModel.id == req.task_id, TaskModel.user_id == user.id, TaskModel.project_id.is_(None),
+        ))).one_or_none()
+        if task is None:
+            raise HTTPException(status_code=404, detail="Task not found")
     run = StrategyRunModel(
         id=uuid.uuid4(),
         strategy_id=strategy_uuid,
@@ -364,7 +374,12 @@ async def list_strategy_runs(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(StrategyRunModel).where(StrategyRunModel.user_id == user.id)
+    # Either association can carry project scope, including runs without a spec.
+    # Project data must pass the current membership check at the research routes.
+    stmt = (select(StrategyRunModel)
+        .outerjoin(StrategyModel, StrategyRunModel.strategy_id == StrategyModel.id)
+        .outerjoin(TaskModel, StrategyRunModel.task_id == TaskModel.id)
+        .where(StrategyRunModel.user_id == user.id, StrategyModel.project_id.is_(None), TaskModel.project_id.is_(None)))
     if strategy_id:
         strategy = await _get_owned_strategy(db, user, strategy_id)
         stmt = stmt.where(StrategyRunModel.strategy_id == strategy.id)
@@ -372,31 +387,36 @@ async def list_strategy_runs(
     return {"runs": [_strategy_run_model_to_dict(run) for run in result.scalars().all()]}
 
 
-def _run_strategy_backtest_task(task_id: str, request_data: dict, user_id: str) -> None:
-    task = tasks.get(task_id)
+def _run_strategy_backtest_task(task_id: str, request_data: dict, user_id: str, *,
+                                attempt_id: str | None = None) -> None:
+    task = snapshot_task(task_id, expected_attempt=attempt_id)
     if not task:
         return
     report_filename = None
     try:
-        task["status"] = "backtesting"
+        check_cancelled(task_id, expected_attempt=attempt_id)
+        transition_task(task_id, "backtesting", expected_attempt=attempt_id)
         result_payload = _execute_strategy_backtest(request_data, user_id)
-        task["status"] = "generating_report"
+        check_cancelled(task_id, expected_attempt=attempt_id)
+        transition_task(task_id, "generating_report", expected_attempt=attempt_id)
         report_payload = _execute_strategy_report(result_payload, user_id)
+        check_cancelled(task_id, expected_attempt=attempt_id)
         report_filename = Path(report_payload["report_path"]).name
-        task["status"] = "completed"
-        task["result"] = {
+        transition_task(task_id, "completed", expected_attempt=attempt_id, result={
             "strategy_result": result_payload,
             "strategy_score": result_payload.get("strategy_score"),
             "report_url": f"/api/v1/reports/{report_filename}",
             "summary_json": report_payload.get("summary_json_path"),
-        }
+        })
+    except CancelledException:
+        transition_task(task_id, "cancelled", expected_attempt=attempt_id)
+        report_filename = None
     except Exception as exc:
         logger.error(f"[{task_id}] strategy backtest failed: {traceback.format_exc()}")
-        task["status"] = "failed"
-        task["error"] = str(exc)
+        transition_task(task_id, "failed", expected_attempt=attempt_id, error=str(exc))
     finally:
-        task["completed_at"] = time.time()
-        if not task.get("is_guest"):
+        task = snapshot_task(task_id, expected_attempt=attempt_id)
+        if task is not None and not task.get("is_guest"):
             try:
                 persist_task_to_db(task_id, user_id, task, report_filename)
             except Exception as exc:
@@ -420,7 +440,8 @@ async def _get_owned_strategy(db: AsyncSession, user: User, strategy_id: str) ->
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid strategy_id") from exc
     result = await db.execute(
-        select(StrategyModel).where(StrategyModel.id == strategy_uuid, StrategyModel.user_id == user.id)
+        select(StrategyModel).where(StrategyModel.id == strategy_uuid, StrategyModel.user_id == user.id,
+                                    StrategyModel.project_id.is_(None))
     )
     strategy = result.scalar_one_or_none()
     if not strategy:
@@ -438,19 +459,19 @@ def _strategy_model_to_dict(strategy: StrategyModel) -> dict:
         "spec": strategy.spec,
         "tags": strategy.tags or [],
         "status": strategy.status,
-        "created_at": strategy.created_at.isoformat() if strategy.created_at else None,
-        "updated_at": strategy.updated_at.isoformat() if strategy.updated_at else None,
+        "created_at": strategy.created_at.isoformat() if strategy.created_at is not None else None,
+        "updated_at": strategy.updated_at.isoformat() if strategy.updated_at is not None else None,
     }
 
 
 def _strategy_run_model_to_dict(run: StrategyRunModel) -> dict:
     return {
         "id": str(run.id),
-        "strategy_id": str(run.strategy_id) if run.strategy_id else None,
+        "strategy_id": str(run.strategy_id) if run.strategy_id is not None else None,
         "task_id": run.task_id,
         "result": run.result,
         "report_url": run.report_url,
         "summary_json": run.summary_json,
         "signal_export": run.signal_export,
-        "created_at": run.created_at.isoformat() if run.created_at else None,
+        "created_at": run.created_at.isoformat() if run.created_at is not None else None,
     }

@@ -12,13 +12,141 @@ Configuration via environment variables:
 
 from __future__ import annotations
 
+import asyncio
+import copy
 import logging
 import multiprocessing as mp
 import os
+import threading
+import time
 from abc import ABC, abstractmethod
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 
+from sqlalchemy import select
+
 logger = logging.getLogger(__name__)
+
+_dispatcher_task: asyncio.Task | None = None
+_worker_monitors: set[asyncio.Task] = set()
+
+
+def _dispatch_handler(payload: dict):
+    """Only registered local requests may be replayed from the durable outbox."""
+    if payload["task_type"] == "research_evaluation":
+        from quantgpt.research.jobs import run_research_job
+        return lambda: run_research_job(payload)
+    if (payload.get("params") or {}).get("source") == "mcp":
+        return None
+    if payload["task_type"] == "strategy_backtest":
+        from .routes.strategy import _run_strategy_backtest_task
+        return lambda: _run_strategy_backtest_task(payload["task_id"], payload["params"], payload["user_id"],
+                                                  attempt_id=payload.get("attempt_id"))
+    if payload["task_type"] == "backtest":
+        from .routes.backtest_tasks import AutoBacktestRequest, _run_backtest_task
+        return lambda: _run_backtest_task(payload["task_id"], AutoBacktestRequest(**payload["params"]), payload["user_id"],
+                                         attempt_id=payload.get("attempt_id"))
+    return None
+
+
+async def dispatch_durable_task(session, task_id: str) -> bool:
+    """Claim a persisted local request before launching its worker."""
+    from .models import Task
+    from .task_store import _task_payload, claim_durable_task
+
+    record = await session.get(Task, task_id)
+    if record is None or _dispatch_handler(_task_payload(record)) is None:
+        return False
+    payload = await claim_durable_task(session, task_id)
+    if payload is None:
+        return False
+    frozen_payload = copy.deepcopy(payload)
+    handler = _dispatch_handler(copy.deepcopy(frozen_payload))
+    worker = threading.Thread(target=handler, daemon=True, name=f"task-{task_id}")
+    worker.start()
+    monitor = asyncio.create_task(_monitor_worker(worker, frozen_payload))
+    _worker_monitors.add(monitor)
+    monitor.add_done_callback(_worker_monitors.discard)
+    return True
+
+
+async def _monitor_worker(worker: threading.Thread, payload: dict) -> None:
+    from .task_store import (
+        TASK_TIMEOUT_SECONDS,
+        TERMINAL_TASK_STATUSES,
+        persist_task_to_db_async,
+        snapshot_task,
+        transition_task,
+    )
+
+    deadline = time.monotonic() + TASK_TIMEOUT_SECONDS
+    while worker.is_alive():
+        await asyncio.sleep(10)
+        task = snapshot_task(payload["task_id"], expected_attempt=payload.get("attempt_id"))
+        if not task:
+            return
+        if task.get("status") in TERMINAL_TASK_STATUSES:
+            return
+        if time.monotonic() >= deadline:
+            remote = ((payload.get("params") or {}).get("config", {}).get("backend") == "wq"
+                      or bool(task.get("remote_run_ref")))
+            task = transition_task(payload["task_id"], "remote_outcome_unknown" if remote else "failed", cancelled=True,
+                                   expected_attempt=payload.get("attempt_id"),
+                                   error="TASK_DEADLINE_EXCEEDED: execution exceeded the configured bound")
+            if task is None:
+                return
+        await persist_task_to_db_async(payload["task_id"], payload["user_id"], task)
+
+
+async def dispatch_pending_tasks_once(session=None) -> int:
+    """Drain known local outbox records; unknown and remote requests remain visible."""
+    from .db import _get_session_factory
+    from .models import Task
+    from .task_store import MAX_ACTIVE_TASKS, TERMINAL_TASK_STATUSES, recover_expired_tasks, tasks
+
+    if session is None:
+        async with _get_session_factory()() as owned:
+            return await dispatch_pending_tasks_once(owned)
+    await recover_expired_tasks(session)
+    executing = sum(task.get("status") not in TERMINAL_TASK_STATUSES | {"queued", "pending"} for task in tasks.values())
+    available = max(0, MAX_ACTIVE_TASKS - executing)
+    if available == 0:
+        return 0
+    rows = (await session.scalars(select(Task).where(
+        Task.dispatch_pending.is_(True), Task.status.in_(["queued", "pending"]),
+        Task.task_type.in_(["backtest", "strategy_backtest", "research_evaluation"]),
+    ).order_by(Task.created_at).limit(available))).all()
+    count = 0
+    for record in rows:
+        if (record.params or {}).get("source") == "mcp" and str(record.task_type) != "research_evaluation":
+            continue
+        count += bool(await dispatch_durable_task(session, record.id))
+    return count
+
+
+def start_task_dispatcher() -> None:
+    global _dispatcher_task
+    if _dispatcher_task is not None and not _dispatcher_task.done():
+        return
+
+    async def loop():
+        while True:
+            try:
+                await dispatch_pending_tasks_once()
+            except Exception:
+                logger.exception("Durable task dispatcher failed; queued records remain persisted")
+            await asyncio.sleep(1)
+
+    _dispatcher_task = asyncio.create_task(loop())
+
+
+async def stop_task_dispatcher() -> None:
+    global _dispatcher_task
+    running = [task for task in [_dispatcher_task, *_worker_monitors] if task is not None]
+    for task in running:
+        task.cancel()
+    await asyncio.gather(*running, return_exceptions=True)
+    _worker_monitors.clear()
+    _dispatcher_task = None
 
 
 # ---------------------------------------------------------------------------

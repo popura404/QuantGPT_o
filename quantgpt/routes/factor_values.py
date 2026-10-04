@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from ..auth import get_current_user
 from ..factor_values import compute_factor_values_payload
 from ..models import User
+from ..pit_data import DataCapabilityError as FinancialDataCapabilityError
 from ..us_data.contracts import DataCapabilityError
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,7 @@ async def compute_factor_values(
             req.end_date,
             **dispatch,
         )
-    except DataCapabilityError as exc:
+    except (DataCapabilityError, FinancialDataCapabilityError) as exc:
         raise HTTPException(status_code=400, detail=exc.to_dict())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

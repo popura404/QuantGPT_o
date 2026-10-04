@@ -14,9 +14,10 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     Uuid,
 )
-from sqlalchemy.orm import DeclarativeBase, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
@@ -25,6 +26,53 @@ class Base(DeclarativeBase):
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class ResearchProject(Base):
+    __tablename__ = "research_projects"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    market: Mapped[str] = mapped_column(String(60), default="us_equity")
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ProjectMember(Base):
+    __tablename__ = "project_members"
+
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("research_projects.id"), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), primary_key=True)
+    role: Mapped[str] = mapped_column(String(20), default="researcher")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ResearchAuditEvent(Base):
+    __tablename__ = "research_audit_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("research_projects.id"), index=True)
+    actor_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"))
+    action: Mapped[str] = mapped_column(String(80))
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class FinalWindowExposure(Base):
+    """Unique project/family/window lock, independent of mutable evaluation IDs."""
+
+    __tablename__ = "final_window_exposures"
+
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("research_projects.id"), primary_key=True)
+    family_key: Mapped[str] = mapped_column(String(160), primary_key=True)
+    window_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    evaluation_hash: Mapped[str] = mapped_column(String(64))
+    evaluation_id: Mapped[str] = mapped_column(String(80))
+    frozen_config: Mapped[dict] = mapped_column(JSON)
+    actor_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class User(Base):
@@ -80,6 +128,17 @@ class Task(Base):
 
     id = Column(String(12), primary_key=True)
     user_id = Column(Uuid, ForeignKey("users.id"), nullable=False, index=True)
+    project_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("research_projects.id"), index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    progress_json: Mapped[dict | None] = mapped_column(JSON)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    idempotency_key: Mapped[str | None] = mapped_column(String(160))
+    request_hash: Mapped[str | None] = mapped_column(String(64))
+    remote_run_ref: Mapped[str | None] = mapped_column(String(200))
+    retryable: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    attempt_id: Mapped[str | None] = mapped_column(String(64))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    dispatch_pending: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
     session_id = Column(Uuid, ForeignKey("sessions.id"), nullable=True, index=True)
     status = Column(String(30), nullable=False, default="pending")
     task_type = Column(String(50), nullable=True, default="backtest")
@@ -94,6 +153,8 @@ class Task(Base):
     user = relationship("User", back_populates="tasks")
     session = relationship("Session", back_populates="tasks")
     reports = relationship("Report", back_populates="task", lazy="selectin")
+
+    __table_args__ = (UniqueConstraint("user_id", "idempotency_key", name="uq_task_user_idempotency"),)
 
 
 class Report(Base):
@@ -133,33 +194,37 @@ class SavedFactor(Base):
 class FactorPoolEntry(Base):
     __tablename__ = "factor_pool_entries"
 
-    id = Column(Uuid, primary_key=True, default=uuid.uuid4)
-    owner_user_id = Column(Uuid, ForeignKey("users.id"), nullable=False, index=True)
-    expression = Column(Text, nullable=False)
-    expression_normalized = Column(Text, nullable=False)
-    name = Column(String(200), nullable=True)
-    note = Column(Text, nullable=True)
-    main_reason = Column(Text, nullable=True)
-    tags = Column(JSON, nullable=True)
-    category_tag = Column(String(120), default="category:uncategorized", nullable=False, index=True)
-    pool_status = Column(String(40), default="watchlist", nullable=False, index=True)
-    factor_hash = Column(String(80), nullable=True, index=True)
-    experiment_id = Column(String(80), nullable=True, index=True)
-    task_id = Column(String(12), nullable=True, index=True)
-    market = Column(String(60), default="a_share", nullable=False)
-    universe = Column(String(80), nullable=True, index=True)
-    holding_period = Column(Integer, nullable=True)
-    validation_stage = Column(String(40), nullable=True)
-    metrics = Column(JSON, nullable=True)
-    backtest_summary = Column(JSON, nullable=True)
-    params = Column(JSON, nullable=True)
-    validation_provenance = Column(JSON, nullable=True)
-    report_url = Column(String(500), nullable=True)
-    factor_card_path = Column(String(500), nullable=True)
-    source = Column(String(40), default="manual", nullable=False)
-    created_by = Column(String(80), nullable=True)
-    created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
-    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=False, index=True)
+    project_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("research_projects.id"), index=True)
+    definition_hash: Mapped[str | None] = mapped_column(String(64), index=True)
+    evaluation_id: Mapped[str | None] = mapped_column(String(80), index=True)
+    legacy_saved_factor_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, unique=True)
+    expression: Mapped[str] = mapped_column(Text, nullable=False)
+    expression_normalized: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    main_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tags: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    category_tag: Mapped[str] = mapped_column(String(120), default="category:uncategorized", nullable=False, index=True)
+    pool_status: Mapped[str] = mapped_column(String(40), default="watchlist", nullable=False, index=True)
+    factor_hash: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    experiment_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    task_id: Mapped[str | None] = mapped_column(String(12), nullable=True, index=True)
+    market: Mapped[str] = mapped_column(String(60), default="a_share", nullable=False)
+    universe: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    holding_period: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    validation_stage: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    backtest_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    params: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    validation_provenance: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    report_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    factor_card_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    source: Mapped[str] = mapped_column(String(40), default="manual", nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
 
     owner = relationship("User")
 
@@ -268,6 +333,13 @@ class Experiment(Base):
 
     id = Column(Uuid, primary_key=True, default=uuid.uuid4)
     experiment_id = Column(String(80), nullable=False, unique=True, index=True)
+    project_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("research_projects.id"), index=True)
+    definition_hash: Mapped[str | None] = mapped_column(String(64), index=True)
+    evaluation_hash: Mapped[str | None] = mapped_column(String(64), index=True)
+    evaluation_config: Mapped[dict | None] = mapped_column(JSON)
+    evidence_status: Mapped[str | None] = mapped_column(String(40))
+    backend: Mapped[str | None] = mapped_column(String(30))
+    supersedes_evaluation_id: Mapped[str | None] = mapped_column(String(80))
     run_id = Column(String(80), nullable=True, index=True)
     parent_run_id = Column(String(80), nullable=True, index=True)
     user_id = Column(Uuid, ForeignKey("users.id"), nullable=True, index=True)
@@ -299,12 +371,12 @@ class Experiment(Base):
     direction_policy = Column(String(60), nullable=True)
     research_mode = Column(String(60), nullable=True)
     random_seed = Column(Integer, nullable=True)
-    status = Column(String(40), nullable=False, default="draft", index=True)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="draft", index=True)
     promotion_stage = Column(String(40), nullable=True)
     created_by = Column(String(80), nullable=True)
     git_commit = Column(String(80), nullable=True)
     config_hash = Column(String(80), nullable=True, index=True)
-    result_summary = Column(JSON, nullable=True)
+    result_summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     failure_reason = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
@@ -356,6 +428,7 @@ class ExperimentArtifact(Base):
     uri = Column(String(500), nullable=False)
     content_hash = Column(String(80), nullable=True, index=True)
     artifact_metadata = Column("metadata", JSON, nullable=True)
+    payload: Mapped[dict | list | None] = mapped_column(JSON)
     created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
 
     experiment = relationship("Experiment", back_populates="artifacts")
@@ -463,6 +536,7 @@ class Strategy(Base):
 
     id = Column(Uuid, primary_key=True, default=uuid.uuid4)
     user_id = Column(Uuid, ForeignKey("users.id"), nullable=False, index=True)
+    project_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("research_projects.id"), index=True)
     name = Column(String(120), nullable=False)
     schema_version = Column(String(40), nullable=False)
     market = Column(String(60), nullable=False, index=True)

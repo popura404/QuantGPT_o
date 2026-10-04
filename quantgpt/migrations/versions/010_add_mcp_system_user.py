@@ -4,8 +4,10 @@ Revision ID: 010
 Revises: 009
 Create Date: 2026-03-23
 """
+import uuid
 from typing import Sequence, Union
 
+import sqlalchemy as sa
 from alembic import op
 
 revision: str = "010"
@@ -15,20 +17,20 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute("""
+    op.execute(sa.text("""
         INSERT INTO users (id, email, is_active, subscribe_weekly, created_at)
         VALUES (
-            '00000000-0000-0000-0000-000000000002',
+            :system_id,
             'mcp@system.internal',
             true,
             false,
-            NOW()
+            CURRENT_TIMESTAMP
         )
         ON CONFLICT (id) DO NOTHING
-    """)
+    """).bindparams(sa.bindparam("system_id", value=uuid.UUID("00000000-0000-0000-0000-000000000002"), type_=sa.Uuid())))
 
 
 def downgrade() -> None:
-    op.execute("""
-        DELETE FROM users WHERE id = '00000000-0000-0000-0000-000000000002'
-    """)
+    op.execute(sa.text("""
+        DELETE FROM users WHERE id = :system_id
+    """).bindparams(sa.bindparam("system_id", value=uuid.UUID("00000000-0000-0000-0000-000000000002"), type_=sa.Uuid())))

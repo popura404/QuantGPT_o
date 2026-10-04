@@ -7,6 +7,24 @@ import pytest
 from quantgpt import factor_values
 
 
+@pytest.mark.asyncio
+async def test_rest_financial_capability_failure_keeps_structured_contract(client, auth_headers, monkeypatch):
+    from quantgpt.pit_data import DataCapabilityError
+    from quantgpt.routes import factor_values as route
+
+    def blocked(*args, **kwargs):
+        raise DataCapabilityError(["pb"], source="baostock_quarterly", reason="exact_denominator_unavailable")
+
+    monkeypatch.setattr(route, "compute_factor_values_payload", blocked)
+    response = await client.post("/api/v1/factor_values", headers=auth_headers, json={"expression": "rank(pb)"})
+    assert response.status_code == 400
+    error = response.json()["detail"]
+    assert error["error_code"] == "data_capability_unavailable"
+    assert error["fields"] == ["pb"]
+    assert error["retryable"] is False
+    assert error["next_action"] == "supply_equivalent_point_in_time_fields"
+
+
 def _market_frame():
     return pd.DataFrame({
         "trade_date": pd.to_datetime([

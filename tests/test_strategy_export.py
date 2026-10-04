@@ -1,6 +1,7 @@
 """Strategy signal export tests."""
 
-from quantgpt.strategy.export import FORBIDDEN_EXPORT_KEYS
+import pytest
+
 from quantgpt.strategy.service import export_strategy_candidate_payload
 from quantgpt.strategy.spec import example_strategy_spec_v1
 from quantgpt.validation.promotion import build_factor_validation_provenance
@@ -64,20 +65,11 @@ def _walk(value):
             yield from _walk(child)
 
 
-def test_export_strategy_candidate_has_review_signal_schema_without_execution_fields():
-    payload = export_strategy_candidate_payload(_result_payload())
-
-    assert payload["schema_version"] == "strategy_signal.v1"
-    assert payload["experiment_id"] == "exp_test"
-    assert payload["factor_hash"] == "fh_test"
-    assert payload["validation_summary"]["data_snapshot_id"] == "ds_test"
-    assert payload["notice"] == "Candidate signal only. Not an order or automated trading instruction."
-    assert payload["spec_version"] == "strategy_spec/v1"
-    assert len(payload["signals"]) == 2
-    assert payload["signals"][0]["rank"] == 1
-    assert "action_hint" not in payload["signals"][0]
-    assert payload["validation_provenance"]["promotion_state"] == "promotion_ready"
-    assert all(not (FORBIDDEN_EXPORT_KEYS & set(item)) for item in _walk(payload))
+def test_caller_generated_promotion_ready_provenance_cannot_authorize_export():
+    forged = _result_payload()
+    assert forged["validation_provenance"]["promotion_state"] == "promotion_ready"
+    with pytest.raises(ValueError, match="SERVER_STRATEGY_RUN_REQUIRED"):
+        export_strategy_candidate_payload(forged)
 
 
 def test_export_strategy_candidate_rejects_missing_validation_provenance():
@@ -87,7 +79,7 @@ def test_export_strategy_candidate_rejects_missing_validation_provenance():
     try:
         export_strategy_candidate_payload(result)
     except ValueError as exc:
-        assert "VALIDATION_PROVENANCE_REQUIRED" in str(exc)
+        assert "SERVER_STRATEGY_RUN_REQUIRED" in str(exc)
     else:
         raise AssertionError("export should require validation provenance")
 
@@ -99,7 +91,7 @@ def test_export_strategy_candidate_rejects_missing_experiment_linkage():
     try:
         export_strategy_candidate_payload(result)
     except ValueError as exc:
-        assert "experiment_id" in str(exc)
+        assert "SERVER_STRATEGY_RUN_REQUIRED" in str(exc)
     else:
         raise AssertionError("export should require experiment_id")
 
@@ -111,6 +103,6 @@ def test_export_strategy_candidate_rejects_missing_data_snapshot():
     try:
         export_strategy_candidate_payload(result)
     except ValueError as exc:
-        assert "data_snapshot_id" in str(exc)
+        assert "SERVER_STRATEGY_RUN_REQUIRED" in str(exc)
     else:
         raise AssertionError("export should require data_snapshot_id")

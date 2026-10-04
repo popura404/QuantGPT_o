@@ -10,13 +10,17 @@ from typing import Sequence
 
 def bonferroni_adjust(p_value: float, n_trials: int) -> float:
     """Return a Bonferroni-adjusted p-value capped at 1.0."""
-    return min(1.0, max(0.0, float(p_value)) * max(1, int(n_trials)))
+    if not _finite(p_value) or not 0 <= p_value <= 1 or n_trials < 1:
+        raise ValueError("A finite p-value and positive registered trial count are required")
+    return min(1.0, float(p_value) * int(n_trials))
 
 
 def benjamini_hochberg(p_values: Sequence[float], alpha: float = 0.05) -> list[dict]:
     """Compute Benjamini-Hochberg decisions while preserving original order."""
     if not p_values:
         return []
+    if not 0 < alpha < 1 or any(not _finite(p) or not 0 <= p <= 1 for p in p_values):
+        raise ValueError("FDR requires finite p-values in [0, 1] and alpha in (0, 1)")
     m = len(p_values)
     ordered = sorted((max(0.0, min(1.0, float(p))), idx) for idx, p in enumerate(p_values))
     max_rank = 0
@@ -46,16 +50,25 @@ def bootstrap_mean_ci(
     n_bootstrap: int = 1000,
     confidence: float = 0.95,
     seed: int = 0,
+    block_length: int | None = None,
 ) -> dict:
-    """Return a deterministic bootstrap confidence interval for the sample mean."""
+    """Circular moving-block bootstrap retains within-block serial dependence."""
+    if not 0 < confidence < 1 or n_bootstrap < 1:
+        raise ValueError("Invalid bootstrap confidence or sample count")
     clean = [float(v) for v in values if _finite(v)]
     if not clean:
         return {"mean": 0.0, "lower": 0.0, "upper": 0.0, "n": 0, "confidence": confidence}
     rng = random.Random(seed)
+    block = block_length if block_length is not None else max(1, math.ceil(len(clean) ** (1 / 3)))
+    if not 1 <= block <= len(clean):
+        raise ValueError("block_length must be in [1, n]")
     samples = []
     for _ in range(max(1, int(n_bootstrap))):
-        draw = [clean[rng.randrange(len(clean))] for _ in clean]
-        samples.append(mean(draw))
+        draw = []
+        while len(draw) < len(clean):
+            start = rng.randrange(len(clean))
+            draw.extend(clean[(start + offset) % len(clean)] for offset in range(block))
+        samples.append(mean(draw[:len(clean)]))
     samples.sort()
     lower_idx = int((1.0 - confidence) / 2.0 * (len(samples) - 1))
     upper_idx = int((1.0 + confidence) / 2.0 * (len(samples) - 1))
@@ -65,6 +78,8 @@ def bootstrap_mean_ci(
         "upper": samples[min(len(samples) - 1, upper_idx)],
         "n": len(clean),
         "confidence": confidence,
+        "method": "circular_moving_block_bootstrap",
+        "block_length": block,
     }
 
 
@@ -76,8 +91,12 @@ def multiple_testing_report(
     family_p_values: Sequence[float] | None = None,
 ) -> dict:
     """Build a promotion-ready summary of trial-aware significance checks."""
-    n_project = max(1, int(trial_counts.get("total_trials_in_project") or 1))
-    n_family = max(1, int(trial_counts.get("trials_in_same_factor_family") or 1))
+    if any(not trial_counts.get(key) or int(trial_counts[key]) < 1
+           for key in ("total_trials_in_project", "trials_in_same_factor_family")):
+        return {"passed": False, "blockers": ["TRIAL_COUNT_UNAVAILABLE"], "trial_counts": dict(trial_counts),
+                "p_value": p_value, "alpha": alpha, "fdr": []}
+    n_project = int(trial_counts["total_trials_in_project"])
+    n_family = int(trial_counts["trials_in_same_factor_family"])
     bonferroni_project = bonferroni_adjust(p_value, n_project)
     bonferroni_family = bonferroni_adjust(p_value, n_family)
     fdr_inputs = list(family_p_values or [p_value])

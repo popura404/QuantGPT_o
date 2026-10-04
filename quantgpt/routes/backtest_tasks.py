@@ -10,13 +10,13 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import GUEST_USER_ID, get_current_user, get_current_user_or_guest, get_optional_user
@@ -44,30 +44,41 @@ from ..llm_service import (
     validate_parentheses as _validate_parentheses,
 )
 from ..market_data import MarketDataFetcher, fetch_benchmark_returns, get_universe
+from ..models import ProjectMember, User
 from ..models import Task as TaskModel
-from ..models import User
 from ..report import generate_report
+from ..research.projects import ProjectAccessError
 from ..schemas import validate_benchmark_value as _validate_bench_fn
 from ..schemas import validate_date_format as _validate_date_fn
 from ..schemas import validate_universe_value as _validate_univ_fn
-from ..task_executor import _run_backtest_in_process, _run_oos_backtest_in_process, get_executor
+from ..task_executor import _run_backtest_in_process, _run_oos_backtest_in_process, dispatch_durable_task, get_executor
 from ..task_store import (
     MAX_ACTIVE_TASKS,
     MAX_DATE_RANGE_YEARS,
     MAX_PROMPT_LENGTH,
     MAX_SSE_CONNECTIONS,
     SSE_TIMEOUT_SECONDS,
+    TERMINAL_TASK_STATUSES,
     CancelledException,
+    TaskConflictError,
+    _task_payload,
     active_task_count,
+    cancel_durable_task,
     check_cancelled,
     check_rate_limit,
     cleanup_reports,
     cleanup_tasks,
     create_sse_ticket,
+    load_durable_task,
     persist_task_to_db,
+    persist_task_to_db_async,
     sanitize_task_response,
+    snapshot_task,
+    submit_durable_task,
+    task_result_published,
     tasks,
     tasks_lock,
+    transition_task,
     validate_sse_ticket,
 )
 from ..validation.oos_backtest import to_public_oos_result
@@ -101,9 +112,6 @@ def is_guest_backtest_enabled() -> bool:
 
 
 router = APIRouter()
-
-TERMINAL_TASK_STATUSES = ("completed", "failed", "cancelled", "iteration_completed")
-
 
 class OOSRequest(BaseModel):
     method: Literal["date_ratio", "date_cut"] = "date_ratio"
@@ -169,6 +177,8 @@ class AutoBacktestRequest(BaseModel):
     holding_period: int = Field(5, description="持仓周期(交易日)", ge=1, le=60)
     benchmark: str = Field("hs300", description="基准指数")
     session_id: str | None = Field(None, description="关联会话 ID")
+    project_id: str | None = None
+    idempotency_key: str | None = Field(None, min_length=1, max_length=160)
     neutralize_industry: bool = Field(True, description="行业中性化")
     neutralize_cap: bool = Field(True, description="市值中性化")
     universe_date: str | None = Field(None, description="股票池基准日期，用于子区间验证时固定股票池。为空时使用 start_date")
@@ -296,7 +306,7 @@ def _record_auto_backtest_experiment(task_id: str, user_id: str, expression: str
             )
             await _ledger_record_experiment_result(
                 session,
-                experiment_id=experiment.experiment_id,
+                experiment_id=str(experiment.experiment_id),
                 stage=status,
                 validation_stage=params.get("validation_stage"),
                 train_period=_oos_period(payload, "train"),
@@ -314,7 +324,7 @@ def _record_auto_backtest_experiment(task_id: str, user_id: str, expression: str
             if isinstance(report_url, str) and report_url:
                 await _ledger_record_experiment_artifact(
                     session,
-                    experiment_id=experiment.experiment_id,
+                    experiment_id=str(experiment.experiment_id),
                     artifact_type="report",
                     uri=report_url,
                     metadata={"task_id": task_id},
@@ -383,25 +393,26 @@ def _oos_period(payload: dict, stage: str) -> list | None:
     return period if isinstance(period, list) else None
 
 
-def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
-    task = tasks.get(task_id)
-    if not task:
-        return
+def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str, *, attempt_id: str | None = None):
+    with tasks_lock:
+        task = tasks.get(task_id)
+        if not task or (attempt_id is not None and task.get("attempt_id") != attempt_id):
+            return
 
     report_filename = None
     try:
         start = datetime.strptime(req.start_date, "%Y-%m-%d")
         end = datetime.strptime(req.end_date, "%Y-%m-%d")
         if start >= end:
-            task["status"] = "failed"
+            transition_task(task_id, "failed", expected_attempt=attempt_id)
             task["error"] = "开始日期必须早于结束日期"
             return
         if (end - start).days > MAX_DATE_RANGE_YEARS * 365:
-            task["status"] = "failed"
+            transition_task(task_id, "failed", expected_attempt=attempt_id)
             task["error"] = f"日期范围不能超过 {MAX_DATE_RANGE_YEARS} 年"
             return
 
-        task["status"] = "generating_expression"
+        transition_task(task_id, "generating_expression", expected_attempt=attempt_id)
         expression = None
         user_text = req.prompt.strip()
         if _looks_like_expression(user_text):
@@ -423,7 +434,7 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
 
         if expression is None:
             if not os.environ.get("DEEPSEEK_API_KEY"):
-                task["status"] = "failed"
+                transition_task(task_id, "failed", expected_attempt=attempt_id)
                 task["error"] = (
                     "未配置 LLM API Key，无法解析自然语言。"
                     "请直接输入因子表达式（如 rank(close/ts_mean(close,20))），"
@@ -434,7 +445,7 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
         task["expression"] = expression
         logger.info(f"[{task_id}] expression: {expression}")
 
-        task["status"] = "validating"
+        transition_task(task_id, "validating", expected_attempt=attempt_id)
         from ..fundamental_data import ALL_FUNDAMENTAL_NAMES as _FUND_NAMES2
         dummy = pd.DataFrame({
             "open": [1.0, 2.0, 3.0], "high": [1.1, 2.1, 3.1],
@@ -452,7 +463,7 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
                 expression = _call_fix_expression(expression, paren_err, req.prompt)
                 task["expression"] = expression
             else:
-                task["status"] = "failed"
+                transition_task(task_id, "failed", expected_attempt=attempt_id)
                 task["error"] = f"表达式语法错误: {paren_err}"
                 return
 
@@ -470,22 +481,22 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
                     task["expression"] = expression
                     logger.info(f"[{task_id}] expression fixed: {expression}")
                 except Exception as e2:
-                    task["status"] = "failed"
+                    transition_task(task_id, "failed", expected_attempt=attempt_id)
                     task["error"] = f"因子表达式无效: {e2}"
                     return
             else:
-                task["status"] = "failed"
+                transition_task(task_id, "failed", expected_attempt=attempt_id)
                 task["error"] = f"因子表达式无效: {e}"
                 return
 
-        check_cancelled(task_id)
-        task["status"] = "fetching_data"
+        check_cancelled(task_id, expected_attempt=attempt_id)
+        transition_task(task_id, "fetching_data", expected_attempt=attempt_id)
         universe_resolve_date = req.universe_date or req.start_date
         stock_codes = get_universe(req.universe, date=universe_resolve_date)
         fetcher = MarketDataFetcher()
         market_df = fetcher.fetch_stocks(stock_codes, req.start_date, req.end_date)
         if market_df is None or len(market_df) == 0:
-            task["status"] = "failed"
+            transition_task(task_id, "failed", expected_attempt=attempt_id)
             task["error"] = "未获取到行情数据，请检查日期范围"
             return
         data_provenance = _market_data_provenance_fields(
@@ -506,8 +517,8 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
             data_quality_config = req.data_quality.to_config()
 
         if data_quality_enabled:
-            check_cancelled(task_id)
-            task["status"] = "checking_data_quality"
+            check_cancelled(task_id, expected_attempt=attempt_id)
+            transition_task(task_id, "checking_data_quality", expected_attempt=attempt_id)
             market_df, data_quality_report = run_data_quality_gate(market_df, data_quality_config)
         elif req.oos_enabled:
             data_quality_report = _disabled_data_quality_report(
@@ -518,8 +529,8 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
         from ..fundamental_data import detect_fundamental_vars, enrich_market_data
         fund_vars = detect_fundamental_vars(expression)
         if fund_vars:
-            check_cancelled(task_id)
-            task["status"] = "fetching_fundamentals"
+            check_cancelled(task_id, expected_attempt=attempt_id)
+            transition_task(task_id, "fetching_fundamentals", expected_attempt=attempt_id)
             logger.info(f"[{task_id}] fetching fundamentals for vars: {fund_vars}")
             market_df = enrich_market_data(market_df, fund_vars, stock_codes, req.start_date, req.end_date)
             if data_quality_report is not None:
@@ -533,11 +544,11 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
                         "Cycle 1 data_quality only gates base OHLCV market data"
                     )
 
-        check_cancelled(task_id)
-        task["status"] = "backtesting"
+        check_cancelled(task_id, expected_attempt=attempt_id)
+        transition_task(task_id, "backtesting", expected_attempt=attempt_id)
         executor = get_executor()
         if req.oos_enabled:
-            oos_config = (req.oos or OOSRequest()).to_config(req.rebalance_anchor)
+            oos_config = (req.oos or OOSRequest.model_validate({})).to_config(req.rebalance_anchor)
             future = executor.submit_cpu_work(
                 _run_oos_backtest_in_process,
                 market_df, expression, req.n_groups, req.holding_period,
@@ -564,13 +575,13 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
                 result = future.result(timeout=2)
                 break
             except TimeoutError:
-                check_cancelled(task_id)
+                check_cancelled(task_id, expected_attempt=attempt_id)
 
-        check_cancelled(task_id)
+        check_cancelled(task_id, expected_attempt=attempt_id)
         anti_overfit_result = None
         factor_df = result.get("_direction_adjusted_factor_df") if req.oos_enabled else result.get("_factor_df")
         if factor_df is not None and len(factor_df) > 100:
-            task["status"] = "analyzing"
+            transition_task(task_id, "analyzing", expected_attempt=attempt_id)
             try:
                 from ..anti_overfit import run_anti_overfit
                 anti_overfit_result = run_anti_overfit(factor_df, req.holding_period)
@@ -579,8 +590,8 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
             except Exception as e:
                 logger.warning(f"[{task_id}] anti-overfit analysis failed: {e}")
 
-        check_cancelled(task_id)
-        task["status"] = "generating_report"
+        check_cancelled(task_id, expected_attempt=attempt_id)
+        transition_task(task_id, "generating_report", expected_attempt=attempt_id)
         bm_returns = None
         try:
             bm_returns = fetch_benchmark_returns(req.benchmark, req.start_date, req.end_date)
@@ -633,7 +644,6 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
         interpretation["rating"] = scoring["grade"]
         interpretation["rating_reason"] = f"综合评分 {scoring['score']}/100"
 
-        task["status"] = "completed"
 
         nav_series = []
         try:
@@ -645,7 +655,7 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
                 if sampled.index[-1] != cum.index[-1]:
                     sampled = pd.concat([sampled, cum.iloc[[-1]]])
                 nav_series = [
-                    {"date": d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d), "value": round(float(v), 4)}
+                    {"date": pd.Timestamp(cast(Any, d)).strftime("%Y-%m-%d"), "value": round(float(cast(Any, v)), 4)}
                     for d, v in sampled.items()
                 ]
         except Exception:
@@ -755,25 +765,26 @@ def _run_backtest_task(task_id: str, req: AutoBacktestRequest, user_id: str):
             task_result["interpretation"]["metrics_scope"] = oos_scoring["metrics_scope"]
             task_result["interpretation"]["oos_decision"] = oos_scoring["decision"]
             task_result["interpretation"]["oos_risk"] = oos_scoring["overfit_risk"]
+        check_cancelled(task_id, expected_attempt=attempt_id)
         if not task.get("is_guest"):
             _record_auto_backtest_experiment(task_id, user_id, expression, task_result)
-        task["result"] = task_result
+        check_cancelled(task_id, expected_attempt=attempt_id)
+        transition_task(task_id, "completed", expected_attempt=attempt_id, result=task_result)
         logger.info(f"[{task_id}] completed")
         cleanup_reports(user_id)
 
     except CancelledException:
         logger.info(f"[{task_id}] cancelled by user")
-        task["status"] = "cancelled"
+        transition_task(task_id, "cancelled", expected_attempt=attempt_id)
     except Exception:
         logger.error(f"[{task_id}] failed: {traceback.format_exc()}")
-        task["status"] = "failed"
+        transition_task(task_id, "failed", expected_attempt=attempt_id)
         task["error"] = "回测过程中发生内部错误，请稍后重试"
     finally:
-        if "completed_at" not in task:
-            task["completed_at"] = time.time()
-        if not task.get("is_guest"):
+        final_snapshot = snapshot_task(task_id, expected_attempt=attempt_id)
+        if final_snapshot is not None and not final_snapshot.get("is_guest"):
             try:
-                persist_task_to_db(task_id, user_id, task, report_filename)
+                persist_task_to_db(task_id, user_id, final_snapshot, report_filename)
             except Exception as e:
                 logger.error(f"[{task_id}] DB persist error: {e}")
 
@@ -798,34 +809,27 @@ async def cancel_task(
 ):
     user_id = str(user.id) if user else GUEST_USER_ID
 
+    if user is not None:
+        try:
+            persisted = await cancel_durable_task(db, task_id, user_id)
+        except ProjectAccessError as exc:
+            raise HTTPException(status_code=404, detail="Task not found") from exc
+        if persisted is not None:
+            return {"task_id": task_id, "status": persisted["status"], "revision": persisted["revision"]}
+
     task = tasks.get(task_id)
     if task:
         if task.get("user_id") != user_id:
             raise HTTPException(status_code=403, detail="无权操作此任务")
         if task["status"] in TERMINAL_TASK_STATUSES:
             raise HTTPException(status_code=400, detail="任务已结束，无法取消")
-        with tasks_lock:
-            task["cancelled"] = True
-            task["status"] = "cancelled"
+        transition_task(task_id, "cancelled")
+        if user is not None:
+            await persist_task_to_db_async(task_id, user_id, task)
         logger.info(f"[{task_id}] cancel requested by user")
         return {"task_id": task_id, "status": "cancelled"}
 
-    if user is None:
-        raise HTTPException(status_code=404, detail="任务不存在")
-
-    result = await db.execute(
-        select(TaskModel).where(TaskModel.id == task_id, TaskModel.user_id == user.id)
-    )
-    db_task = result.scalar_one_or_none()
-    if not db_task:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    if db_task.status in TERMINAL_TASK_STATUSES:
-        raise HTTPException(status_code=400, detail="任务已结束，无法取消")
-    db_task.status = "cancelled"
-    db_task.error = "用户手动取消"
-    await db.commit()
-    logger.info(f"[{task_id}] db task cancelled by user")
-    return {"task_id": task_id, "status": "cancelled"}
+    raise HTTPException(status_code=404, detail="Task not found")
 
 
 @router.post("/api/v1/auto_backtest", status_code=202, summary="提交因子回测任务")
@@ -833,6 +837,7 @@ async def auto_backtest(
     req: AutoBacktestRequest,
     request: Request,
     user: User | None = Depends(get_optional_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """提交异步回测任务。支持自然语言 prompt 或直接因子表达式。返回 task_id，用 GET /api/v1/tasks/{task_id} 轮询结果。"""
     client_ip = request.client.host if request.client else "unknown"
@@ -856,6 +861,21 @@ async def auto_backtest(
     if is_guest:
         req.universe = "small_scale"
         session_id = None
+
+    if not is_guest:
+        try:
+            task, created = await submit_durable_task(
+                db, actor_id=user_id, task_type="backtest",
+                params=req.model_dump(exclude={"idempotency_key"}),
+                project_id=req.project_id, idempotency_key=req.idempotency_key, session_id=session_id,
+            )
+        except TaskConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ProjectAccessError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if created:
+            await dispatch_durable_task(db, task["task_id"])
+        return {"task_id": task["task_id"], "status": task["status"], "reused": not created}
 
     with tasks_lock:
         tasks[task_id] = {
@@ -883,29 +903,25 @@ async def task_stats(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    user_id = user.id
-
-    db_total = (await db.execute(select(func.count()).select_from(TaskModel).where(TaskModel.user_id == user_id))).scalar() or 0
-    completed = (await db.execute(select(func.count()).select_from(TaskModel).where(TaskModel.user_id == user_id, TaskModel.status == "completed"))).scalar() or 0
-    failed = (await db.execute(select(func.count()).select_from(TaskModel).where(TaskModel.user_id == user_id, TaskModel.status == "failed"))).scalar() or 0
-
-    uid_str = str(user_id)
+    projects = list((await db.scalars(select(ProjectMember.project_id).where(ProjectMember.user_id == user.id))).all())
+    project_ids = {str(project) for project in projects}
+    visible = (TaskModel.project_id.is_(None) & (TaskModel.user_id == user.id)) | TaskModel.project_id.in_(projects)
+    records = (await db.scalars(select(TaskModel).where(visible))).all()
+    merged = {str(record.id): _task_payload(record) for record in records}
     with tasks_lock:
-        memory_ids = {t["task_id"] for t in tasks.values() if t.get("user_id") == uid_str}
-    running = len(memory_ids)
-    if memory_ids:
-        db_overlap = (await db.execute(
-            select(func.count()).select_from(TaskModel).where(TaskModel.id.in_(memory_ids))
-        )).scalar() or 0
-    else:
-        db_overlap = 0
-    total = db_total + running - db_overlap
-
+        for task_id, task in tasks.items():
+            if not task_result_published(task):
+                continue
+            if ((task.get("project_id") in project_ids) or
+                    (not task.get("project_id") and task.get("user_id") == str(user.id))):
+                merged[task_id] = dict(task)
+    total = len(merged)
+    completed = sum(task["status"] == "completed" for task in merged.values())
+    failed = sum(task["status"] == "failed" for task in merged.values())
+    running = sum(task["status"] not in TERMINAL_TASK_STATUSES for task in merged.values())
     rating_dist: dict[str, int] = {}
-    rows = (await db.execute(
-        select(TaskModel.result).where(TaskModel.user_id == user_id, TaskModel.status == "completed")
-    )).scalars().all()
-    for r in rows:
+    for task in merged.values():
+        r = task.get("result") if task["status"] == "completed" else None
         if isinstance(r, dict):
             rating = r.get("interpretation", {}).get("rating") or r.get("backtest_summary", {}).get("wq_rating", "")
             if rating:
@@ -915,7 +931,7 @@ async def task_stats(
         "total": total,
         "completed": completed,
         "failed": failed,
-        "running": running - db_overlap,
+        "running": running,
         "success_rate": round(completed / total * 100, 1) if total else 0,
         "rating_distribution": rating_dist,
     }
@@ -934,11 +950,15 @@ async def list_tasks(
 ):
     user_id = str(user.id)
     offset = (page - 1) * page_size
+    projects = list((await db.scalars(select(ProjectMember.project_id).where(ProjectMember.user_id == user.id))).all())
+    project_ids = {str(project) for project in projects}
 
     memory_tasks = []
     with tasks_lock:
         for t in tasks.values():
-            if t.get("user_id") == user_id:
+            if not task_result_published(t):
+                continue
+            if t.get("project_id") in project_ids or (not t.get("project_id") and t.get("user_id") == user_id):
                 if session_id is not None and t.get("session_id") != session_id:
                     continue
                 if task_type is not None and t.get("task_type") != task_type:
@@ -958,7 +978,8 @@ async def list_tasks(
                 safe = {k: v for k, v in t.items() if k not in ("user_id",)}
                 memory_tasks.append(safe)
 
-    query = select(TaskModel).where(TaskModel.user_id == user.id)
+    visible = (TaskModel.project_id.is_(None) & (TaskModel.user_id == user.id)) | TaskModel.project_id.in_(projects)
+    query = select(TaskModel).where(visible)
     if session_id is not None:
         import uuid as _uuid
         try:
@@ -980,22 +1001,8 @@ async def list_tasks(
     merged = list(memory_tasks)
     for dt in db_tasks:
         if dt.id not in memory_ids:
-            dur = None
-            if dt.status in TERMINAL_TASK_STATUSES and dt.created_at and dt.updated_at:
-                dur = round((dt.updated_at - dt.created_at).total_seconds(), 1)
-            task_dict = {
-                "task_id": dt.id,
-                "status": dt.status,
-                "task_type": dt.task_type,
-                "session_id": str(dt.session_id) if dt.session_id else None,
-                "params": dt.params,
-                "expression": dt.expression,
-                "result": dt.result,
-                "error": dt.error,
-                "created_at": _ensure_utc(dt.created_at).isoformat() if dt.created_at else None,
-                "completed_at": _ensure_utc(dt.updated_at).isoformat() if dt.status in TERMINAL_TASK_STATUSES and dt.updated_at else None,
-                "duration_seconds": dur,
-            }
+            task_dict = _task_payload(dt)
+            task_dict.pop("user_id", None)
             if rating is not None:
                 r = task_dict.get("result", {}) or {}
                 t_rating = (r.get("interpretation", {}) or {}).get("rating") or (r.get("backtest_summary", {}) or {}).get("wq_rating", "")
@@ -1029,6 +1036,20 @@ async def get_task(
     """返回任务当前状态。status=completed 时 result 字段包含回测指标（Sharpe、IC、Fitness 等）。回测是异步的，提交后需轮询此端点直到 status 变为 completed 或 failed。"""
     user_id = str(user.id) if user else GUEST_USER_ID
 
+    if user is not None:
+        try:
+            persisted = await load_durable_task(db, task_id, user_id)
+        except ProjectAccessError as exc:
+            raise HTTPException(status_code=404, detail="Task not found") from exc
+        if persisted:
+            cached = tasks.get(task_id)
+            if (cached and cached.get("attempt_id") == persisted.get("attempt_id")
+                    and persisted["status"] not in TERMINAL_TASK_STATUSES
+                    and cached.get("status") not in TERMINAL_TASK_STATUSES):
+                persisted = dict(cached)
+            persisted.pop("user_id", None)
+            return sanitize_task_response(persisted)
+
     task = tasks.get(task_id)
     if task:
         if task.get("user_id") != user_id:
@@ -1036,37 +1057,23 @@ async def get_task(
         safe = {k: v for k, v in task.items() if k not in ("created_at", "user_id")}
         return sanitize_task_response(safe)
 
-    if user is None:
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    result = await db.execute(select(TaskModel).where(TaskModel.id == task_id, TaskModel.user_id == user.id))
-    db_task = result.scalar_one_or_none()
-    if not db_task:
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    resp = {
-        "task_id": db_task.id,
-        "status": db_task.status,
-        "task_type": db_task.task_type,
-        "params": db_task.params,
-        "expression": db_task.expression,
-        "result": db_task.result,
-        "error": db_task.error,
-    }
-    if db_task.status == "iteration_completed" and isinstance(db_task.result, dict):
-        resp["candidates"] = db_task.result.get("candidates", [])
-        resp["candidates_done"] = len(resp["candidates"])
-        resp["candidates_total"] = len(resp["candidates"])
-        resp["search_attempts"] = db_task.result.get("search_attempts", [])
-        resp["search_summary"] = db_task.result.get("search_summary", {})
-        resp["task_type"] = "iteration"
-        resp["parent_task_id"] = db_task.result.get("parent_task_id")
-    return sanitize_task_response(resp)
+    raise HTTPException(status_code=404, detail="Task not found")
 
 
 @router.post("/api/v1/tasks/{task_id}/sse-ticket")
-async def create_ticket(task_id: str, user: User | None = Depends(get_current_user_or_guest)):
+async def create_ticket(task_id: str, user: User | None = Depends(get_current_user_or_guest),
+                        db: AsyncSession = Depends(get_db)):
     """Create a short-lived, single-use ticket for SSE stream authentication."""
+    user_id = str(user.id) if user else GUEST_USER_ID
+    if user is not None:
+        try:
+            persisted = await load_durable_task(db, task_id, user_id)
+        except ProjectAccessError as exc:
+            raise HTTPException(status_code=404, detail="Task not found") from exc
+        if persisted:
+            with tasks_lock:
+                tasks.setdefault(task_id, persisted)
+            return {"ticket": create_sse_ticket(task_id, user_id)}
     task = tasks.get(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -1078,7 +1085,7 @@ async def create_ticket(task_id: str, user: User | None = Depends(get_current_us
 
 
 @router.get("/api/v1/tasks/{task_id}/stream")
-async def stream_task(task_id: str, request: Request):
+async def stream_task(task_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     import quantgpt.task_store as _ts
 
     from ..auth import is_auth_disabled
@@ -1087,6 +1094,7 @@ async def stream_task(task_id: str, request: Request):
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
+    user_id = str(task.get("user_id"))
     if not is_auth_disabled():
         ticket = request.query_params.get("ticket")
         if not ticket:
@@ -1094,7 +1102,11 @@ async def stream_task(task_id: str, request: Request):
         user_id = validate_sse_ticket(ticket, task_id)
         if user_id is None:
             raise HTTPException(status_code=401, detail="Invalid or expired SSE ticket")
-        if task.get("user_id") != user_id:
+        try:
+            authorized = await load_durable_task(db, task_id, user_id)
+        except ProjectAccessError as exc:
+            raise HTTPException(status_code=404, detail="Task not found") from exc
+        if authorized is None and task.get("user_id") != user_id:
             raise HTTPException(status_code=404, detail="Task not found")
 
     with _ts.sse_lock:
@@ -1104,8 +1116,8 @@ async def stream_task(task_id: str, request: Request):
 
     async def event_generator():
         try:
-            last_status = None
-            last_candidates_done = -1
+            last_payload = None
+            last_revision = -1
             deadline = time.monotonic() + SSE_TIMEOUT_SECONDS
             while time.monotonic() < deadline:
                 task = tasks.get(task_id)
@@ -1113,15 +1125,32 @@ async def stream_task(task_id: str, request: Request):
                     yield f"event: error\ndata: {json.dumps({'error': 'Task not found'})}\n\n"
                     return
 
+                if not task_result_published(task):
+                    durable = await load_durable_task(db, task_id, user_id)
+                    if durable is not None:
+                        task = durable
+
+                if task.get("project_id"):
+                    try:
+                        await load_durable_task(db, task_id, user_id)
+                    except ProjectAccessError:
+                        yield f"event: error\ndata: {json.dumps({'error': 'Task not found'})}\n\n"
+                        return
+
                 current_status = task.get("status")
-                current_candidates_done = task.get("candidates_done", -1)
-                if current_status != last_status or current_candidates_done != last_candidates_done:
-                    last_status = current_status
-                    last_candidates_done = current_candidates_done
-                    safe = {k: v for k, v in task.items() if k not in ("created_at", "user_id")}
-                    safe = sanitize_task_response(safe)
+                safe = {k: v for k, v in task.items() if k not in ("created_at", "user_id")}
+                safe = sanitize_task_response(safe)
+                fingerprint = json.dumps(safe, ensure_ascii=False, default=str, sort_keys=True)
+                if fingerprint != last_payload:
+                    revision = max(int(task.get("revision", 0)), last_revision + 1)
+                    safe["revision"] = revision
+                    # Retained event history is not promised: reconnects always
+                    # start with an explicitly marked current snapshot.
+                    safe["snapshot"] = last_payload is None
+                    safe["resumed_from"] = request.headers.get("last-event-id") if last_payload is None else None
+                    last_payload, last_revision = fingerprint, revision
                     payload = json.dumps(safe, ensure_ascii=False, default=str)
-                    yield f"event: update\ndata: {payload}\n\n"
+                    yield f"id: {revision}\nevent: update\ndata: {payload}\n\n"
 
                     if current_status in TERMINAL_TASK_STATUSES:
                         yield f"event: done\ndata: {json.dumps({'status': current_status})}\n\n"

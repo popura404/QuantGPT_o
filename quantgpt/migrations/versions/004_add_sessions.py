@@ -27,14 +27,16 @@ def upgrade() -> None:
     )
     op.create_index("ix_sessions_user_id", "sessions", ["user_id"])
 
-    op.add_column("tasks", sa.Column("session_id", UUID(as_uuid=True), nullable=True))
-    op.create_foreign_key("fk_tasks_session_id", "tasks", "sessions", ["session_id"], ["id"])
-    op.create_index("ix_tasks_session_id", "tasks", ["session_id"])
+    with op.batch_alter_table("tasks") as batch:
+        batch.add_column(sa.Column("session_id", UUID(as_uuid=True), nullable=True))
+        batch.create_foreign_key("fk_tasks_session_id", "sessions", ["session_id"], ["id"])
+        batch.create_index("ix_tasks_session_id", ["session_id"])
 
 
 def downgrade() -> None:
-    op.drop_index("ix_tasks_session_id", table_name="tasks")
-    op.drop_constraint("fk_tasks_session_id", "tasks", type_="foreignkey")
-    op.drop_column("tasks", "session_id")
+    with op.batch_alter_table("tasks") as batch:
+        batch.drop_index("ix_tasks_session_id")
+        batch.drop_constraint("fk_tasks_session_id", type_="foreignkey")
+        batch.drop_column("session_id")
     op.drop_index("ix_sessions_user_id", table_name="sessions")
     op.drop_table("sessions")
