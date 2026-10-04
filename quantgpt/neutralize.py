@@ -10,9 +10,12 @@ import logging
 import threading
 import time
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
+
+from .expression_parser import FieldCapabilityError
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +23,21 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Global lock for baostock
 _bs_lock = threading.Lock()
+
+
+def _session_column(df: pd.DataFrame) -> str:
+    name = "session" if "session" in df else "trade_date"
+    if name not in df or df[name].isna().to_numpy().any():
+        raise FieldCapabilityError("session", "a non-missing session is required for cross-sectional neutralization")
+    return name
+
+
+def _require_classification(df: pd.DataFrame, column: str) -> None:
+    if column not in df:
+        raise FieldCapabilityError(column, "supply point-in-time classifications for every input row")
+    labels = cast(pd.Series, df[column])
+    if labels.isna().any() or labels.astype(str).str.strip().eq("").any():
+        raise FieldCapabilityError(column, "supply point-in-time classifications for every input row")
 
 
 def industry_neutralize(
@@ -37,15 +55,12 @@ def industry_neutralize(
     Returns:
         Neutralized factor values as Series.
     """
-    def _neutralize_date(group):
-        fv = group["factor_value"]
-        ind = group[industry_col]
-        # Subtract industry mean
-        ind_mean = fv.groupby(ind).transform("mean")
-        return fv - ind_mean
-
-    result = factor_df.groupby("trade_date", group_keys=False).apply(_neutralize_date)
-    return result
+    _require_classification(factor_df, industry_col)
+    session = _session_column(factor_df)
+    fv = factor_df["factor_value"].replace([np.inf, -np.inf], np.nan)
+    # transform retains the original row identity, including stock-sorted input.
+    mean = fv.groupby([factor_df[session], factor_df[industry_col]], sort=False).transform("mean")
+    return fv - mean
 
 
 def cap_neutralize(
@@ -63,27 +78,30 @@ def cap_neutralize(
     Returns:
         Neutralized factor values as Series (regression residuals).
     """
-    def _neutralize_date(group):
-        fv = group["factor_value"].values
-        cap = group[cap_col].values
-        # Log transform
-        log_cap = np.log(cap + 1)
-        # Simple OLS: factor = a + b * log_cap + residual
-        valid = ~(np.isnan(fv) | np.isnan(log_cap) | (log_cap == 0))
+    session = _session_column(factor_df)
+    if cap_col not in factor_df:
+        raise FieldCapabilityError(cap_col, "supply actual market capitalization; turnover is not market cap")
+    work = factor_df.reset_index(drop=True)
+    caps = cast(pd.Series, pd.to_numeric(work[cap_col], errors="coerce"))
+    if (~np.isfinite(caps) | (caps <= 0)).any():
+        raise FieldCapabilityError(cap_col, "market capitalization must be finite and positive for every input row")
+    result = pd.Series(np.nan, index=work.index, name="factor_value")
+    insufficient_sessions = []
+    for date, group in work.groupby(session, sort=False):
+        fv = group["factor_value"].to_numpy(dtype=float)
+        log_cap = np.log(caps.loc[group.index].to_numpy(dtype=float))
+        valid = np.isfinite(fv)
+        # Keep the established minimum sample size, but never pretend a skipped
+        # regression succeeded by returning the unneutralized factor.
         if valid.sum() < 5:
-            return pd.Series(fv, index=group.index)
-        X = np.column_stack([np.ones(valid.sum()), log_cap[valid]])
-        y = fv[valid]
-        try:
-            beta = np.linalg.lstsq(X, y, rcond=None)[0]
-            predicted = X @ beta
-            residuals = np.full(len(fv), np.nan)
-            residuals[valid] = y - predicted
-            return pd.Series(residuals, index=group.index)
-        except Exception:
-            return pd.Series(fv, index=group.index)
-
-    result = factor_df.groupby("trade_date", group_keys=False).apply(_neutralize_date)
+            insufficient_sessions.append(str(date))
+            continue
+        design = np.column_stack([np.ones(valid.sum()), log_cap[valid]])
+        values = fv[valid]
+        beta = np.linalg.lstsq(design, values, rcond=None)[0]
+        result.loc[group.index[valid]] = values - design @ beta
+    result.index = factor_df.index
+    result.attrs["insufficient_sessions"] = insufficient_sessions
     return result
 
 
@@ -107,27 +125,34 @@ def neutralize_factor(
     if not industry and not market_cap:
         return factor_values
 
-    work = market_df[["trade_date", "stock_code"]].copy()
-    work["factor_value"] = factor_values.values
+    if not factor_values.index.equals(market_df.index):
+        if not factor_values.index.is_unique or not market_df.index.is_unique:
+            raise ValueError("factor values and market rows require unambiguous aligned indexes")
+        if len(factor_values) != len(market_df) or not market_df.index.isin(factor_values.index).all():
+            raise ValueError("factor values must identify exactly the market data rows")
+        aligned = factor_values.reindex(market_df.index)
+    else:
+        aligned = factor_values
+    work = market_df.copy()
+    work["factor_value"] = aligned
+    attrs = dict(factor_values.attrs)
 
     if industry:
-        # Get industry data
-        ind_data = get_industry_data(market_df["stock_code"].unique().tolist())
-        if ind_data is not None and len(ind_data) > 0:
-            work = work.merge(ind_data[["stock_code", "industry"]], on="stock_code", how="left")
-            work["industry"] = work["industry"].fillna("其他")
-            work["factor_value"] = industry_neutralize(work).values
-            work = work.drop(columns=["industry"])
-        else:
-            logger.warning("Industry data not available, skipping industry neutralization")
+        # Fetching today's industry classification here is not a historical
+        # point-in-time join. The data layer must supply the actual input.
+        work["factor_value"] = industry_neutralize(work)
 
     if market_cap:
-        # Use close * volume as rough market cap proxy (actual cap data not available)
-        work["market_cap"] = market_df["close"].values * market_df["volume"].values
-        work["factor_value"] = cap_neutralize(work).values
-        work = work.drop(columns=["market_cap"])
+        residuals = cap_neutralize(work)
+        work["factor_value"] = residuals
+        attrs.update(residuals.attrs)
 
-    return pd.Series(work["factor_value"].values, index=factor_values.index)
+    result = cast(pd.Series, work["factor_value"]).copy()
+    if not factor_values.index.equals(market_df.index):
+        result = result.reindex(factor_values.index)
+    result.name = factor_values.name
+    result.attrs = attrs
+    return result
 
 
 def get_industry_data(stock_codes: list) -> pd.DataFrame | None:

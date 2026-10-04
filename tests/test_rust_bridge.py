@@ -75,10 +75,54 @@ class TestEvalFactorExpression:
         monkeypatch.setattr(rust_bridge, "RUST_ENABLED", True)
         monkeypatch.setattr(rust_bridge, "_engine", FakeEngine())
 
-        result = rust_bridge.eval_factor_expression(df, "returns")
+        result = rust_bridge.eval_factor_expression(df, "returns", trusted=False)
 
         expected = pd.Series([np.nan, 0.1, 0.1, np.nan, -0.1, 0.1], index=df.index, name="factor_value")
         pd.testing.assert_series_equal(result, expected)
+
+    def test_unverified_installed_engine_cannot_change_trusted_rank(self, market_df, monkeypatch):
+        from quantgpt import rust_bridge
+        from quantgpt.expression_parser import parse_expression
+
+        class UnverifiedEngine:
+            def eval_expression(self, *args):
+                pytest.fail("trusted research must never invoke the unverified engine")
+
+            def compute_metrics(self, *args):
+                pytest.fail("trusted research must never invoke unverified metrics")
+
+        monkeypatch.setattr(rust_bridge, "_engine", UnverifiedEngine())
+        monkeypatch.setattr(rust_bridge, "RUST_ENABLED", True)
+        result = rust_bridge.eval_factor_expression_with_metadata(market_df, "rank(close)")
+        pd.testing.assert_series_equal(result.values, parse_expression("rank(close)")(market_df))
+        assert result.engine_used == "python"
+        assert result.fallback_reason == "rust_semantics_unverified"
+        assert result.values.attrs["engine_version"] == result.engine_version
+        assert rust_bridge.compute_metrics_rust(pd.Series([.1, -.1])) == {}
+
+    @pytest.mark.parametrize("enabled,reason", [(True, "rust_unavailable"), (False, "rust_disabled")])
+    def test_fallback_metadata(self, market_df, monkeypatch, enabled, reason):
+        from quantgpt import rust_bridge
+
+        monkeypatch.setattr(rust_bridge, "_engine", None if enabled else object())
+        monkeypatch.setattr(rust_bridge, "RUST_ENABLED", enabled)
+        result = rust_bridge.eval_factor_expression_with_metadata(market_df, "close")
+        assert result.engine_used == "python"
+        assert result.fallback_reason == reason
+        assert result.semantics_version == "factor_semantics/v2"
+
+    def test_failed_experimental_engine_reports_python_fallback(self, market_df, monkeypatch):
+        from quantgpt import rust_bridge
+
+        class BrokenEngine:
+            def eval_expression(self, *args):
+                raise RuntimeError("test failure")
+
+        monkeypatch.setattr(rust_bridge, "_engine", BrokenEngine())
+        monkeypatch.setattr(rust_bridge, "RUST_ENABLED", True)
+        result = rust_bridge.eval_factor_expression_with_metadata(market_df, "close", trusted=False)
+        assert result.engine_used == "python"
+        assert result.fallback_reason == "rust_evaluation_failed:RuntimeError"
 
 
 class TestComputeMetricsRust:

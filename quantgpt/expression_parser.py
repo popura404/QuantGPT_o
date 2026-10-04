@@ -109,14 +109,73 @@ Syntax extensions:
 - Power operator: base ^ exponent (equivalent to power(base, exponent))
 """
 
+import ast
 import logging
 import re
-from typing import Callable
+from dataclasses import dataclass
+from typing import Callable, cast
 
 import numpy as np
 import pandas as pd
 
+from .research.contracts import OPERATOR_SEMANTICS_VERSION, CapabilityBlockerError, ResearchError
+
 logger = logging.getLogger(__name__)
+
+
+class FieldCapabilityError(CapabilityBlockerError):
+    """A required economic input is unavailable; never substitute a proxy."""
+
+    code = "capability_blocker"
+
+    def __init__(self, field: str, detail: str = "required input is missing"):
+        self.field = field
+        self.detail = detail
+        super().__init__([ResearchError(
+            error_code="CAPABILITY_FIELD_UNAVAILABLE",
+            message=f"{field}: {detail}",
+            affected_fields=(field,),
+            next_action="Supply the actual field with verified units and point-in-time availability.",
+        )])
+
+
+def _require_market_cap(df: pd.DataFrame) -> pd.Series:
+    if "market_cap" not in df.columns:
+        raise FieldCapabilityError("market_cap", "supply actual market capitalization; price/turnover are not proxies")
+    values = cast(pd.Series, pd.to_numeric(df["market_cap"], errors="coerce"))
+    return values.where(np.isfinite(values) & (values > 0))
+
+
+def _evaluate_panel(fn: Callable, df: pd.DataFrame) -> pd.Series:
+    """Evaluate in chronological security order, then restore exact input rows.
+
+    Positional temporary row IDs avoid relying on caller index uniqueness.
+    Legacy stock_code/trade_date input remains supported; stable IDs win when
+    both naming schemes are present. A keyless frame remains a single series.
+    """
+    work = df.reset_index(drop=True).copy()
+    if "security_id" in work:
+        work["stock_code"] = work["security_id"]
+    if "session" in work:
+        work["trade_date"] = work["session"]
+    keys = [col for col in ("stock_code", "trade_date") if col in work]
+    if keys and work[keys].isna().to_numpy().any():
+        raise ValueError("row identity contains missing security/session keys")
+    if len(keys) == 2 and work.duplicated(keys).any():
+        raise ValueError("duplicate security/session row identity")
+    if "trade_date" in work:
+        work["trade_date"] = pd.to_datetime(work["trade_date"], errors="raise")
+        work = work.sort_values(keys, kind="stable")
+    numeric = work.select_dtypes(include="number").columns
+    work[numeric] = work[numeric].replace([np.inf, -np.inf], np.nan)
+    result = fn(work)
+    if not isinstance(result, pd.Series):
+        raise ValueError("expression did not return one factor value per input row")
+    result = result.reindex(pd.RangeIndex(len(df)))
+    result = result.replace([np.inf, -np.inf], np.nan)
+    result.index = df.index
+    result.attrs.update({"semantics_version": OPERATOR_SEMANTICS_VERSION, "engine_used": "python"})
+    return result
 
 
 _WQ_OPERATORS = {
@@ -294,8 +353,8 @@ class ExpressionParser:
     # Special variable mappings (computed from DataFrame columns)
     _SPECIAL_VARS = {
         'vwap': lambda df: df['vwap'] if 'vwap' in df.columns else (df['amount'] / df['volume'].replace(0, np.nan) if 'amount' in df.columns else df['close']),
-        'returns': lambda df: df.groupby('stock_code')['close'].pct_change() if 'stock_code' in df.columns else df['close'].pct_change(),
-        'cap': lambda df: df.get('market_cap', df['close'] * df.get('shares', 1)),  # fallback if no market_cap
+        'returns': lambda df: df.groupby('stock_code')['close'].pct_change(fill_method=None) if 'stock_code' in df.columns else df['close'].pct_change(fill_method=None),
+        'cap': _require_market_cap,
         'day': lambda df: pd.Series(df['trade_date'].dt.day, index=df.index, dtype=float),
         'weekday': lambda df: pd.Series(df['trade_date'].dt.weekday, index=df.index, dtype=float),  # 0=Mon, 4=Fri
         'month': lambda df: pd.Series(df['trade_date'].dt.month, index=df.index, dtype=float),
@@ -303,14 +362,13 @@ class ExpressionParser:
 
     # Cross-sectional operators that need per-date grouping.
     # These are handled specially in _build_function() — they are NOT in _UNARY_OPS.
-    _CROSS_SECTIONAL_OPS = {'rank', 'zscore'}
+    _CROSS_SECTIONAL_OPS = {'rank', 'zscore', 'scale'}
 
     # Supported unary functions (column -> Series)
     _UNARY_OPS = {
         'log': lambda s: np.log(s.clip(lower=1e-10)),
         'abs': lambda s: s.abs(),
         'sign': lambda s: np.sign(s),
-        'scale': lambda s: (s - s.min()) / (s.max() - s.min() + 1e-10),  # normalize to [0, 1]
         'tanh': lambda s: np.tanh(s),
         'sigmoid': lambda s: 1.0 / (1.0 + np.exp(-s.clip(-500, 500))),
         'exp': lambda s: np.exp(s.clip(upper=500)),  # clip to avoid overflow
@@ -324,7 +382,7 @@ class ExpressionParser:
         gain = delta.clip(lower=0).rolling(w, min_periods=1).mean()
         loss = (-delta.clip(upper=0)).rolling(w, min_periods=1).mean()
         rs = gain / (loss + 1e-10)
-        return 100 - (100 / (1 + rs))
+        return pd.Series(100 - (100 / (1 + rs)), index=s.index)
 
     @staticmethod
     def _calc_macd(s: "pd.Series", w: int) -> "pd.Series":
@@ -339,15 +397,15 @@ class ExpressionParser:
 
     @staticmethod
     def _calc_atr(df: "pd.DataFrame", w: int) -> "pd.Series":
-        high = df.get('high', df['close'])
-        low = df.get('low', df['close'])
-        close_prev = df['close'].shift(1)
-        tr = pd.concat([
+        high = cast(pd.Series, df['high'] if 'high' in df else df['close'])
+        low = cast(pd.Series, df['low'] if 'low' in df else df['close'])
+        close_prev = cast(pd.Series, df['close']).shift(1)
+        tr = cast(pd.Series, pd.concat([
             high - low,
             (high - close_prev).abs(),
             (low - close_prev).abs(),
-        ], axis=1).max(axis=1)
-        return tr.rolling(w, min_periods=1).mean()
+        ], axis=1).max(axis=1))
+        return cast(pd.Series, tr.rolling(w, min_periods=1).mean())
 
     # Supported time-series functions (column, window -> Series)
     # When the DataFrame has a 'stock_code' column, these automatically
@@ -383,7 +441,7 @@ class ExpressionParser:
     }
 
     @staticmethod
-    def _apply_ts_op_per_stock(df, inner_fn, op, window):
+    def _apply_ts_op_per_stock(df, inner_fn, op, window) -> pd.Series:
         """Apply a time-series operation per-stock when DataFrame has stock_code."""
         s = inner_fn(df)
         if 'stock_code' in df.columns:
@@ -449,10 +507,12 @@ class ExpressionParser:
         if func_match is not None:
             func_name, args_str, remainder = func_match
             if not remainder:
-                return self._build_function(func_name, args_str)
+                fn = self._build_function(func_name, args_str)
+                return (lambda df, _fn=fn: _evaluate_panel(_fn, df)) if _depth == 0 else fn
 
         # Otherwise treat as arithmetic column expression
-        return self._build_arithmetic(expression)
+        fn = self._build_arithmetic(expression)
+        return (lambda df, _fn=fn: _evaluate_panel(_fn, df)) if _depth == 0 else fn
 
     @staticmethod
     def _match_function_call(expression: str) -> tuple | None:
@@ -495,6 +555,7 @@ class ExpressionParser:
         self, func_name: str, args_str: str
     ) -> Callable[[pd.DataFrame], pd.Series]:
         """Build a callable for a named function."""
+        op: Callable
 
         # Apply operator aliases (e.g., delta -> ts_delta, delay -> ts_shift)
         func_name = self._OPERATOR_ALIASES.get(func_name, func_name)
@@ -537,14 +598,27 @@ class ExpressionParser:
             inner = self._sub_parse(args_str)
             if func_name == 'rank':
                 def _cs_rank(df, _inner=inner):
-                    s = _inner(df)
+                    s = _inner(df).replace([np.inf, -np.inf], np.nan)
                     if 'trade_date' in df.columns:
                         return s.groupby(df['trade_date']).rank(pct=True)
                     return s.rank(pct=True)
                 return _cs_rank
+            elif func_name == 'scale':
+                def _cs_scale(df, _inner=inner):
+                    s = _inner(df).replace([np.inf, -np.inf], np.nan)
+                    if 'trade_date' in df.columns:
+                        groups = s.groupby(df['trade_date'])
+                        lower, upper = groups.transform('min'), groups.transform('max')
+                    else:
+                        lower, upper = s.min(), s.max()
+                    spread = upper - lower
+                    if isinstance(spread, pd.Series):
+                        return ((s - lower) / spread.replace(0, np.nan)).mask(spread == 0, 0).where(s.notna())
+                    return s.where(s.isna(), 0.0) if spread == 0 else (s - lower) / spread
+                return _cs_scale
             else:  # zscore
                 def _cs_zscore(df, _inner=inner):
-                    s = _inner(df)
+                    s = _inner(df).replace([np.inf, -np.inf], np.nan)
                     if 'trade_date' in df.columns:
                         g = s.groupby(df['trade_date'])
                         return (s - g.transform('mean')) / (g.transform('std') + 1e-10)
@@ -593,10 +667,11 @@ class ExpressionParser:
                 s1, s2 = _i1(df), _i2(df)
                 if 'stock_code' in df.columns:
                     # Apply per-stock: build temporary frame, groupby, apply
-                    tmp = pd.DataFrame({'s1': s1, 's2': s2, 'sc': df['stock_code']}, index=df.index)
-                    return tmp.groupby('sc', group_keys=False).apply(
-                        lambda g: _op(g['s1'], g['s2'], _w)
-                    )
+                    result = pd.Series(np.nan, index=df.index)
+                    for _, group in df.groupby('stock_code', sort=False):
+                        idx = group.index
+                        result.loc[idx] = _op(s1.loc[idx], s2.loc[idx], _w)
+                    return result
                 return _op(s1, s2, _w)
             return _ts_dual
 
@@ -652,9 +727,9 @@ class ExpressionParser:
                 def _group_rank(df, _inner=inner, _gc=group_col):
                     s = _inner(df)
                     if _gc not in df.columns:
-                        if 'trade_date' in df.columns:
-                            return s.groupby(df['trade_date']).rank(pct=True)
-                        return s.rank(pct=True)
+                        raise FieldCapabilityError(_gc)
+                    if df[_gc].isna().any():
+                        raise FieldCapabilityError(_gc, "classification is missing for some input rows")
                     if 'trade_date' in df.columns:
                         return s.groupby([df['trade_date'], df[_gc]]).rank(pct=True)
                     return s.groupby(df[_gc]).rank(pct=True)
@@ -663,10 +738,9 @@ class ExpressionParser:
                 def _group_zscore(df, _inner=inner, _gc=group_col):
                     s = _inner(df)
                     if _gc not in df.columns:
-                        if 'trade_date' in df.columns:
-                            g = s.groupby(df['trade_date'])
-                            return (s - g.transform('mean')) / (g.transform('std') + 1e-10)
-                        return (s - s.mean()) / (s.std() + 1e-10)
+                        raise FieldCapabilityError(_gc)
+                    if df[_gc].isna().any():
+                        raise FieldCapabilityError(_gc, "classification is missing for some input rows")
                     if 'trade_date' in df.columns:
                         g = s.groupby([df['trade_date'], df[_gc]])
                     else:
@@ -693,9 +767,10 @@ class ExpressionParser:
             window = self._validate_window(int(parts[0].strip()), func_name)
             def _atr(df, _w=window):
                 if 'stock_code' in df.columns:
-                    return df.groupby('stock_code', group_keys=False).apply(
-                        lambda g: ExpressionParser._calc_atr(g, _w)
-                    )
+                    result = pd.Series(np.nan, index=df.index)
+                    for _, group in df.groupby('stock_code', sort=False):
+                        result.loc[group.index] = ExpressionParser._calc_atr(group, _w)
+                    return result
                 return ExpressionParser._calc_atr(df, _w)
             return _atr
 
@@ -706,12 +781,11 @@ class ExpressionParser:
                 raise ValueError(f"{func_name} requires exactly 2 arguments: (column, window)")
             inner = self._sub_parse(parts[0].strip())
             window = self._validate_window(int(parts[1].strip()), func_name)
-            if func_name == 'boll_upper':
-                return lambda df, _i=inner, _w=window: _i(df).rolling(_w, min_periods=1).mean() + 2 * _i(df).rolling(_w, min_periods=1).std()
-            elif func_name == 'boll_lower':
-                return lambda df, _i=inner, _w=window: _i(df).rolling(_w, min_periods=1).mean() - 2 * _i(df).rolling(_w, min_periods=1).std()
-            else:  # boll_mid
-                return lambda df, _i=inner, _w=window: _i(df).rolling(_w, min_periods=1).mean()
+            direction = {'boll_upper': 1, 'boll_lower': -1, 'boll_mid': 0}[func_name]
+            def boll_op(s, w):
+                rolling = s.rolling(w, min_periods=1)
+                return rolling.mean() if direction == 0 else rolling.mean() + 2 * direction * rolling.std()
+            return lambda df, _i=inner, _w=window: self._apply_ts_op_per_stock(df, _i, boll_op, _w)
 
         if func_name == 'clip':
             parts = self._split_top_level(args_str)
@@ -844,9 +918,7 @@ class ExpressionParser:
         if expr_lower.startswith('adv') and expr_lower[3:].isdigit():
             window = self._validate_window(int(expr_lower[3:]), 'adv')
             return lambda df, _w=window: (
-                df.groupby('stock_code')['volume'].transform(lambda x: x.rolling(_w, min_periods=1).mean())
-                if 'stock_code' in df.columns
-                else df['volume'].rolling(_w, min_periods=1).mean()
+                self._apply_ts_op_per_stock(df, lambda frame: frame['volume'], self._TS_OPS['ts_mean'], _w)
             )
 
         # Column reference — only allow known columns (case-insensitive)
@@ -885,7 +957,9 @@ class ExpressionParser:
 
         if col_name not in _ALLOWED_COLUMNS:
             raise ValueError(f"Unknown column or variable: {col_name!r}")
-        return lambda df, _c=col_name: df[_c]
+        if col_name == "market_cap":
+            return _require_market_cap
+        return lambda df, _c=col_name: cast(pd.Series, df[_c])
 
     @staticmethod
     def _find_keyword(expr: str, keyword: str) -> int | None:
@@ -996,6 +1070,93 @@ class ExpressionParser:
                 break
 
         return expression
+
+
+@dataclass(frozen=True)
+class ExpressionLookback:
+    """Minimum observations including the current session.
+
+    Recursive operators have no finite exact warmup: the observation count is
+    nominal and callers must record their initialization and numeric tolerance.
+    Existing parser rolling outputs use partial windows for compatibility;
+    trusted research must separately mask ineligible warmup rows.
+    """
+
+    required_observations: int
+    recursive: bool = False
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def prior_sessions(self) -> int:
+        return max(0, self.required_observations - 1)
+
+
+def infer_expression_lookback(expression: str) -> ExpressionLookback:
+    """Walk an expression AST bottom-up without executing any expression code."""
+    parser = ExpressionParser()
+    if not expression or len(expression) > parser.MAX_EXPRESSION_LENGTH:
+        raise ValueError("lookback requires a non-empty expression within the parser length limit")
+    source = parser._convert_ternary_operators(expression).replace("^", "**")
+    try:
+        root = ast.parse(source.strip(), mode="eval")
+    except (SyntaxError, RecursionError) as exc:
+        raise ValueError("could not parse expression AST for lookback") from exc
+    warnings: set[str] = set()
+    recursive = False
+
+    def window(node: ast.AST, name: str) -> int:
+        if not isinstance(node, ast.Constant) or type(node.value) is not int:
+            raise ValueError(f"{name}: lookback window must be an integer literal")
+        return parser._validate_window(node.value, name)
+
+    def visit(node: ast.AST, depth: int = 0) -> int:
+        nonlocal recursive
+        if depth > parser.MAX_DEPTH:
+            raise ValueError("expression nesting too deep for lookback")
+        if isinstance(node, ast.Name):
+            name = node.id.lower()
+            if name == "returns":
+                return 2
+            if name.startswith("adv") and name[3:].isdigit():
+                return parser._validate_window(int(name[3:]), "adv")
+            return 1
+        if isinstance(node, ast.Constant):
+            return 1
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name) or node.keywords:
+                raise ValueError("unsupported function form for lookback")
+            name = node.func.id.lower()
+            name = parser._OPERATOR_ALIASES.get(name, name)
+            if name == "atr":
+                if len(node.args) != 1:
+                    raise ValueError("atr requires one window")
+                return window(node.args[0], name) + 1
+            ts_names = set(parser._TS_OPS) | set(parser._TS_DUAL_OPS) | {"boll_upper", "boll_lower", "boll_mid"}
+            if name in ts_names:
+                expected = 3 if name in parser._TS_DUAL_OPS else 2
+                if len(node.args) != expected:
+                    raise ValueError(f"{name}: invalid argument count for lookback")
+                size = window(node.args[-1], name)
+                child = max(visit(arg, depth + 1) for arg in node.args[:-1])
+                if name in {"ema", "macd"}:
+                    recursive = True
+                    warnings.add(f"{name} is recursive; nominal lookback does not guarantee initialization invariance")
+                return child + size - (0 if name in {"ts_shift", "ts_delta", "rsi"} else 1)
+            if name == "trade_when":
+                recursive = True
+                warnings.add("trade_when retains state; warmup must include the prior signal-state source")
+            elif name not in (set(parser._CROSS_SECTIONAL_OPS) | set(parser._UNARY_OPS) |
+                              set(parser._BINARY_OPS) | {"clip", "where", "group_rank", "group_zscore", "indneutralize"}):
+                raise ValueError(f"{name}: lookback is unknown")
+            return max((visit(arg, depth + 1) for arg in node.args), default=1)
+        if isinstance(node, (ast.Expression, ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Compare, ast.IfExp)):
+            return max((visit(child, depth + 1) for child in ast.iter_child_nodes(node)), default=1)
+        if isinstance(node, (ast.operator, ast.unaryop, ast.boolop, ast.cmpop)):
+            return 1
+        raise ValueError(f"unsupported AST node for lookback: {type(node).__name__}")
+
+    count = visit(root)
+    return ExpressionLookback(count, recursive, tuple(sorted(warnings)))
 
 
 def parse_expression(expression: str, mode: str = "local") -> Callable[[pd.DataFrame], pd.Series]:

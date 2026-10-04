@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, replace
 from math import floor
-from typing import Literal
+from typing import Literal, cast
 
 import pandas as pd
+
+from ..expression_parser import infer_expression_lookback
 
 
 @dataclass(frozen=True)
@@ -30,59 +31,26 @@ class OOSConfig:
     warmup_days: int | None = None
 
 
-_ROLLING_NAMES = (
-    "ts_mean",
-    "ts_sum",
-    "ts_std",
-    "ts_min",
-    "ts_max",
-    "ts_rank",
-    "ts_delta",
-    "ts_delay",
-    "ts_corr",
-    "ts_cov",
-    "ts_zscore",
-    "delta",
-    "delay",
-    "stddev",
-    "correlation",
-    "covariance",
-    "decay_linear",
-    "product",
-    "sma",
-    "ema",
-    "wma",
-    "rsi",
-    "macd",
-    "obv",
-    "boll_upper",
-    "boll_lower",
-    "boll_mid",
-)
-
-
 def infer_warmup_days(expression: str, holding_period: int) -> tuple[int, list[str]]:
-    """Infer a conservative factor warm-up from known rolling operators."""
-    warnings: list[str] = []
-    expr = expression or ""
-    windows: list[int] = [int(n) for n in re.findall(r"\badv(\d+)\b", expr, flags=re.IGNORECASE)]
-    found_rolling = bool(windows)
+    """Compose nested AST dependencies, preserving the legacy padding convention.
 
-    for name in _ROLLING_NAMES:
-        pattern = re.compile(rf"\b{name}\s*\(([^)]*)\)", flags=re.IGNORECASE)
-        for match in pattern.finditer(expr):
-            found_rolling = True
-            windows.extend(int(n) for n in re.findall(r"\b\d+\b", match.group(1)))
-
-    if windows:
-        return max(max(windows), holding_period), warnings
-    if found_rolling:
+    Warmup allocation counts the complete observation requirement (one extra
+    prior session for finite windows), with the existing holding-period floor.
+    The evaluator still emits partial windows; these rows are not scoring rows.
+    """
+    try:
+        lookback = infer_expression_lookback(expression)
+    except ValueError:
         fallback = max(holding_period, 252)
-        warnings.append(
+        return fallback, [
             "warm-up lookback could not be inferred precisely; "
             f"using conservative {fallback} trading days"
-        )
-        return fallback, warnings
+        ]
+    warnings = list(lookback.warnings)
+    if lookback.recursive:
+        return max(lookback.required_observations, holding_period, 252), warnings
+    if lookback.prior_sessions:
+        return max(lookback.required_observations, holding_period), warnings
     return 0, warnings
 
 
@@ -152,7 +120,8 @@ def split_by_dates(
     df = market_df.copy()
     df["trade_date"] = pd.to_datetime(df["trade_date"])
     df = df.sort_values(["trade_date", "stock_code"] if "stock_code" in df.columns else ["trade_date"])
-    dates = pd.Index(sorted(pd.to_datetime(df["trade_date"].dropna().unique())))
+    dates = pd.DatetimeIndex(sorted(pd.to_datetime(df["trade_date"].dropna().unique())))
+    calendar_sessions = market_df.attrs.get("calendar_sessions", dates.tolist())
     if len(dates) < 3:
         raise ValueError("not enough unique trade_date values for train/valid/test split")
 
@@ -178,12 +147,13 @@ def split_by_dates(
     date_positions = {pd.Timestamp(d): idx for idx, d in enumerate(dates)}
 
     def _frame_for(window_dates: pd.Index) -> tuple[pd.DataFrame, pd.Series]:
-        start_pos = date_positions[pd.Timestamp(window_dates[0])]
+        start_pos = date_positions[cast(pd.Timestamp, window_dates[0])]
         warm_start_pos = max(0, start_pos - warmup_days)
-        warm_dates = set(dates[warm_start_pos:date_positions[pd.Timestamp(window_dates[-1])] + 1])
-        eval_dates = set(window_dates)
-        frame = df[df["trade_date"].isin(warm_dates)].copy()
-        mask = frame["trade_date"].isin(eval_dates)
+        warm_dates = dates[warm_start_pos:date_positions[cast(pd.Timestamp, window_dates[-1])] + 1].tolist()
+        eval_dates = window_dates.tolist()
+        frame = cast(pd.DataFrame, df[df["trade_date"].isin(warm_dates)]).copy()
+        frame.attrs["calendar_sessions"] = calendar_sessions
+        mask = cast(pd.Series, frame["trade_date"]).isin(eval_dates)
         return frame, pd.Series(mask.to_numpy(dtype=bool), index=frame.index)
 
     train_frame, train_mask = _frame_for(train_dates)
@@ -212,5 +182,6 @@ def split_by_dates(
         },
         "rebalance_anchor": rebalance_anchor,
         "resolved_warmup_days": warmup_days,
+        "calendar_sessions": calendar_sessions,
         "warnings": warnings,
     }

@@ -59,11 +59,11 @@ class TestCapNeutralize:
         corr = np.corrcoef(result.values, log_cap)[0, 1]
         assert abs(corr) < 0.1
 
-    def test_too_few_stocks_returns_original(self):
+    def test_too_few_stocks_is_missing_and_reports_insufficient_sample(self):
         df = _make_factor_df(n_dates=1, n_stocks=3)
-        original = df["factor_value"].copy()
         result = cap_neutralize(df)
-        np.testing.assert_array_almost_equal(result.values.flatten(), original.values)
+        assert result.isna().all()
+        assert len(result.attrs["insufficient_sessions"]) == 1
 
 
 class TestNeutralizeFactorIntegration:
