@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
 import numpy as np
 import pandas as pd
@@ -45,14 +45,14 @@ def _truthy_mask(series: pd.Series) -> pd.Series:
     if pd.api.types.is_bool_dtype(series):
         return series.fillna(False)
     if pd.api.types.is_numeric_dtype(series):
-        return pd.to_numeric(series, errors="coerce").fillna(0) != 0
+        return cast(pd.Series, pd.to_numeric(series, errors="coerce")).fillna(0) != 0
     normalized = series.astype(str).str.strip().str.lower()
     return normalized.isin({"1", "true", "t", "yes", "y", "是", "st", "*st"})
 
 
 def _trade_status_suspended_mask(series: pd.Series) -> pd.Series:
     if pd.api.types.is_numeric_dtype(series):
-        return pd.to_numeric(series, errors="coerce").fillna(1) != 1
+        return cast(pd.Series, pd.to_numeric(series, errors="coerce")).fillna(1) != 1
     normalized = series.astype(str).str.strip().str.lower()
     active_values = {"1", "true", "t", "yes", "y", "交易", "trading", "active"}
     missing_values = {"", "none", "nan", "nat"}
@@ -74,21 +74,21 @@ def _near_price(left: pd.Series, right: pd.Series, tolerance: float) -> pd.Serie
 def _one_price_limit_mask(df: pd.DataFrame, tolerance: float) -> tuple[pd.Series, str]:
     one_price = _all_ohlc_equal(df, tolerance)
     if "limit_up" in df.columns or "limit_down" in df.columns:
-        limit_up = pd.to_numeric(df.get("limit_up"), errors="coerce") if "limit_up" in df.columns else pd.Series(np.nan, index=df.index)
-        limit_down = pd.to_numeric(df.get("limit_down"), errors="coerce") if "limit_down" in df.columns else pd.Series(np.nan, index=df.index)
-        at_up = limit_up.notna() & _near_price(df["close"], limit_up, tolerance)
-        at_down = limit_down.notna() & _near_price(df["close"], limit_down, tolerance)
+        limit_up = cast(pd.Series, pd.to_numeric(df["limit_up"], errors="coerce")) if "limit_up" in df.columns else pd.Series(np.nan, index=df.index)
+        limit_down = cast(pd.Series, pd.to_numeric(df["limit_down"], errors="coerce")) if "limit_down" in df.columns else pd.Series(np.nan, index=df.index)
+        at_up = limit_up.notna() & _near_price(cast(pd.Series, df["close"]), limit_up, tolerance)
+        at_down = limit_down.notna() & _near_price(cast(pd.Series, df["close"]), limit_down, tolerance)
         return one_price & (at_up | at_down), "limit_price"
 
     if "pre_close" in df.columns:
-        pre_close = pd.to_numeric(df["pre_close"], errors="coerce")
+        pre_close = cast(pd.Series, pd.to_numeric(df["pre_close"], errors="coerce"))
         implied_ret = df["close"] / pre_close - 1
         rough_limit = implied_ret.abs() >= 0.049
         rough_limit &= pre_close.notna() & (pre_close > 0)
         return one_price & rough_limit, "pre_close_rough"
 
     if "pct_change" in df.columns:
-        pct_change = pd.to_numeric(df["pct_change"], errors="coerce")
+        pct_change = cast(pd.Series, pd.to_numeric(df["pct_change"], errors="coerce"))
         rough_limit = pct_change.abs() >= 4.9
         return one_price & rough_limit, "pct_change_rough"
 
@@ -98,8 +98,8 @@ def _one_price_limit_mask(df: pd.DataFrame, tolerance: float) -> tuple[pd.Series
 def _return_mismatch_mask(df: pd.DataFrame, tolerance_pct_points: float) -> pd.Series:
     if "pre_close" not in df.columns or "pct_change" not in df.columns:
         return pd.Series(False, index=df.index)
-    pre_close = pd.to_numeric(df["pre_close"], errors="coerce")
-    pct_change = pd.to_numeric(df["pct_change"], errors="coerce")
+    pre_close = cast(pd.Series, pd.to_numeric(df["pre_close"], errors="coerce"))
+    pct_change = cast(pd.Series, pd.to_numeric(df["pct_change"], errors="coerce"))
     implied_pct = (df["close"] / pre_close - 1) * 100
     valid = pre_close.notna() & (pre_close > 0) & pct_change.notna() & implied_pct.notna()
     return valid & ((implied_pct - pct_change).abs() > tolerance_pct_points)
@@ -111,6 +111,8 @@ def run_data_quality_gate(
 ) -> tuple[pd.DataFrame, dict]:
     """Validate and optionally filter base OHLCV market data."""
     config = config or DataQualityConfig()
+    if not market_df.columns.is_unique:
+        raise ValueError("market_df columns must be unique")
     if config.mode not in {"report_only", "filter", "strict"}:
         raise ValueError("data quality mode must be report_only, filter, or strict")
 
@@ -119,7 +121,7 @@ def run_data_quality_gate(
         raise ValueError(f"market_df missing required columns: {missing}")
 
     before_rows = int(len(market_df))
-    before_stocks = int(market_df["stock_code"].nunique())
+    before_stocks = int(cast(pd.Series, market_df["stock_code"]).nunique())
     report = {
         "enabled": bool(config.enabled),
         "before_rows": before_rows,
@@ -160,7 +162,7 @@ def run_data_quality_gate(
     strict_issue_rules: list[str] = []
 
     if config.drop_st and "is_st" in df.columns:
-        st_mask = _truthy_mask(df["is_st"]).reindex(df.index, fill_value=False)
+        st_mask = _truthy_mask(cast(pd.Series, df["is_st"])).reindex(df.index, fill_value=False)
         if int(st_mask.sum()) > 0:
             report["issues"].append(_issue("st_stock", rows=int(st_mask.sum())))
             invalid_masks.append(st_mask)
@@ -168,9 +170,9 @@ def run_data_quality_gate(
     if config.drop_suspended:
         suspended_masks = []
         if "trade_status" in df.columns:
-            suspended_masks.append(_trade_status_suspended_mask(df["trade_status"]))
+            suspended_masks.append(_trade_status_suspended_mask(cast(pd.Series, df["trade_status"])))
         if "suspended" in df.columns:
-            suspended_masks.append(_truthy_mask(df["suspended"]))
+            suspended_masks.append(_truthy_mask(cast(pd.Series, df["suspended"])))
         if suspended_masks:
             suspended = pd.Series(False, index=df.index)
             for mask in suspended_masks:
@@ -244,10 +246,10 @@ def run_data_quality_gate(
         )
         strict_issue_rules.append("return_adjustment_mismatch")
 
-    expected_days = max(1, int(df["trade_date"].nunique()))
-    observed_days = df.groupby("stock_code")["trade_date"].nunique()
-    missing_ratio = 1 - observed_days / expected_days
-    high_missing_stocks = sorted(missing_ratio[missing_ratio > config.max_missing_ratio_per_stock].index.tolist())
+    expected_days = max(1, int(cast(pd.Series, df["trade_date"]).nunique()))
+    observed_days = cast(pd.Series, df.groupby("stock_code")["trade_date"].nunique())
+    missing_ratio = cast(pd.Series, 1 - observed_days / expected_days)
+    high_missing_stocks = sorted(cast(pd.Series, missing_ratio[missing_ratio > config.max_missing_ratio_per_stock]).index.tolist())
     if high_missing_stocks:
         report["issues"].append(
             _issue(
@@ -268,16 +270,16 @@ def run_data_quality_gate(
     if config.mode == "report_only":
         cleaned = df.copy()
     else:
-        cleaned = df[~row_invalid].copy()
+        cleaned = cast(pd.DataFrame, df[~row_invalid]).copy()
         # The full-sample report is diagnostic, never a historical universe filter.
         # Only the prefix available at each decision can determine eligibility.
         eligibility = historical_data_eligibility(df, config.max_missing_ratio_per_stock)
-        cleaned = cleaned[eligibility.reindex(cleaned.index, fill_value=False)].copy()
+        cleaned = cast(pd.DataFrame, cleaned[eligibility.reindex(cleaned.index, fill_value=False)]).copy()
 
     report["after_rows"] = int(len(cleaned))
     report["dropped_rows"] = int(before_rows - len(cleaned))
-    report["after_stocks"] = int(cleaned["stock_code"].nunique())
-    report["dropped_stocks"] = int(before_stocks - cleaned["stock_code"].nunique())
+    report["after_stocks"] = int(cast(pd.Series, cleaned["stock_code"]).nunique())
+    report["dropped_stocks"] = before_stocks - report["after_stocks"]
 
     # Avoid leaking numpy scalar types into API payloads.
     for issue in report["issues"]:
@@ -292,14 +294,17 @@ def historical_data_eligibility(frame: pd.DataFrame, max_missing_ratio: float = 
 
     Counting starts at the first observed session, not at an inferred listing date.
     This is a data-availability filter, not a claim of historical universe coverage.
-    A provider calendar is needed to detect sessions missing from the entire panel.
+    A supplied provider calendar also detects sessions missing from the entire panel.
     """
     if not 0 <= max_missing_ratio <= 1:
         raise ValueError("max_missing_ratio must be between 0 and 1")
     if frame.empty:
         return pd.Series(True, index=frame.index, dtype=bool)
     dates = pd.to_datetime(frame["trade_date"])
-    sessions = pd.Index(dates.unique()).sort_values()
+    supplied = frame.attrs.get("calendar_sessions")
+    sessions = pd.DatetimeIndex(pd.to_datetime(supplied)).sort_values().unique() if supplied is not None else pd.DatetimeIndex(dates.unique()).sort_values()
+    if not pd.Index(dates).isin(sessions).all():
+        raise ValueError("observed dates are outside the supplied trading calendar")
     positions = pd.Series(sessions.get_indexer(dates), index=frame.index)
     first = positions.groupby(frame["stock_code"]).transform("min")
     ordered = frame.assign(_session_position=positions).sort_values(["stock_code", "trade_date"])

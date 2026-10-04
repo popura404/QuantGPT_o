@@ -11,7 +11,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
+from filelock import FileLock
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +21,8 @@ from .models import DataSnapshot
 
 SNAPSHOT_ID_PREFIX = "ds"
 FRAME_HASH_COLUMNS = ("trade_date", "stock_code", "open", "high", "low", "close", "volume", "amount", "pct_change")
+INPUT_ATTRIBUTES = ("corporate_actions", "calendar_sessions", "calendar_version", "adjustment", "data_provenance",
+                    "research_only", "capability_blockers", "universe_membership")
 
 
 def build_cache_snapshot(
@@ -99,6 +103,11 @@ def build_market_frame_snapshot(
     """Build deterministic snapshot metadata from a market-data DataFrame."""
     query = dict(query_params or {})
     query["endpoint"] = endpoint
+    metadata = dict(source_metadata or {})
+    metadata.pop("input_attributes", None)
+    attributes = {name: frame.attrs[name] for name in INPUT_ATTRIBUTES if name in frame.attrs}
+    if attributes:
+        metadata["input_attributes"] = _canonical_json_value(attributes)
     payload = {
         "vendor": vendor,
         "source_kind": source_kind,
@@ -109,7 +118,7 @@ def build_market_frame_snapshot(
         "date_min": _frame_date_bound(frame, "min"),
         "date_max": _frame_date_bound(frame, "max"),
         "content_hash": content_hash or _frame_content_hash(frame),
-        "source_metadata": _canonical_json_value(source_metadata or {}),
+        "source_metadata": _canonical_json_value(metadata),
     }
     return _snapshot_payload(payload, download_time=None)
 
@@ -140,7 +149,9 @@ def ensure_market_frame_snapshot(
 ) -> dict[str, Any]:
     """Return an existing frame snapshot or attach a deterministic fallback."""
     existing = frame.attrs.get("data_snapshot")
-    if (isinstance(existing, dict) and existing.get("snapshot_id")
+    current_attrs = _canonical_json_value({name: frame.attrs[name] for name in INPUT_ATTRIBUTES if name in frame.attrs})
+    existing_attrs = existing.get("source_metadata", {}).get("input_attributes", {}) if isinstance(existing, dict) else {}
+    if (isinstance(existing, dict) and existing.get("snapshot_id") and current_attrs == existing_attrs
             and existing.get("content_hash") == _frame_content_hash(frame)
             and existing.get("field_schema") == _frame_field_schema(frame)):
         return existing
@@ -267,31 +278,37 @@ def freeze_market_frame(frame: pd.DataFrame, root: str | Path, *, vendor: str,
                         source_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     """Persist a complete immutable panel, independent of mutable provider caches.
 
-    Publish a complete directory atomically; competing writers reuse the verified
-    winner. All vintage, membership and corporate-action input columns are retained.
+    Publish the manifest last under an interprocess lock; incomplete directories
+    have no valid manifest and can be retried. Readers only use complete manifests.
     """
     snapshot = build_market_frame_snapshot(frame, vendor=vendor, query_params=query_params,
                                            source_metadata=source_metadata)
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     destination = root / snapshot["snapshot_id"]
-    if destination.exists():
-        return load_frozen_market_frame(snapshot["snapshot_id"], root).attrs["data_snapshot"]
-    with tempfile.TemporaryDirectory(prefix=".snapshot-", dir=root) as temp:
-        staging = Path(temp) / "complete"
-        staging.mkdir()
-        data_path = staging / "market.parquet"
-        stored = frame.copy()
-        stored.attrs = {}
-        stored.to_parquet(data_path, index=False)
-        snapshot.update(replayable=True, files={"market.parquet": _file_hash(data_path)})
-        (staging / "manifest.json").write_text(json.dumps(snapshot, ensure_ascii=False, sort_keys=True,
-                                                         default=str), encoding="utf-8")
+    with FileLock(str(root / f".{snapshot['snapshot_id']}.lock")):
+        if (destination / "manifest.json").exists():
+            return load_frozen_market_frame(snapshot["snapshot_id"], root).attrs["data_snapshot"]
+        destination.mkdir(exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".market-", suffix=".parquet", dir=destination)
+        os.close(fd)
         try:
-            os.rename(staging, destination)
-        except OSError:
-            if not destination.exists():
-                raise
+            stored = frame.copy()
+            stored.attrs = {}
+            stored.to_parquet(temporary, index=False)
+            snapshot.update(replayable=True, files={"market.parquet": _file_hash(Path(temporary))})
+            os.replace(temporary, destination / "market.parquet")
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        fd, temporary = tempfile.mkstemp(prefix=".manifest-", suffix=".json", dir=destination)
+        os.close(fd)
+        try:
+            Path(temporary).write_text(json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str), encoding="utf-8")
+            os.replace(temporary, destination / "manifest.json")
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
     return load_frozen_market_frame(snapshot["snapshot_id"], root).attrs["data_snapshot"]
 
 
@@ -307,6 +324,17 @@ def load_frozen_market_frame(snapshot_id: str, root: str | Path) -> pd.DataFrame
     frame = pd.read_parquet(data_path)
     if snapshot.get("content_hash") != _frame_content_hash(frame):
         raise ValueError("snapshot logical content hash mismatch")
+    metadata = snapshot.get("source_metadata", {})
+    attributes = metadata.get("input_attributes", {})
+    for name in INPUT_ATTRIBUTES:
+        if name in attributes:
+            frame.attrs[name] = attributes[name]
+    query = dict(snapshot.get("query_params") or {})
+    endpoint = query.pop("endpoint", "market_frame")
+    verified = build_market_frame_snapshot(frame, vendor=snapshot["vendor"], source_kind=snapshot["source_kind"],
+                                           endpoint=endpoint, query_params=query, source_metadata=metadata)
+    if verified["snapshot_id"] != snapshot_id:
+        raise ValueError("snapshot manifest identity mismatch")
     return attach_data_snapshot(frame, snapshot)
 
 
@@ -319,4 +347,8 @@ def _canonical_json_value(value: Any) -> Any:
         return [_canonical_json_value(v) for v in sorted(value, key=str)]
     if isinstance(value, datetime):
         return value.isoformat()
+    if isinstance(value, (pd.Index, np.ndarray)):
+        return [_canonical_json_value(item) for item in value.tolist()]
+    if isinstance(value, np.generic):
+        return _canonical_json_value(value.item())
     return value

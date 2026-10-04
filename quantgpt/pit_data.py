@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
@@ -43,13 +45,13 @@ def align_vintages(decisions: pd.DataFrame, facts: pd.DataFrame, *, fields: list
     if missing:
         raise ValueError(f"vintage fields missing: {sorted(missing)}")
     output = decisions.copy()
-    times = _utc(output["decision_at"], "decision_at")
+    times = _utc(cast(pd.Series, output["decision_at"]), "decision_at")
     source = facts.copy()
-    source["available_at"] = _utc(source["available_at"], "available_at")
+    source["available_at"] = _utc(cast(pd.Series, source["available_at"]), "available_at")
     source["period_end"] = pd.to_datetime(source["period_end"], errors="raise")
     if source.duplicated(["security_id", "field", "period_end", "available_at"]).any():
         raise ValueError("ambiguous simultaneous financial vintages")
-    if source.groupby(["security_id", "field"])["unit"].nunique().gt(1).any():
+    if cast(pd.Series, source.groupby(["security_id", "field"])["unit"].nunique()).gt(1).any():
         raise ValueError("financial field unit changed without normalization")
     for field in fields:
         if field not in set(source["field"]):
@@ -58,8 +60,8 @@ def align_vintages(decisions: pd.DataFrame, facts: pd.DataFrame, *, fields: list
         revisions: list = []
         availability: list = []
         for code, decision_at in zip(output["security_id"], times):
-            eligible = source[(source["security_id"] == code) & (source["field"] == field)
-                              & (source["available_at"] <= decision_at)]
+            eligible = cast(pd.DataFrame, source[(source["security_id"] == code) & (source["field"] == field)
+                              & (source["available_at"] <= decision_at)])
             if eligible.empty:
                 values.append(np.nan)
                 revisions.append(None)
@@ -87,8 +89,11 @@ def effective_members(intervals: pd.DataFrame, session: str, *, known_at: str | 
     if known_at is not None:
         if "available_at" not in intervals:
             raise DataCapabilityError(["available_at"], source="membership_store")
-        mask &= _utc(intervals["available_at"], "available_at") <= pd.Timestamp(known_at)
-    result = intervals[mask].copy()
+        known = pd.Timestamp(known_at)
+        if known.tzinfo is None:
+            raise ValueError("known_at requires explicit timezone")
+        mask &= _utc(cast(pd.Series, intervals["available_at"]), "available_at") <= known
+    result = cast(pd.DataFrame, intervals[mask]).copy()
     if result["security_id"].duplicated().any():
         raise ValueError("overlapping security effective intervals")
     return result

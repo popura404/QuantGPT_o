@@ -10,14 +10,17 @@ import io
 import logging
 import os
 import socket
+import tempfile
 import threading
 import time
 from datetime import datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, cast
 
 import numpy as np
 import pandas as pd
+from filelock import FileLock, Timeout
 
 from .data_snapshots import attach_data_snapshot, build_market_frame_snapshot
 
@@ -28,6 +31,33 @@ _OPTIONAL_MARKET_COLUMNS = ["pre_close", "trade_status", "is_st", "limit_up", "l
 _NUMERIC_MARKET_COLUMNS = [
     "open", "high", "low", "close", "pre_close", "volume", "amount", "pct_change", "limit_up", "limit_down"
 ]
+
+
+@lru_cache(maxsize=128)
+def market_sessions(start_date: str, end_date: str) -> pd.DatetimeIndex:
+    """A-share sessions, never a five-calendar-day tolerance or weekday guess."""
+    import exchange_calendars
+
+    calendar: Any = exchange_calendars.get_calendar("XSHG")
+    return pd.DatetimeIndex(calendar.sessions_in_range(start_date, end_date))
+
+
+def missing_market_sessions(frame: pd.DataFrame, start_date: str, end_date: str) -> pd.DatetimeIndex:
+    expected = market_sessions(start_date, end_date)
+    observed = pd.DatetimeIndex(pd.to_datetime(frame["trade_date"]).dropna().dt.normalize())
+    return pd.DatetimeIndex(expected.difference(observed))
+
+
+def _atomic_market_cache(frame: pd.DataFrame, path: str | Path) -> None:
+    target = Path(path)
+    fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
+    os.close(fd)
+    try:
+        frame.to_parquet(temporary, index=False)
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 # Global lock for baostock — it only supports one session per process
 _bs_lock = threading.Lock()
@@ -482,7 +512,8 @@ def _transform_rq_to_schema(rq_df: pd.DataFrame, bs_code: str) -> pd.DataFrame:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     columns = _BASE_MARKET_COLUMNS + [col for col in _OPTIONAL_MARKET_COLUMNS if col in df.columns]
-    result = df[columns].copy()
+    result = cast(pd.DataFrame, df[columns]).copy()
+    result.attrs["cache_basis"] = {"provider": "rqdatac", "feed": "get_price:pre", "adjustment": "qfq", "version": "unknown"}
     return result.sort_values("trade_date")
 
 
@@ -535,7 +566,37 @@ class MarketDataFetcher:
         if "trade_date" in df.columns:
             df = df.copy()
             df["trade_date"] = pd.to_datetime(df["trade_date"]).astype("datetime64[ns]")
-        df.to_parquet(self._cache_path(stock_code), index=False)
+        _atomic_market_cache(df, self._cache_path(stock_code))
+
+    def _refresh_bounds(self, stock_code: str, start_date: str, end_date: str) -> tuple[str, str]:
+        """Adjusted/unknown histories must be fetched together on one current basis."""
+        existing = self._load_cache(stock_code)
+        if existing is None or existing.empty:
+            return start_date, end_date
+        basis = existing.attrs.get("cache_basis", {})
+        if basis.get("adjustment") == "raw" and basis.get("version") not in (None, "unknown"):
+            missing = missing_market_sessions(existing, start_date, end_date)
+            if len(missing):
+                return pd.Timestamp(str(missing.min())).strftime("%Y-%m-%d"), pd.Timestamp(str(missing.max())).strftime("%Y-%m-%d")
+            return start_date, end_date
+        return (min(pd.Timestamp(start_date), existing["trade_date"].min()).strftime("%Y-%m-%d"),
+                max(pd.Timestamp(end_date), existing["trade_date"].max()).strftime("%Y-%m-%d"))
+
+    @staticmethod
+    def _combine_refresh(existing: pd.DataFrame | None, incoming: pd.DataFrame) -> pd.DataFrame:
+        if existing is None or existing.empty:
+            return incoming
+        old_basis, new_basis = existing.attrs.get("cache_basis", {}), incoming.attrs.get("cache_basis", {})
+        if (old_basis == new_basis and old_basis.get("adjustment") == "raw"
+                and old_basis.get("version") not in (None, "unknown") and old_basis.get("provider")):
+            combined = pd.concat([existing, incoming]).drop_duplicates("trade_date", keep="last").sort_values("trade_date")
+            combined.attrs = dict(incoming.attrs)
+            return combined
+        old_dates = pd.DatetimeIndex(pd.to_datetime(existing["trade_date"]))
+        new_dates = pd.DatetimeIndex(pd.to_datetime(incoming["trade_date"]))
+        if len(old_dates.difference(new_dates)):
+            raise ValueError("cache adjustment basis is unknown or changed; complete replacement history is required")
+        return incoming
 
     # --- PLACEHOLDER_FETCH_REMOTE ---
 
@@ -591,6 +652,8 @@ class MarketDataFetcher:
                         frequency="d",
                         adjustflag="2",
                     )
+                if rs is None:
+                    continue
                 if rs.error_code != "0":
                     logger.warning(f"baostock history query failed for {code}: {rs.error_msg}")
                     continue
@@ -618,12 +681,14 @@ class MarketDataFetcher:
             if "trade_status" in df.columns:
                 df["trade_status"] = pd.to_numeric(df["trade_status"], errors="coerce")
             if "is_st" in df.columns:
-                df["is_st"] = pd.to_numeric(df["is_st"], errors="coerce").fillna(0).astype(int)
+                df["is_st"] = cast(pd.Series, pd.to_numeric(df["is_st"], errors="coerce")).fillna(0).astype(int)
             df = df.sort_values("trade_date")
-            if "pct_change" not in df.columns or df["pct_change"].isna().all():
+            if "pct_change" not in df.columns or cast(pd.Series, df["pct_change"]).isna().all():
                 df["pct_change"] = df["close"].pct_change() * 100
             columns = _BASE_MARKET_COLUMNS + [col for col in _OPTIONAL_MARKET_COLUMNS if col in df.columns]
-            return df[columns].copy()
+            result = cast(pd.DataFrame, df[columns]).copy()
+            result.attrs["cache_basis"] = {"provider": "baostock", "feed": "history:adjustflag=2", "adjustment": "qfq", "version": "unknown"}
+            return result
         except Exception as e:
             logger.error(f"Fetch failed for {stock_code}: {e}")
             return None
@@ -652,6 +717,26 @@ class MarketDataFetcher:
         cancel_check: Callable[[], None] | None = None,
         progress_callback: Callable[[int, int, str], None] | None = None,
     ) -> pd.DataFrame | None:
+        if _cache_only_enabled(cache_only):
+            return self._fetch_stocks_locked(stock_codes, start_date, end_date, cache_only, cancel_check, progress_callback)
+        lock = FileLock(str(Path(self.stock_cache_dir) / ".fetch.lock"))
+        while True:
+            try:
+                lock.acquire(timeout=0.1)
+                break
+            except Timeout:
+                if cancel_check:
+                    cancel_check()
+        try:
+            return self._fetch_stocks_locked(stock_codes, start_date, end_date, cache_only, cancel_check, progress_callback)
+        finally:
+            lock.release()
+
+    def _fetch_stocks_locked(
+        self, stock_codes: list[str], start_date: str, end_date: str, cache_only: bool | None,
+        cancel_check: Callable[[], None] | None,
+        progress_callback: Callable[[int, int, str], None] | None,
+    ) -> pd.DataFrame | None:
         """Fetch multiple stocks with caching. rqdatac batch → baostock fallback."""
         all_data: list[pd.DataFrame] = []
         to_fetch: list[str] = []
@@ -668,12 +753,8 @@ class MarketDataFetcher:
             checked += 1
             cached = self._load_cache(code)
             if cached is not None and len(cached) > 0:
-                cache_min = cached["trade_date"].min()
-                cache_max = cached["trade_date"].max()
-                # Only use cache if it covers the full requested range
-                # Allow 5-day tolerance for weekends/holidays at boundaries
-                if cache_min <= req_start + pd.Timedelta(days=5) and cache_max >= req_end - pd.Timedelta(days=5):
-                    filtered = cached[(cached["trade_date"] >= req_start) & (cached["trade_date"] <= req_end)]
+                if missing_market_sessions(cached, start_date, end_date).empty:
+                    filtered = cast(pd.DataFrame, cached[(cached["trade_date"] >= req_start) & (cached["trade_date"] <= req_end)])
                     if len(filtered) > 0:
                         all_data.append(filtered)
                         source_events.append({
@@ -703,13 +784,13 @@ class MarketDataFetcher:
                             for idx, code in enumerate(to_fetch, start=1):
                                 if cancel_check:
                                     cancel_check()
-                                df = self._fetch_remote_bs(code, start_date, end_date, already_logged_in=True)
+                                refresh_start, refresh_end = self._refresh_bounds(code, start_date, end_date)
+                                df = self._fetch_remote_bs(code, refresh_start, refresh_end, already_logged_in=True)
                                 if df is not None and len(df) > 0:
                                     existing = self._load_cache(code)
-                                    if existing is not None:
-                                        df = pd.concat([existing, df]).drop_duplicates("trade_date", keep="last").sort_values("trade_date")
+                                    df = self._combine_refresh(existing, df)
                                     self._save_cache(code, df)
-                                    filtered = df[(df["trade_date"] >= req_start) & (df["trade_date"] <= req_end)]
+                                    filtered = cast(pd.DataFrame, df[(df["trade_date"] >= req_start) & (df["trade_date"] <= req_end)])
                                     if len(filtered) > 0:
                                         all_data.append(filtered)
                                         source_events.append({
@@ -737,14 +818,14 @@ class MarketDataFetcher:
                         if cancel_check:
                             cancel_check()
                         chunk = rq_remaining[i:i+200]
-                        rq_results = self._fetch_remote_rq(chunk, start_date, end_date)
+                        bounds = [self._refresh_bounds(code, start_date, end_date) for code in chunk]
+                        rq_results = self._fetch_remote_rq(chunk, min(a for a, _ in bounds), max(b for _, b in bounds))
                         for bs_code, df in rq_results.items():
                             if df is not None and len(df) > 0:
                                 existing = self._load_cache(bs_code)
-                                if existing is not None:
-                                    df = pd.concat([existing, df]).drop_duplicates("trade_date", keep="last").sort_values("trade_date")
+                                df = self._combine_refresh(existing, df)
                                 self._save_cache(bs_code, df)
-                                filtered = df[(df["trade_date"] >= req_start) & (df["trade_date"] <= req_end)]
+                                filtered = cast(pd.DataFrame, df[(df["trade_date"] >= req_start) & (df["trade_date"] <= req_end)])
                                 if len(filtered) > 0:
                                     all_data.append(filtered)
                                     source_events.append({
@@ -768,6 +849,12 @@ class MarketDataFetcher:
                 raw_vol = result["volume"].replace(0, np.nan)
                 result["vwap"] = result["amount"] / raw_vol
             source_metadata = _summarize_market_source_events(source_events)
+            bases = [item.attrs.get("cache_basis", {}) for item in all_data]
+            adjustments = {basis.get("adjustment", "unknown") for basis in bases}
+            source_metadata["adjustment"] = next(iter(adjustments)) if len(adjustments) == 1 else "unknown"
+            source_metadata["cache_bases"] = bases
+            result.attrs["adjustment"] = source_metadata["adjustment"]
+            result.attrs["calendar_sessions"] = market_sessions(start_date, end_date).strftime("%Y-%m-%d").tolist()
             snapshot = build_market_frame_snapshot(
                 result,
                 vendor=source_metadata["vendor"],
@@ -777,7 +864,7 @@ class MarketDataFetcher:
                     "stock_codes": [self._normalize_stock_code(code) for code in stock_codes],
                     "start_date": start_date,
                     "end_date": end_date,
-                    "adjustment_type": "qfq",
+                    "adjustment_type": source_metadata["adjustment"],
                     "frequency": "daily",
                 },
                 source_metadata=source_metadata,
@@ -887,13 +974,10 @@ def describe_stock_cache(
 
     cache_start = trade_dates.min()
     cache_end = trade_dates.max()
-    covered = _range_covered(
-        cache_start,
-        cache_end,
-        requested_start,
-        requested_end,
-        tolerance_days=tolerance_days,
-    )
+    coverage_start = start_date or pd.Timestamp(str(cache_start)).strftime("%Y-%m-%d")
+    coverage_end = end_date or pd.Timestamp(str(cache_end)).strftime("%Y-%m-%d")
+    missing = missing_market_sessions(df, coverage_start, coverage_end)
+    covered = missing.empty
     result.update({
         "cache_status": "hit",
         "cache_start_date": _iso_date(cache_start),
@@ -901,6 +985,8 @@ def describe_stock_cache(
         "row_count": int(len(trade_dates)),
         "range_covered": covered,
         "coverage_status": "full" if covered else "partial",
+        "missing_sessions": missing.strftime("%Y-%m-%d").tolist(),
+        "coverage_basis": "XSHG_sessions",
     })
     return result
 
@@ -1005,13 +1091,13 @@ def fetch_benchmark_returns(
             req_s = pd.Timestamp(start_date) if start_date else cache_min
             req_e = pd.Timestamp(end_date) if end_date else cache_max
             # Only use cache if it covers the full requested range
-            if cache_min <= req_s + pd.Timedelta(days=5) and cache_max >= req_e - pd.Timedelta(days=5):
-                ret = df.set_index("trade_date")["daily_return"].dropna()
+            if missing_market_sessions(df, str(req_s)[:10], str(req_e)[:10]).empty:
+                ret = cast(pd.Series, df.set_index("trade_date")["daily_return"]).dropna()
                 ret.name = info["name"]
                 if start_date:
-                    ret = ret[ret.index >= pd.Timestamp(start_date)]
+                    ret = cast(pd.Series, ret[ret.index >= pd.Timestamp(start_date)])
                 if end_date:
-                    ret = ret[ret.index <= pd.Timestamp(end_date)]
+                    ret = cast(pd.Series, ret[ret.index <= pd.Timestamp(end_date)])
                 if len(ret) > 1:
                     return ret
         except Exception:
@@ -1044,7 +1130,7 @@ def fetch_benchmark_returns(
                 rq_df["close"] = pd.to_numeric(rq_df["close"], errors="coerce")
                 rq_df = rq_df.sort_values("trade_date")
                 rq_df["daily_return"] = rq_df["close"].pct_change()
-                rq_df[["trade_date", "close", "daily_return"]].to_parquet(cache_path, index=False)
+                _atomic_market_cache(cast(pd.DataFrame, rq_df[["trade_date", "close", "daily_return"]]), cache_path)
                 ret = rq_df.set_index("trade_date")["daily_return"].dropna()
                 ret.name = info["name"]
                 logger.info(f"[rqdatac] Benchmark {benchmark}: {len(ret)} days")
@@ -1067,6 +1153,8 @@ def fetch_benchmark_returns(
                     adjustflag="2",
                 )
             rows = []
+            if rs is None:
+                return None
             while rs.error_code == "0" and rs.next():
                 rows.append(rs.get_row_data())
             if not rows:
@@ -1076,8 +1164,8 @@ def fetch_benchmark_returns(
             df["close"] = pd.to_numeric(df["close"], errors="coerce")
             df = df.sort_values("trade_date")
             df["daily_return"] = df["close"].pct_change()
-            df[["trade_date", "close", "daily_return"]].to_parquet(cache_path, index=False)
-            ret = df.set_index("trade_date")["daily_return"].dropna()
+            _atomic_market_cache(cast(pd.DataFrame, df[["trade_date", "close", "daily_return"]]), cache_path)
+            ret = cast(pd.Series, df.set_index("trade_date")["daily_return"]).dropna()
             ret.name = info["name"]
             logger.info(f"[baostock] Benchmark {benchmark}: {len(ret)} days")
             return ret
@@ -1129,12 +1217,13 @@ def _fetch_akshare(bs_code: str, start_date: str, end_date: str) -> pd.DataFrame
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
         df = df.sort_values("trade_date")
-        if "pct_change" not in df.columns or df["pct_change"].isna().all():
+        if "pct_change" not in df.columns or cast(pd.Series, df["pct_change"]).isna().all():
             df["pct_change"] = df["close"].pct_change() * 100
         if "pct_change" in df.columns:
             denom = 1 + df["pct_change"] / 100
             df["pre_close"] = np.where(denom != 0, df["close"] / denom, np.nan)
-        df = df[_BASE_MARKET_COLUMNS + [col for col in _OPTIONAL_MARKET_COLUMNS if col in df.columns]]
+        df = cast(pd.DataFrame, df[_BASE_MARKET_COLUMNS + [col for col in _OPTIONAL_MARKET_COLUMNS if col in df.columns]])
+        df.attrs["cache_basis"] = {"provider": "akshare", "feed": "stock_zh_a_hist:qfq", "adjustment": "qfq", "version": "unknown"}
         return df
     except Exception as e:
         logger.warning(f"[akshare] Failed to fetch {bs_code}: {e}")
@@ -1154,6 +1243,11 @@ def refresh_all_cached_stocks():
 def _refresh_all_cached_stocks_impl():
     """Incremental refresh implementation: akshare → baostock."""
     fetcher = MarketDataFetcher()
+    with FileLock(str(Path(fetcher.stock_cache_dir) / ".fetch.lock")):
+        _refresh_all_cached_stocks_locked(fetcher)
+
+
+def _refresh_all_cached_stocks_locked(fetcher: MarketDataFetcher):
     cache_dir = fetcher.stock_cache_dir
     today = datetime.now().strftime("%Y-%m-%d")
 
@@ -1172,7 +1266,7 @@ def _refresh_all_cached_stocks_impl():
             # Need update if last cached date is before today
             if last_date.strftime("%Y-%m-%d") < today:
                 # Fetch from the day after last cached date
-                fetch_start = (last_date + timedelta(days=1)).strftime("%Y-%m-%d")
+                fetch_start, _ = fetcher._refresh_bounds(bs_code, (last_date + timedelta(days=1)).strftime("%Y-%m-%d"), today)
                 stocks_to_update.append((bs_code, fetch_start))
         except Exception as e:
             logger.warning(f"[refresh] Failed to read {fname}: {e}")
@@ -1195,10 +1289,7 @@ def _refresh_all_cached_stocks_impl():
             new_data = _fetch_akshare(bs_code, start_date, today)
             if new_data is not None and len(new_data) > 0:
                 existing = fetcher._load_cache(bs_code)
-                if existing is not None:
-                    merged = pd.concat([existing, new_data]).drop_duplicates("trade_date", keep="last").sort_values("trade_date")
-                else:
-                    merged = new_data
+                merged = fetcher._combine_refresh(existing, new_data)
                 fetcher._save_cache(bs_code, merged)
                 updated += 1
             else:
@@ -1218,10 +1309,7 @@ def _refresh_all_cached_stocks_impl():
                         new_data = fetcher._fetch_remote_bs(bs_code, start_date, today, already_logged_in=True)
                         if new_data is not None and len(new_data) > 0:
                             existing = fetcher._load_cache(bs_code)
-                            if existing is not None:
-                                merged = pd.concat([existing, new_data]).drop_duplicates("trade_date", keep="last").sort_values("trade_date")
-                            else:
-                                merged = new_data
+                            merged = fetcher._combine_refresh(existing, new_data)
                             fetcher._save_cache(bs_code, merged)
                             updated += 1
                             bs_fallback += 1

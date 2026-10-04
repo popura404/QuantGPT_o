@@ -25,6 +25,8 @@ dependencies = [
     "akshare>=1.10",
     "apscheduler>=3.10",
     "pyarrow>=14.0",
+    "exchange-calendars>=4.5,<5",
+    "filelock>=3.15",
 ]
 
 [project.optional-dependencies]

@@ -1,7 +1,7 @@
 """Fundamental data fetcher with rqdatac (primary) + baostock (fallback) + Parquet caching.
 
 rqdatac path: uses get_factor() for daily-frequency financial indicators (no alignment needed).
-baostock path: fetches quarterly data from 6 APIs, aligns to daily via pubDate merge_asof.
+baostock path: preserves publication vintages and selects the latest available financial period.
 """
 
 import logging
@@ -9,7 +9,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Callable
+from typing import Callable, cast
 
 import numpy as np
 import pandas as pd
@@ -58,14 +58,15 @@ FUNDAMENTAL_VARIABLES: dict[str, tuple[str, str]] = {
     "cfo_to_np":        ("cash_flow", "CFOToNP"),
 }
 
-# Derived variables computed from close + fundamental columns
+# Legacy names remain discoverable; only PE has an equivalent quarterly derivation.
+# Book equity, assets and revenue TTM cannot be reconstructed from the old ratios.
 DERIVED_VARIABLES: dict[str, list[str]] = {
-    "pe": ["net_profit", "total_share"],         # close * total_share / net_profit
-    "pb": ["net_profit", "total_share", "roe"],   # close * total_share / (net_profit / roe)
-    "ps": ["revenue", "total_share"],             # close * total_share / revenue
-    "roa": ["roe", "equity_multiplier"],          # roe / equity_multiplier
-    "bps": ["net_profit", "total_share", "roe"],  # (net_profit / roe) / total_share
-    "nav": ["net_profit", "roe"],                 # net_profit / roe (净资产)
+    "pe": ["eps_ttm"],                         # close / same-currency TTM earnings per share
+    "pb": ["net_profit", "total_share", "roe"],   # Legacy dependency names; derivation is blocked.
+    "ps": ["revenue", "total_share"],
+    "roa": ["roe", "equity_multiplier"],
+    "bps": ["net_profit", "total_share", "roe"],
+    "nav": ["net_profit", "roe"],
 }
 
 ALL_FUNDAMENTAL_NAMES: frozenset = frozenset(FUNDAMENTAL_VARIABLES.keys()) | frozenset(DERIVED_VARIABLES.keys()) | frozenset(["dividend_yield"])
@@ -360,12 +361,23 @@ class FundamentalDataFetcher:
         market_df: pd.DataFrame,
         needed_vars: set[str],
     ) -> pd.DataFrame:
-        """Align quarterly data to daily using pubDate (point-in-time, no look-ahead).
+        """Select the latest financial period and its last known publication vintage.
 
-        Uses pd.merge_asof with direction='backward': for each trading day T,
-        use the most recent quarterly data where pubDate <= T.
-        Then compute derived variables (pe, pb, ps).
+        Date-only publication is conservatively available the following day.
+        Missing denominators produce capability errors instead of proxy ratios.
         """
+        unsupported = needed_vars & {"pb", "ps", "roa", "bps", "nav"}
+        if unsupported:
+            raise DataCapabilityError(sorted(unsupported), source="baostock_quarterly",
+                                      reason="exact_balance_or_ttm_denominator_unavailable")
+        if "stat_date" not in quarterly_df:
+            raise DataCapabilityError(["stat_date"], source="baostock_quarterly", reason="financial_period_required")
+        if "pe" in needed_vars:
+            if market_df.attrs.get("adjustment") != "raw":
+                raise DataCapabilityError(["pe"], source="baostock_quarterly",
+                                          reason="raw_price_earnings_share_basis_required")
+            if "eps_ttm" not in quarterly_df:
+                raise DataCapabilityError(["eps_ttm"], source="baostock_quarterly")
         # Determine which raw columns we need from quarterly_df
         raw_cols = set()
         for v in needed_vars:
@@ -377,101 +389,45 @@ class FundamentalDataFetcher:
         # Filter quarterly_df to needed columns
         keep_cols = ["stock_code", "pub_date"] + [c for c in raw_cols if c in quarterly_df.columns]
         keep_cols += [c for c in ("available_at", "stat_date", "revision_id") if c in quarterly_df.columns]
-        qdf = quarterly_df[keep_cols].copy()
+        qdf = cast(pd.DataFrame, quarterly_df[keep_cols]).copy()
         qdf["pub_date"] = _as_datetime_ns(qdf["pub_date"])
-        qdf = qdf.dropna(subset=["pub_date"])
+        qdf["stat_date"] = _as_datetime_ns(qdf["stat_date"])
+        qdf = qdf.dropna(subset=["pub_date", "stat_date"])
         # A date-only publication does not prove availability before that close.
         # Conservatively use it from the next calendar day / observed session.
         qdf["available_at"] = (_as_datetime_ns(qdf["available_at"]) if "available_at" in qdf
                                else qdf["pub_date"].dt.normalize() + pd.Timedelta(days=1))
 
-        # merge_asof requires the key column to be sorted.
-        # Since we merge by stock_code, do it per-stock to avoid cross-stock sorting issues.
+        # Select independently for each security; revisions remain tied to their period.
         market_df = market_df.copy()
         market_df["trade_date"] = _as_datetime_ns(market_df["trade_date"])
         result_parts = []
         for code, mkt_group in market_df.groupby("stock_code", sort=False):
-            fund_group = qdf[qdf["stock_code"] == code].sort_values("available_at")
+            fund_group = cast(pd.DataFrame, qdf[qdf["stock_code"] == code]).sort_values("available_at")
             if len(fund_group) == 0:
                 result_parts.append(mkt_group)
                 continue
             mkt_sorted = mkt_group.sort_values("trade_date")
-            merged_group = pd.merge_asof(
-                mkt_sorted,
-                fund_group.drop(columns=["stock_code"]),
-                left_on="trade_date",
-                right_on="available_at",
-                direction="backward",
-            )
-            result_parts.append(merged_group)
+            # A later revision of an older period must not replace a newer known period.
+            merged_rows = []
+            for _, market_row in mkt_sorted.iterrows():
+                eligible = cast(pd.DataFrame, fund_group[fund_group["available_at"] <= market_row["trade_date"]])
+                row = market_row.to_dict()
+                if not eligible.empty:
+                    latest = eligible.sort_values(["stat_date", "available_at"]).iloc[-1]
+                    row.update({str(column): latest[column] for column in fund_group.columns if column != "stock_code"})
+                merged_rows.append(row)
+            result_parts.append(pd.DataFrame(merged_rows))
 
         if not result_parts:
             return market_df
         merged = pd.concat(result_parts, ignore_index=True)
 
-        # Compute derived variables
+        # eps_ttm has an explicit trailing-period denominator; quarterly net_profit does not.
         if "pe" in needed_vars:
+            eps = cast(pd.Series, merged["eps_ttm"]) if "eps_ttm" in merged else pd.Series(np.nan, index=merged.index)
             with np.errstate(divide="ignore", invalid="ignore"):
-                merged["pe"] = np.where(
-                    (merged.get("net_profit", 0) != 0) & merged.get("net_profit", pd.Series(dtype=float)).notna(),
-                    merged["close"] * merged.get("total_share", np.nan) / merged.get("net_profit", np.nan),
-                    np.nan,
-                )
-        if "pb" in needed_vars:
-            with np.errstate(divide="ignore", invalid="ignore"):
-                roe_val = merged.get("roe", pd.Series(dtype=float))
-                net_profit_val = merged.get("net_profit", pd.Series(dtype=float))
-                total_share_val = merged.get("total_share", pd.Series(dtype=float))
-                # book value = net_profit / roe (annualized equity approximation)
-                book_value = np.where(
-                    (roe_val != 0) & roe_val.notna(),
-                    net_profit_val / roe_val,
-                    np.nan,
-                )
-                merged["pb"] = np.where(
-                    (book_value != 0) & pd.notna(book_value),
-                    merged["close"] * total_share_val / book_value,
-                    np.nan,
-                )
-        if "ps" in needed_vars:
-            with np.errstate(divide="ignore", invalid="ignore"):
-                merged["ps"] = np.where(
-                    (merged.get("revenue", 0) != 0) & merged.get("revenue", pd.Series(dtype=float)).notna(),
-                    merged["close"] * merged.get("total_share", np.nan) / merged.get("revenue", np.nan),
-                    np.nan,
-                )
-        if "roa" in needed_vars:
-            with np.errstate(divide="ignore", invalid="ignore"):
-                eq_mult = merged.get("equity_multiplier", pd.Series(dtype=float))
-                merged["roa"] = np.where(
-                    (eq_mult != 0) & eq_mult.notna(),
-                    merged.get("roe", np.nan) / eq_mult,
-                    np.nan,
-                )
-        if "bps" in needed_vars:
-            with np.errstate(divide="ignore", invalid="ignore"):
-                roe_val = merged.get("roe", pd.Series(dtype=float))
-                net_profit_val = merged.get("net_profit", pd.Series(dtype=float))
-                total_share_val = merged.get("total_share", pd.Series(dtype=float))
-                book_value = np.where(
-                    (roe_val != 0) & roe_val.notna(),
-                    net_profit_val / roe_val,
-                    np.nan,
-                )
-                merged["bps"] = np.where(
-                    (total_share_val != 0) & pd.notna(total_share_val) & pd.notna(book_value),
-                    book_value / total_share_val,
-                    np.nan,
-                )
-        if "nav" in needed_vars:
-            with np.errstate(divide="ignore", invalid="ignore"):
-                roe_val = merged.get("roe", pd.Series(dtype=float))
-                net_profit_val = merged.get("net_profit", pd.Series(dtype=float))
-                merged["nav"] = np.where(
-                    (roe_val != 0) & roe_val.notna(),
-                    net_profit_val / roe_val,
-                    np.nan,
-                )
+                merged["pe"] = np.where(eps.notna() & eps.ne(0), merged["close"] / eps, np.nan)
 
         # Drop the pub_date column (no longer needed)
         if "pub_date" in merged.columns:
@@ -508,7 +464,7 @@ class FundamentalDataFetcher:
         if df is None or len(df) == 0:
             return
         try:
-            df.to_parquet(self._dividend_cache_path(stock_code), index=False)
+            _atomic_parquet(df, self._dividend_cache_path(stock_code))
         except Exception as e:
             logger.warning(f"Failed to save dividend cache for {stock_code}: {e}")
 
@@ -633,7 +589,7 @@ class FundamentalDataFetcher:
 
         result_parts = []
         for code, mkt_group in market_df.groupby("stock_code", sort=False):
-            stock_divs = div_df[div_df["stock_code"] == code].sort_values("ex_date")
+            stock_divs = cast(pd.DataFrame, div_df[div_df["stock_code"] == code]).sort_values("ex_date")
             if len(stock_divs) == 0:
                 mkt_group = mkt_group.copy()
                 mkt_group["dividend_yield"] = np.nan
@@ -644,8 +600,8 @@ class FundamentalDataFetcher:
             # For each trade_date, compute TTM dividend (sum of cash_per_share
             # where ex_date is within [trade_date - 365d, trade_date])
             ttm_divs = []
-            div_dates = stock_divs["ex_date"].values
-            div_cash = stock_divs["cash_per_share"].values
+            div_dates = stock_divs["ex_date"].to_numpy(dtype="datetime64[ns]")
+            div_cash = stock_divs["cash_per_share"].to_numpy(dtype=float)
             for td in mkt_sorted["trade_date"].values:
                 td_ts = pd.Timestamp(td)
                 cutoff = td_ts - pd.Timedelta(days=365)
@@ -730,14 +686,14 @@ def _load_factor_cache(stock_code: str, start_date: str, end_date: str) -> pd.Da
     try:
         df = pd.read_parquet(path)
         df["trade_date"] = _as_datetime_ns(df["trade_date"])
-        cache_min = df["trade_date"].min()
-        cache_max = df["trade_date"].max()
+        from .market_data import missing_market_sessions
+
         req_start = pd.Timestamp(start_date)
         req_end = pd.Timestamp(end_date)
-        if cache_min <= req_start + pd.Timedelta(days=5) and cache_max >= req_end - pd.Timedelta(days=5):
+        if missing_market_sessions(df, start_date, end_date).empty:
             filtered = df[(df["trade_date"] >= req_start) & (df["trade_date"] <= req_end)]
             if len(filtered) > 0:
-                return filtered
+                return cast(pd.DataFrame, filtered)
     except Exception as e:
         logger.warning(f"Factor cache load failed for {stock_code}: {e}")
     return None
@@ -849,7 +805,7 @@ def prewarm_factors_rq(
         df = _fetch_factors_rq(batch, start_date, end_date)
         if df is not None and len(df) > 0:
             for code, group in df.groupby("stock_code"):
-                _save_factor_cache(code, group)
+                _save_factor_cache(str(code), group)
             logger.info(f"Factor batch {i // batch_size + 1}: {df['stock_code'].nunique()}/{len(batch)} stocks ({i + len(batch)}/{len(to_fetch)} total)")
         else:
             logger.warning(f"Factor batch {i // batch_size + 1}: no data returned")
@@ -919,7 +875,7 @@ def enrich_with_fundamentals_rq(
                 fetched = _fetch_factors_rq(batch, start_date, end_date, rq_factors, cancel_check=cancel_check)
                 if fetched is not None and len(fetched) > 0:
                     for code, group in fetched.groupby("stock_code"):
-                        _save_factor_cache(code, group)
+                        _save_factor_cache(str(code), group)
                     cached_parts.append(fetched)
                     logger.info(f"[rqdatac] Fetched factors for {fetched['stock_code'].nunique()} stocks, cached")
                 if progress_callback:
@@ -1024,7 +980,7 @@ def enrich_market_data(
         progress_callback=progress_callback,
     )
     if rq_result is not None:
-        available = {name for name in fund_vars if name in rq_result and rq_result[name].notna().any()}
+        available = {name for name in fund_vars if name in rq_result and cast(pd.Series, rq_result[name]).notna().any()}
         market_df = rq_result
         fund_vars = fund_vars - available
         if not fund_vars:
@@ -1055,7 +1011,7 @@ def enrich_market_data(
         )
         if div_df is not None and len(div_df) > 0:
             market_df = fetcher.align_dividends_to_daily(div_df, market_df)
-    unavailable = [name for name in fund_vars if name not in market_df or not market_df[name].notna().any()]
+    unavailable = [name for name in fund_vars if name not in market_df or not cast(pd.Series, market_df[name]).notna().any()]
     if unavailable:
         raise DataCapabilityError(unavailable, source="rqdatac/baostock")
     return market_df

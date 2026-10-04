@@ -86,3 +86,71 @@ def test_financial_provider_never_maps_shares_or_ratios_to_economic_proxies():
 
     for field in ("total_share", "float_share", "yoy_equity", "yoy_asset", "cfo_to_np"):
         assert field not in _RQ_FACTOR_MAP
+
+
+def test_calendar_and_actions_are_hashed_and_restored_and_manifest_is_verified(tmp_path):
+    import json
+
+    from quantgpt.data_snapshots import freeze_market_frame, load_frozen_market_frame
+
+    frame = panel()
+    frame.attrs.update(calendar_sessions=list(pd.date_range("2024-01-02", periods=10)),
+                       corporate_actions=[{"stock_code": "A", "split_ratio": 2., "session": "2024-01-08"}])
+    before = ensure_market_frame_snapshot(frame)
+    frame.attrs["corporate_actions"][0]["split_ratio"] = 3.
+    after = ensure_market_frame_snapshot(frame)
+    assert before["snapshot_id"] != after["snapshot_id"]
+    frozen = freeze_market_frame(frame, tmp_path, vendor="synthetic")
+    restored = load_frozen_market_frame(frozen["snapshot_id"], tmp_path)
+    assert restored.attrs["corporate_actions"][0]["split_ratio"] == 3.
+    assert len(restored.attrs["calendar_sessions"]) == 10
+    manifest = tmp_path / frozen["snapshot_id"] / "manifest.json"
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["source_metadata"]["input_attributes"]["corporate_actions"][0]["split_ratio"] = 99.
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="identity"):
+        load_frozen_market_frame(frozen["snapshot_id"], tmp_path)
+
+
+def test_supplied_calendar_detects_whole_panel_missing_sessions():
+    from quantgpt.data_quality import historical_data_eligibility
+
+    frame = panel().iloc[[0, 4]].copy()
+    frame.attrs["calendar_sessions"] = pd.date_range("2024-01-02", periods=3)
+    assert historical_data_eligibility(frame).tolist() == [True, False]
+
+
+@pytest.mark.parametrize("name", ["pb", "ps", "roa", "bps", "nav"])
+def test_quarterly_ratios_do_not_substitute_for_missing_economic_denominators(name):
+    from quantgpt.fundamental_data import FundamentalDataFetcher
+    from quantgpt.pit_data import DataCapabilityError
+
+    with pytest.raises(DataCapabilityError, match="exact_balance_or_ttm"):
+        FundamentalDataFetcher().align_to_daily(pd.DataFrame(), panel(), {name})
+
+
+def test_quarterly_pe_uses_ttm_eps_and_rejects_adjusted_price_basis():
+    from quantgpt.fundamental_data import FundamentalDataFetcher
+    from quantgpt.pit_data import DataCapabilityError
+
+    facts = pd.DataFrame({"stock_code": ["A"], "stat_date": ["2023-12-31"], "pub_date": ["2024-01-01"],
+                          "eps_ttm": [2.], "net_profit": [9999.], "total_share": [1.]})
+    market = panel()
+    market.attrs["adjustment"] = "raw"
+    result = FundamentalDataFetcher().align_to_daily(facts, market, {"pe"})
+    assert result.loc[result.stock_code == "A", "pe"].eq(5.).all()
+    market.attrs["adjustment"] = "qfq"
+    with pytest.raises(DataCapabilityError, match="share_basis"):
+        FundamentalDataFetcher().align_to_daily(facts, market, {"pe"})
+
+
+def test_late_old_period_revision_cannot_replace_newer_available_period():
+    from quantgpt.fundamental_data import FundamentalDataFetcher
+
+    facts = pd.DataFrame([
+        {"stock_code": "A", "stat_date": "2023-09-30", "pub_date": "2023-11-01", "roe": .10},
+        {"stock_code": "A", "stat_date": "2023-12-31", "pub_date": "2024-01-02", "roe": .20},
+        {"stock_code": "A", "stat_date": "2023-09-30", "pub_date": "2024-01-03", "roe": .99},
+    ])
+    result = FundamentalDataFetcher().align_to_daily(facts, panel(), {"roe"})
+    assert result.loc[(result.stock_code == "A") & (result.trade_date >= "2024-01-04"), "roe"].eq(.20).all()

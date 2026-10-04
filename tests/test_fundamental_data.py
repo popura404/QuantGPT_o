@@ -184,6 +184,7 @@ class TestEnrichMarketData:
         quarterly_df = pd.DataFrame({
             "stock_code": ["sh.600519"],
             "pub_date": pd.Series(["2024-04-01"], dtype="datetime64[us]"),
+            "stat_date": pd.to_datetime(["2023-12-31"]),
             "roe": [0.2],
         })
 
