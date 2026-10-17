@@ -1,4 +1,5 @@
 import { X } from "lucide-react";
+import { useTaskDetail } from "../../hooks/useTaskDetail";
 import type { Task } from "../../types/backtest";
 import { useColorMode } from "../../contexts/ColorModeContext";
 import TaskProgressPanel from "./TaskProgressPanel";
@@ -13,6 +14,7 @@ interface Props {
 
 export default function TaskDetailDrawer({ task, open, onClose, onCancel }: Props) {
   const { isDark } = useColorMode();
+  const { task: detail, loading, error } = useTaskDetail(open ? task : null);
   if (!open || !task) return null;
 
   return (
@@ -37,8 +39,12 @@ export default function TaskDetailDrawer({ task, open, onClose, onCancel }: Prop
           </button>
         </div>
         <div className="space-y-4">
-          <TaskProgressPanel task={task} onCancel={onCancel ? () => onCancel(task) : undefined} />
-          <TaskResultSummary task={task} />
+          {loading && <p role="status" className="text-sm text-gray-500">正在读取完整任务结果…</p>}
+          {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
+          {detail && <>
+            <TaskProgressPanel task={detail} onCancel={onCancel ? () => onCancel(detail) : undefined} />
+            <TaskResultSummary task={detail} />
+          </>}
         </div>
       </aside>
     </div>

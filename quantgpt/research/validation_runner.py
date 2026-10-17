@@ -1,0 +1,323 @@
+"""Server-owned offline validation; external market acceptance remains separate.
+
+Reports are immutable artifacts. Replaying a saved evaluation never grants
+permission to expose another final window or to accept caller-supplied checks.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import uuid
+from pathlib import Path
+from typing import Any, cast
+
+import numpy as np
+import pandas as pd
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from quantgpt.models import Experiment, ExperimentArtifact, FinalWindowExposure
+from quantgpt.research.contracts import EvaluationConfigV1, content_hash
+from quantgpt.research.evaluations import (
+    assert_publication_attempt,
+    authorize_data_inputs,
+    get_evaluation,
+    load_evaluation_panel,
+    read_artifact,
+    verify_frozen_config,
+    write_artifact,
+)
+from quantgpt.research.projects import require_project_member
+from quantgpt.research.returns import annualized_return
+from quantgpt.research.runtime import local_engine_identity
+from quantgpt.research.validation import observed_trial_count
+from quantgpt.statistics.multiple_testing import bonferroni_adjust
+
+POLICY_VERSION = "offline_validation/v1"
+MIN_SESSIONS = 20
+N_RANDOMIZATIONS = 999
+
+
+def _data_contract(config: EvaluationConfigV1) -> dict:
+    """Describe verified bytes and the evidence still required from a real feed."""
+    return {"schema_version": "offline_data_acceptance/v1",
+        "snapshot_integrity": "verified", "external_acceptance": "not_run",
+        "inputs": [item.model_dump(mode="json") for item in config.data_inputs],
+        "price_basis": "raw", "calendar": {"id": config.scope.calendar_id, "version": config.scope.calendar_version},
+        "required_external_evidence": [
+            {"kind": "prices", "status": "unverified",
+             "required": ["licensed_source", "historical_coverage", "immutable_version", "raw_OHLCV", "missing_sessions"]},
+            {"kind": "corporate_actions", "status": "unverified",
+             "required": ["stable_event_id", "security_id", "ex_session", "split_ratio", "cash_amount",
+                          "pay_session", "delisting_terminal_value", "coverage_attestation"]},
+            {"kind": "historical_universe", "status": "unverified",
+             "required": ["stable_security_id", "ticker_validity", "membership_intervals", "known_at", "delisted_securities"]},
+            {"kind": "benchmark", "status": "unverified",
+             "required": ["total_return", "currency", "dividend_reinvestment_policy", "complete_scoring_sessions"]},
+        ]}
+
+
+def _check(passed: bool, **details: Any) -> dict:
+    return {"status": "passed" if passed else "failed", **details}
+
+
+def _series(records: list) -> pd.Series:
+    frame = pd.DataFrame(records)
+    if frame.empty or not {"session", "return"}.issubset(frame):
+        raise ValueError("RETURN_ARTIFACT_REQUIRED")
+    dates = pd.DatetimeIndex(pd.to_datetime(frame["session"]))
+    values = frame["return"].to_numpy(dtype=float)
+    if dates.has_duplicates or dates.hasnans or not dates.is_monotonic_increasing or not np.isfinite(values).all():
+        raise ValueError("RETURN_ARTIFACT_INVALID")
+    if (values < -1).any():
+        raise ValueError("RETURN_ARTIFACT_INVALID")
+    return pd.Series(values, index=dates)
+
+
+async def _read_returns(session: AsyncSession, actor: uuid.UUID, project: uuid.UUID, row: Experiment) -> tuple[pd.Series, dict]:
+    references = [item for item in (row.result_summary or {}).get("artifacts", []) if item.get("kind") == "returns"]
+    if len(references) != 1:
+        raise ValueError("ONE_RETURN_ARTIFACT_REQUIRED")
+    ref = references[0]
+    artifact = await read_artifact(session, actor, project, uuid.UUID(ref["artifact_id"]))
+    if (artifact["kind"] != "returns" or artifact["metadata"]["evaluation_hash"] != row.evaluation_hash
+            or artifact["content_sha256"] != ref["content_sha256"]):
+        raise ValueError("RETURN_ARTIFACT_LINEAGE_MISMATCH")
+    return _series(artifact["payload"]), ref
+
+
+def _candidate_identity(row: Experiment) -> dict:
+    frozen = row.evaluation_config or {}
+    config = verify_frozen_config(row).model_dump(mode="json")
+    for key in ("start_session", "end_session", "phase"):
+        config["window"].pop(key)
+    return {"candidate": frozen.get("strategy", frozen.get("definition")), "config": config}
+
+
+def _replay(frame: pd.DataFrame, frozen: dict, config: EvaluationConfigV1,
+            start: str | None = None, end: str | None = None) -> dict:
+    """Run the actual numerical entrypoint with the frozen direction and costs."""
+    from quantgpt.backtest import api_context, run_factor_backtest
+
+    start = start or config.window.start_session.isoformat()
+    end = end or config.window.end_session.isoformat()
+    panel = cast(pd.DataFrame, frame[pd.to_datetime(frame["trade_date"]) <= pd.Timestamp(end)].copy())
+    simulation = config.simulation_config
+    assert simulation is not None
+    if "strategy" in frozen:
+        from quantgpt.strategy.backtest import StrategyBacktestRequest, run_strategy_backtest
+        from quantgpt.strategy.spec import StrategySpecV2
+
+        spec = StrategySpecV2.model_validate(frozen["strategy"])
+        panel.attrs["frozen_research_input"] = True
+        request = StrategyBacktestRequest(spec=spec.calculation_spec(), start_date=start, end_date=end,
+            benchmark=config.scope.benchmark, simulation_config=simulation,
+            neutralize_industry="industry" in config.neutralization,
+            neutralize_cap="market_cap" in config.neutralization,
+            validation_stage="final" if config.window.phase == "final" else "selection")
+        result = run_strategy_backtest(request, panel, final_authorized=True)
+        return {"returns": result.strategy_returns, "weights": result.target_weights,
+                "risk_logs": result.risk_logs, "costs": result.cost_by_rebalance,
+                "simulation": result.diagnostics.get("ledger", {})}
+    with api_context():
+        output = run_factor_backtest(panel, expression=frozen["definition"]["expression"],
+            holding_period=simulation.rebalance_every_sessions,
+            cost_rate=(simulation.fees_bps + simulation.slippage_bps) / 10000,
+            neutralize_industry="industry" in config.neutralization,
+            neutralize_cap="market_cap" in config.neutralization,
+            direction_mode="fixed", fixed_direction=1 if config.direction == "higher_is_better" else -1,
+            rebalance_anchor=simulation.rebalance_anchor_session.isoformat(), simulation_config=simulation,
+            evaluation_start=start, evaluation_end=end)
+    return {"returns": output["strategy_returns"], "rank_ic": output["_raw_rank_ic_series"],
+            "simulation": output["simulation_config"], "ledgers": output["_group_ledgers"]}
+
+
+def _numerical_checks(frame: pd.DataFrame, frozen: dict, config: EvaluationConfigV1,
+                       saved: pd.Series, n_trials: int, cancel_check=None) -> dict:
+    checks: dict[str, dict] = {}
+    simulation = config.simulation_config
+    assert simulation is not None
+    if cancel_check:
+        cancel_check()
+    replay = _replay(frame, frozen, config)
+    actual = replay["returns"]
+    same = actual.index.equals(saved.index) and np.allclose(actual.to_numpy(), saved.to_numpy(), atol=1e-9, rtol=1e-8)
+    checks["simulation"] = _check(bool(same), observations=len(actual), method="frozen_entrypoint_replay")
+    prices = frame[["open", "high", "low", "close", "volume"]].to_numpy(dtype=float)
+    valid_prices = (np.isfinite(prices).all() and (prices[:, :4] > 0).all() and (prices[:, 4] >= 0).all()
+                    and (prices[:, 1] >= prices[:, [0, 2, 3]].max(axis=1)).all()
+                    and (prices[:, 2] <= prices[:, [0, 1, 3]].min(axis=1)).all())
+    unique_rows = not frame.duplicated(["trade_date", "stock_code"]).any()
+    checks["data_quality"] = _check(bool(valid_prices and unique_rows), scope="supplied_OHLCV_contract_only",
+        historical_membership="unverified", corporate_action_coverage="unverified")
+    calendar = pd.DatetimeIndex(pd.to_datetime(frame.attrs.get("calendar_sessions", frame.trade_date.unique()))).sort_values()
+    scored = calendar[(calendar >= pd.Timestamp(config.window.start_session)) & (calendar <= pd.Timestamp(config.window.end_session))]
+    checks["label_boundaries"] = _check(actual.index.equals(scored)
+        and config.window.label_horizon_sessions == simulation.rebalance_every_sessions,
+        expected_sessions=len(scored), computed_horizon=simulation.rebalance_every_sessions,
+        observed_sessions=len(actual), horizon=config.window.label_horizon_sessions,
+        purge_sessions=config.window.purge_sessions)
+    if "rank_ic" in replay:
+        ic = replay["rank_ic"]
+        ends = calendar.get_indexer(ic.index) + config.window.label_horizon_sessions
+        within = (ends < len(calendar)).all()
+        if within and len(ends):
+            within = bool((calendar.take(ends) <= pd.Timestamp(config.window.end_session)).all())
+        checks["label_boundaries"]["status"] = "passed" if checks["label_boundaries"]["status"] == "passed" and within else "failed"
+    checks["costs"] = _check(same, fees_bps=simulation.fees_bps,
+        slippage_bps=simulation.slippage_bps, method="replay_with_frozen_both_sided_costs")
+    if "weights" in replay:
+        weights = replay["weights"]
+        column = "target_weight" if "target_weight" in weights else "weight"
+        if not weights.empty and column in weights:
+            exposure = weights.groupby("trade_date")[column].sum()
+            limit = frozen["strategy"]["risk_rules"]["max_asset_weight"]
+            valid = bool(np.isfinite(weights[column]).all() and weights[column].between(0, limit + 1e-9).all()
+                         and exposure.between(0, 1 + 1e-9).all())
+        else:
+            valid = False
+        checks["risk"] = _check(valid, scope="declared_weight_constraints_only", events=replay["risk_logs"])
+    # These are new simulations, with fresh cash in each forward window and a
+    # fixed candidate; never describe slices of one return curve as retraining.
+    if config.window.phase != "final" or len(scored) < 3 * MIN_SESSIONS:
+        checks["walk_forward"] = {"status": "insufficient_data", "reason": "Requires a reserved final window of at least 60 sessions"}
+    elif simulation.evaluation_start_state != "fresh_cash":
+        checks["walk_forward"] = {"status": "insufficient_data", "reason": "Independent fold starting-state artifacts are required"}
+    else:
+        folds = []
+        for positions in np.array_split(np.arange(len(scored)), 3):
+            if cancel_check:
+                cancel_check()
+            first, last = scored[positions[0]], scored[positions[-1]]
+            result = _replay(frame, frozen, config, first.date().isoformat(), last.date().isoformat())
+            returns = result["returns"]
+            folds.append({"start": first.date().isoformat(), "end": last.date().isoformat(),
+                          "sessions": len(returns), "total_return": float((1 + returns).prod() - 1),
+                          "annual_return": annualized_return(returns)})
+        checks["walk_forward"] = _check(sum(row["total_return"] > 0 for row in folds) >= 2,
+            method="frozen_candidate_forward_replay", adaptive_retraining=False, windows=folds)
+    # A serial-dependence-aware null diagnostic on saved net returns. It does not
+    # establish benchmark-relative alpha or replace independent factor placebos.
+    block = max(config.window.label_horizon_sessions, int(np.ceil(len(actual) ** (1 / 3))))
+    if len(actual) < MIN_SESSIONS or n_trials < 1:
+        checks["placebo"] = {"status": "insufficient_data", "reason": "At least 20 observations and registered trials required"}
+        checks["trial_correction"] = dict(checks["placebo"])
+    else:
+        rng = np.random.default_rng(20261018)
+        values = actual.to_numpy(dtype=float)
+        blocks = [values[i:i + block] for i in range(0, len(values), block)]
+        totals = np.array([chunk.sum() for chunk in blocks])
+        signs = rng.choice([-1, 1], size=(N_RANDOMIZATIONS, len(blocks)))
+        null_means = signs @ totals / len(values)
+        p_value = float((1 + np.count_nonzero(null_means >= values.mean())) / (N_RANDOMIZATIONS + 1))
+        adjusted = bonferroni_adjust(p_value, n_trials)
+        checks["placebo"] = {"status": "diagnostic", "null_passed": p_value <= .05,
+            "method": "block_sign_randomization_of_net_returns", "p_value": p_value,
+            "block_length": block, "randomizations": N_RANDOMIZATIONS,
+            "reason": "Independent cross-sectional factor placebo and benchmark evidence remain required"}
+        checks["trial_correction"] = _check(adjusted <= .05, observed_project_trials=n_trials,
+            raw_p_value=p_value, adjusted_p_value=adjusted, alpha=.05, method="bonferroni")
+    return checks
+
+
+async def run_local_validation(session: AsyncSession, actor_id: uuid.UUID, project_id: uuid.UUID,
+                               evaluation_id: str, *, snapshot_root: str | Path,
+                               selection_evaluation_id: str | None = None,
+                               cancel_check=None, task_context: dict | None = None) -> dict:
+    if cancel_check:
+        cancel_check()
+    await require_project_member(session, actor_id, project_id, write=True)
+    row = await get_evaluation(session, actor_id, project_id, evaluation_id)
+    config = verify_frozen_config(row)
+    if config.backend != "local" or not (row.result_summary or {}).get("performance_observed"):
+        raise ValueError("SUCCESSFUL_LOCAL_EVALUATION_REQUIRED")
+    if config.engine != local_engine_identity():
+        raise ValueError("CODE_VERSION_CHANGED: recompute the evaluation before validating it")
+    await authorize_data_inputs(session, project_id, config)
+    saved, returns_ref = await _read_returns(session, actor_id, project_id, row)
+    selected = None
+    source_refs = [returns_ref]
+    if selection_evaluation_id:
+        selected = await get_evaluation(session, actor_id, project_id, selection_evaluation_id)
+        before = verify_frozen_config(selected)
+        if (config.window.phase != "final" or before.window.phase != "selection"
+                or before.window.end_session >= config.window.start_session
+                or _candidate_identity(selected) != _candidate_identity(row)):
+            raise ValueError("SELECTION_LINEAGE_MISMATCH")
+        _, ref = await _read_returns(session, actor_id, project_id, selected)
+        source_refs.append(ref)
+    if config.window.phase == "final":
+        exposure = await session.scalar(select(FinalWindowExposure.created_at).where(
+            FinalWindowExposure.project_id == project_id, FinalWindowExposure.evaluation_id == evaluation_id,
+            FinalWindowExposure.evaluation_hash == row.evaluation_hash))
+        if exposure is None:
+            raise ValueError("FINAL_RESERVATION_REQUIRED")
+        if selected is not None:
+            selected_before_exposure = await session.scalar(select(ExperimentArtifact.id).where(
+                ExperimentArtifact.id == uuid.UUID(source_refs[-1]["artifact_id"]),
+                ExperimentArtifact.created_at < exposure))
+            if selected_before_exposure is None:
+                raise ValueError("SELECTION_NOT_FROZEN_BEFORE_FINAL_EXPOSURE")
+    trials = await observed_trial_count(session, project_id)
+    identity = {"policy": POLICY_VERSION, "evaluation_hash": row.evaluation_hash,
+                "selection_hash": selected.evaluation_hash if selected else None, "observed_project_trials": trials,
+                "source_artifacts": source_refs}
+    report_key = content_hash("quantgpt.offline_validation/v1", identity)
+    existing = (await session.scalars(select(ExperimentArtifact.id).where(
+        ExperimentArtifact.experiment_id == evaluation_id, ExperimentArtifact.artifact_type == "offline_validation",
+        ExperimentArtifact.payload["report_key"].as_string() == report_key))).first()
+    if existing:
+        return (await read_artifact(session, actor_id, project_id, existing))["payload"]
+    panel = await asyncio.to_thread(load_evaluation_panel, config, snapshot_root)
+    panel = cast(pd.DataFrame, panel[pd.to_datetime(panel.trade_date) <= pd.Timestamp(config.window.end_session)].copy())
+    checks = await asyncio.to_thread(_numerical_checks, panel, row.evaluation_config, config, saved, trials, cancel_check)
+    profile = "local_strategy" if "strategy" in (row.evaluation_config or {}) else "local_factor"
+    checks["strategy_identity" if profile == "local_strategy" else "definition_config"] = _check(True, evaluation_hash=row.evaluation_hash)
+    checks["replayable_data"] = _check(True, snapshots=[ref.manifest_id for ref in config.data_inputs])
+    checks["strategy_oos" if profile == "local_strategy" else "oos"] = _check(
+        config.window.phase == "final" and selected is not None,
+        selection_evaluation_id=selection_evaluation_id, phase=config.window.phase,
+        reason="Requires the same frozen candidate selected before the reserved final window")
+    if profile == "local_strategy":
+        from quantgpt.research.strategies import check_factor_lineage
+        from quantgpt.strategy.spec import StrategySpecV2
+
+        await check_factor_lineage(session, actor_id, project_id,
+            StrategySpecV2.model_validate(row.evaluation_config["strategy"]), config)
+        checks["factor_lineage"] = _check(True)
+    else:
+        checks["similarity"] = {"status": "insufficient_data", "reason": "A preregistered comparison library of aligned signals is required"}
+    report = {"schema_version": POLICY_VERSION, "report_key": report_key, **identity,
+              "evaluation_id": evaluation_id, "profile": profile, "status": "completed",
+              "checks": checks, "scope": "offline_replay_and_diagnostics", "allowed": False,
+              "data_contract": _data_contract(config),
+              "external_acceptance": {"status": "not_run", "blockers": ["EXTERNAL_DATA_ACCEPTANCE_REQUIRED",
+                  "HISTORICAL_UNIVERSE_UNVERIFIED", "CORPORATE_ACTION_COVERAGE_UNVERIFIED",
+                  "TOTAL_RETURN_BENCHMARK_UNVERIFIED"]}}
+    for attempt in range(3):
+        if cancel_check:
+            cancel_check()
+        try:
+            await assert_publication_attempt(session, task_context)
+            await require_project_member(session, actor_id, project_id, write=True)
+            # A rollback expires ORM objects; reload before each publication.
+            row = await get_evaluation(session, actor_id, project_id, evaluation_id)
+            async with session.begin_nested():
+                reference = await write_artifact(session, row, "offline_validation", report)
+                saved_report = (await read_artifact(session, actor_id, project_id,
+                                uuid.UUID(reference["artifact_id"])))["payload"]
+                if saved_report != report:
+                    raise ValueError("VALIDATION_REPORT_CONFLICT")
+            await session.commit()
+            return report
+        except (IntegrityError, OperationalError) as exc:
+            # SQLite readers racing to insert can receive BUSY_SNAPSHOT instead
+            # of a uniqueness error. End that snapshot before bounded retry.
+            sqlite_busy = (isinstance(exc, OperationalError)
+                and (getattr(exc.orig, "sqlite_errorcode", 0) & 0xff) in {5, 6})
+            await session.rollback()
+            if attempt == 2 or (isinstance(exc, OperationalError) and not sqlite_busy):
+                raise
+            await asyncio.sleep(.01 * (attempt + 1))
+    raise AssertionError("unreachable")

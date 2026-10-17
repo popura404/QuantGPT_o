@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, cast
 
 import numpy as np
@@ -30,6 +33,81 @@ class LedgerResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class PreparedMarketContext:
+    """Independent, read-only market inputs reusable by multiple portfolio books."""
+
+    shared_sessions: tuple[pd.Timestamp, ...]
+    sessions: tuple[pd.Timestamp, ...]
+    prices_by_session: Mapping[pd.Timestamp, Mapping[str, Mapping[str, Any]]]
+    actions_by_session: Mapping[pd.Timestamp, tuple[Mapping[str, Any], ...]]
+    price_basis_status: str
+
+
+def _freeze_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze_value(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple, np.ndarray)):
+        return tuple(_freeze_value(item) for item in value)
+    return deepcopy(value)
+
+
+def prepare_market_context(market_frame: pd.DataFrame) -> PreparedMarketContext:
+    """Validate once and detach only the columns/actions consumed by the ledger.
+
+    Building column arrays avoids carrying snapshot/provenance attrs into every
+    pandas group and copy. Neither the original frame nor its attrs are edited.
+    """
+    attrs = market_frame.attrs
+    snapshot = attrs.get("data_snapshot") or {}
+    query = snapshot.get("query_params") or {}
+    source = attrs.get("source_metadata") or {}
+    adjustment = attrs.get("adjustment") or source.get("adjustment") or query.get("adjustment_type")
+    if adjustment not in {None, "unknown", "raw", "none", "unadjusted"}:
+        raise LedgerError("INCOMPATIBLE_PRICE_BASIS", f"Raw-price ledger cannot consume {adjustment!r} prices")
+    stock_column = "security_id" if "security_id" in market_frame else "stock_code"
+    date_column = "session" if "session" in market_frame else "trade_date"
+    if {stock_column, date_column, "open", "close"} - set(market_frame.columns):
+        raise LedgerError("MISSING_PRICE_CONTRACT", "Security/session keys and raw open/close columns are required")
+    # A constructor view starts with empty attrs, unlike DataFrame.copy/loc.
+    # It is read only here; all retained arrays are detached before use.
+    columns = pd.DataFrame(market_frame, copy=False)
+    stocks = columns[stock_column].to_numpy(copy=True)
+    dates = pd.DatetimeIndex(pd.to_datetime(columns[date_column].to_numpy(copy=True)))
+    if dates.hasnans or pd.isna(stocks).any():
+        raise LedgerError("INVALID_MARKET_ROW", "Security/session keys must not be missing")
+    if pd.MultiIndex.from_arrays([stocks, dates]).has_duplicates:
+        raise LedgerError("DUPLICATE_MARKET_ROW", "Expected unique security/session keys")
+    shared = pd.DatetimeIndex(pd.to_datetime(attrs.get("calendar_sessions", dates.unique()))).unique().sort_values()
+    if shared.hasnans or not dates.isin(shared).all():
+        raise LedgerError("CALENDAR_CONTEXT_REQUIRED", "Input sessions must belong to a non-missing shared calendar")
+    sessions = shared[(shared >= dates.min()) & (shared <= dates.max())]
+    if sessions.empty:
+        raise LedgerError("EMPTY_SESSION_CALENDAR", "No sessions available for simulation")
+    opening = columns["open"].to_numpy(copy=True)
+    closing = columns["close"].to_numpy(copy=True)
+    suspended = columns["suspended"].to_numpy(copy=True) if "suspended" in columns else np.zeros(len(dates), dtype=bool)
+    prices: dict[pd.Timestamp, dict[str, Mapping[str, Any]]] = {}
+    for day, stock, open_price, close_price, halted in zip(dates, stocks, opening, closing, suspended, strict=True):
+        prices.setdefault(day, {})[stock] = MappingProxyType({"open": open_price, "close": close_price, "suspended": halted})
+    actions: dict[pd.Timestamp, list[Mapping[str, Any]]] = {}
+    for event in attrs.get("corporate_actions", []):
+        try:
+            day = pd.Timestamp(event["session"])
+            if pd.isna(day):
+                raise ValueError("missing action session")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise LedgerError("INVALID_CORPORATE_ACTION", "Each event requires a valid session") from exc
+        fields = {key: event[key] for key in ("event_id", "security_id", "type", "ratio", "per_share", "pay_session") if key in event}
+        actions.setdefault(day, []).append(_freeze_value(fields))
+    return PreparedMarketContext(
+        shared_sessions=tuple(shared), sessions=tuple(sessions),
+        prices_by_session=MappingProxyType({day: MappingProxyType(rows) for day, rows in prices.items()}),
+        actions_by_session=MappingProxyType({day: tuple(events) for day, events in actions.items()}),
+        price_basis_status="declared" if adjustment in {"raw", "none", "unadjusted"} else "unverified_supplied_frame",
+    )
+
+
 class ResearchLedger:
     """Quantity/cash/receivable book. All accounting amounts are in base currency."""
 
@@ -49,13 +127,13 @@ class ResearchLedger:
         self.seen_events: set[str] = set(self.receivables)
 
     @staticmethod
-    def _price(prices: dict, security_id: str, name: str) -> float:
+    def _price(prices: Mapping[str, Mapping[str, Any]], security_id: str, name: str) -> float:
         value = prices.get(security_id, {}).get(name)
         if value is None or not np.isfinite(value) or float(value) <= 0:
             raise LedgerError("MISSING_VALUATION_PRICE" if name == "close" else "MISSING_FILL_PRICE", f"{security_id}: invalid raw {name}")
         return float(value)
 
-    def _actions(self, session: pd.Timestamp, actions: list[dict]) -> None:
+    def _actions(self, session: pd.Timestamp, actions: Sequence[Mapping[str, Any]]) -> None:
         for event_id, item in list(self.receivables.items()):
             if pd.Timestamp(item["pay_session"]) <= session:
                 self.cash += item["amount"]
@@ -105,8 +183,8 @@ class ResearchLedger:
         self.trades.append({"trade_date": session, "stock_code": security_id, "quantity": quantity, "price": price, "notional": notional, "fee": fee})
         return fee
 
-    def step(self, session: Any, prices: dict[str, dict], *, targets: dict[str, float] | None = None,
-             fills: list[dict] | None = None, actions: list[dict] | None = None,
+    def step(self, session: Any, prices: Mapping[str, Mapping[str, Any]], *, targets: dict[str, float] | None = None,
+             fills: list[dict] | None = None, actions: Sequence[Mapping[str, Any]] | None = None,
              max_turnover: float | None = None) -> dict:
         """Apply entitlement, fills and close marks once for a single session."""
         session = pd.Timestamp(session)
@@ -195,32 +273,13 @@ class ResearchLedger:
         }
 
 
-def simulate_target_weights(market_frame: pd.DataFrame, target_weights: pd.DataFrame, config: SimulationConfigV1,
+def simulate_target_weights(market_frame: pd.DataFrame | PreparedMarketContext, target_weights: pd.DataFrame, config: SimulationConfigV1,
                             *, evaluation_start: Any = None, evaluation_end: Any = None,
                             max_turnover: float | None = None) -> LedgerResult:
     """Signals on T fill only at the next observed *shared* session's raw open."""
-    frame = market_frame.copy()
-    if "security_id" in frame:
-        frame["stock_code"] = frame["security_id"]
-    if "session" in frame:
-        frame["trade_date"] = frame["session"]
-    frame["trade_date"] = pd.to_datetime(frame["trade_date"])
-    snapshot = frame.attrs.get("data_snapshot") or {}
-    query = snapshot.get("query_params") or {}
-    source = frame.attrs.get("source_metadata") or {}
-    adjustment = frame.attrs.get("adjustment") or source.get("adjustment") or query.get("adjustment_type")
-    if adjustment not in {None, "unknown", "raw", "none", "unadjusted"}:
-        raise LedgerError("INCOMPATIBLE_PRICE_BASIS", f"Raw-price ledger cannot consume {adjustment!r} prices")
-    if frame.duplicated(["stock_code", "trade_date"]).any():
-        raise LedgerError("DUPLICATE_MARKET_ROW", "Expected unique security/session keys")
-    required = {"open", "close"}
-    if required - set(frame.columns):
-        raise LedgerError("MISSING_PRICE_CONTRACT", "Raw open and close columns are required")
-    shared_sessions = pd.DatetimeIndex(sorted(pd.to_datetime(frame.attrs.get("calendar_sessions", frame["trade_date"].unique())).unique()))
-    sessions = shared_sessions
-    sessions = sessions[(sessions >= frame["trade_date"].min()) & (sessions <= frame["trade_date"].max())]
-    if sessions.empty:
-        raise LedgerError("EMPTY_SESSION_CALENDAR", "No sessions available for simulation")
+    context = market_frame if isinstance(market_frame, PreparedMarketContext) else prepare_market_context(market_frame)
+    shared_sessions = pd.DatetimeIndex(context.shared_sessions)
+    sessions = pd.DatetimeIndex(context.sessions)
     start = pd.Timestamp(evaluation_start) if evaluation_start is not None else pd.Timestamp(cast(Any, sessions[0]))
     end = pd.Timestamp(evaluation_end) if evaluation_end is not None else pd.Timestamp(cast(Any, sessions[-1]))
     if config.starting_state_session is not None and pd.Timestamp(config.starting_state_session) >= start:
@@ -232,7 +291,11 @@ def simulate_target_weights(market_frame: pd.DataFrame, target_weights: pd.DataF
         prior_sessions = shared_sessions[shared_sessions < evaluation_sessions[0]]
         if config.starting_state_session is None or prior_sessions.empty or pd.Timestamp(config.starting_state_session) != prior_sessions[-1]:
             raise LedgerError("INVALID_STARTING_STATE", "Carry-forward source must be the immediately previous shared session; replay older state first")
-    signals = target_weights.copy()
+    # Target weights may inherit the full market snapshot attrs. These are not
+    # signal inputs and must not be copied into every daily target group.
+    signal_columns = pd.DataFrame(target_weights, copy=False)
+    signals = pd.DataFrame({name: signal_columns[name].to_numpy(copy=True)
+                            for name in ("trade_date", "stock_code", "target_weight")}) if not target_weights.empty else pd.DataFrame()
     if not signals.empty:
         signals["trade_date"] = pd.to_datetime(signals["trade_date"])
         if signals.duplicated(["trade_date", "stock_code"]).any():
@@ -244,13 +307,11 @@ def simulate_target_weights(market_frame: pd.DataFrame, target_weights: pd.DataF
     # Only the immediately preceding session may create a fill. Missing signals
     # hold existing quantities; they never forward-fill stale targets into trades.
     fill_targets = {sessions[i + 1]: by_signal[day] for i, day in enumerate(sessions[:-1]) if day in by_signal}
-    prices_by_date = {pd.Timestamp(cast(Any, day)): group.set_index("stock_code").to_dict("index") for day, group in frame.groupby("trade_date")}
-    events = frame.attrs.get("corporate_actions", [])
     book = ResearchLedger(config)
     rows = []
     for session in sessions[(sessions >= start) & (sessions <= end)]:
-        actions = [event for event in events if pd.Timestamp(event["session"]) == session]
-        row = book.step(session, prices_by_date.get(session, {}), targets=fill_targets.get(session), actions=actions, max_turnover=max_turnover)
+        row = book.step(session, context.prices_by_session.get(session, {}), targets=fill_targets.get(session),
+                        actions=context.actions_by_session.get(session, ()), max_turnover=max_turnover)
         rows.append(row)
     states = pd.DataFrame(rows)
     if states.empty:
@@ -265,5 +326,5 @@ def simulate_target_weights(market_frame: pd.DataFrame, target_weights: pd.DataF
         "semantics_version": SEMANTICS_VERSION, "simulation_config": config.model_dump(mode="json"),
         "initial_nav": book.initial_nav, "initial_entry_charged": True,
         "price_basis": "raw", "fill_time": "next_session_open", "external_integration": "not_run",
-        "price_basis_status": "declared" if adjustment in {"raw", "none", "unadjusted"} else "unverified_supplied_frame",
+        "price_basis_status": context.price_basis_status,
     })

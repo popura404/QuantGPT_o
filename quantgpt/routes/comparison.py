@@ -44,7 +44,7 @@ class CompareFactorsRequest(BaseModel):
 
 
 @router.post("/compare-factors", summary="多因子对比分析")
-async def compare_factors(
+def compare_factors(
     req: CompareFactorsRequest,
     user: User = Depends(get_current_user),
 ):

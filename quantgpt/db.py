@@ -3,7 +3,10 @@
 import logging
 import os
 
+from sqlalchemy import event
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import AsyncAdaptedQueuePool, StaticPool
 
 from .models import Base
 
@@ -11,21 +14,46 @@ logger = logging.getLogger(__name__)
 
 _engine = None
 _session_factory = None
+_SQLITE_BUSY_TIMEOUT_SECONDS = 30
+
+
+def _configure_file_sqlite_connection(dbapi_connection, _connection_record):
+    """Let readers coexist with a writer and bound waits for other writers."""
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_SECONDS * 1000}")
+        cursor.execute("PRAGMA journal_mode=WAL")
+    finally:
+        cursor.close()
 
 
 def _get_engine():
     global _engine
     if _engine is None:
         url = os.environ.get("DATABASE_URL") or "sqlite+aiosqlite:///./quantgpt.db"
+        parsed_url = make_url(url)
+        backend = parsed_url.get_backend_name()
+        file_sqlite = False
         kwargs: dict = {"echo": False}
-        if "postgresql" in url:
+        if backend == "postgresql":
             kwargs["pool_size"] = 5
             kwargs["max_overflow"] = 10
-        elif "sqlite" in url:
-            from sqlalchemy.pool import StaticPool
-            kwargs["connect_args"] = {"check_same_thread": False}
-            kwargs["poolclass"] = StaticPool
+        elif backend == "sqlite":
+            in_memory = (
+                parsed_url.database in (None, "", ":memory:", "file::memory:")
+                or parsed_url.query.get("mode") == "memory"
+            )
+            # A shared connection is necessary for an in-memory database, but
+            # file databases need separate connections for isolated transactions.
+            kwargs["poolclass"] = StaticPool if in_memory else AsyncAdaptedQueuePool
+            kwargs["connect_args"] = {
+                "check_same_thread": False,
+                "timeout": _SQLITE_BUSY_TIMEOUT_SECONDS,
+            }
+            file_sqlite = not in_memory
         _engine = create_async_engine(url, **kwargs)
+        if file_sqlite:
+            event.listen(_engine.sync_engine, "connect", _configure_file_sqlite_connection)
     return _engine
 
 

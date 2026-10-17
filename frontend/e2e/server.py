@@ -17,6 +17,9 @@ os.environ.update({
     "JWT_SECRET_KEY": secrets.token_hex(32),
     "QUANTGPT_ADMIN_PASSWORD": secrets.token_hex(20),
     "AUTH_DISABLED": "false",
+    "QUANTGPT_RUST_ENGINE": "0",
+    "QUANTGPT_CACHE_ONLY": "true",
+    "PYTHONUTF8": "1",
     "QUANTGPT_RESEARCH_SNAPSHOT_ROOT": str(RUN_ROOT / "snapshots"),
 })
 
@@ -33,6 +36,7 @@ OWNER_ID = uuid.UUID("d6a1c2bd-099c-400e-823a-aeb9a2a1fcb1")
 async def browser_lifespan(_app):
     from quantgpt import task_store
     from quantgpt.mcp_server import save_factor_pool_entry
+    from quantgpt.task_executor import start_task_dispatcher, stop_task_dispatcher
 
     task_store.main_loop = asyncio.get_running_loop()
     await init_db()
@@ -57,8 +61,13 @@ async def browser_lifespan(_app):
             raise RuntimeError(f"MCP fixture setup failed: {result}")
     finally:
         MCP_ACTOR.reset(token)
-    yield
-    await close_db()
+    # Only the isolated local task outbox runs; production mail/market schedulers stay disabled.
+    start_task_dispatcher()
+    try:
+        yield
+    finally:
+        await stop_task_dispatcher()
+        await close_db()
 
 
 app.router.lifespan_context = browser_lifespan

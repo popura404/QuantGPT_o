@@ -125,6 +125,41 @@ npm.cmd --prefix frontend run build
 ./.venv312/Scripts/python.exe scripts/benchmark_research.py
 ```
 
+The frontend has a dependency-free Node test runner (using the installed
+TypeScript transpiler) for task subscription, cancellation, session changes,
+late responses and loading full task details from list summaries:
+
+```bash
+npm --prefix frontend test
+```
+
+After installing the locked Python environment and building the frontend, run the
+browser suite with Playwright Chromium:
+
+```bash
+cd frontend
+npx playwright install chromium
+PLAYWRIGHT_PYTHON=../.venv/bin/python npm run test:e2e
+```
+
+`PLAYWRIGHT_PYTHON` names one Python executable, not a command with extra flags.
+On Windows it defaults to `../.venv312/Scripts/python.exe`; an installed Edge can
+be selected without downloading Chromium:
+
+```powershell
+$env:PLAYWRIGHT_BROWSER_CHANNEL = 'msedge'
+npm.cmd --prefix frontend run test:e2e
+```
+
+CI uses Node 24, the Linux Python 3.12 lock, Chromium with system dependencies,
+`npm test`, the production build and all browser tests. The browser server binds
+to loopback and creates a fresh SQLite database/snapshot directory per run. It
+replaces the production lifespan, disables Rust acceleration, and enforces cache
+only market access; fixtures use synthetic research data and do not start email,
+market refresh or WQ schedulers. Failed browser runs upload traces, screenshots
+and the JSON result report. Local Edge execution does not establish Linux
+Chromium or a successful GitHub Actions run.
+
 The benchmark is offline, deterministic synthetic data. It records input hash,
 parser source hash, dependency versions, revision, dirty-state flag, p50/p95,
 sampled peak RSS, panel reads/bytes, expression compilation/evaluation counts,

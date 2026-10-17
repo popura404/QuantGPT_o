@@ -26,7 +26,7 @@ pub fn evaluate(expr: &Expr, ctx: &EvalContext) -> Result<Vec<f64>, String> {
         Expr::Add(a, b) => bin_op(a, b, ctx, |x, y| x + y),
         Expr::Sub(a, b) => bin_op(a, b, ctx, |x, y| x - y),
         Expr::Mul(a, b) => bin_op(a, b, ctx, |x, y| x * y),
-        Expr::Div(a, b) => bin_op(a, b, ctx, |x, y| if y.abs() < 1e-15 { f64::NAN } else { x / y }),
+        Expr::Div(a, b) => bin_op(a, b, ctx, |x, y| if y == 0.0 { f64::NAN } else { x / y }),
         Expr::Pow(a, b) => bin_op(a, b, ctx, |x, y| x.powf(y)),
         Expr::Neg(a) => { let v = evaluate(a, ctx)?; Ok(v.iter().map(|x| -x).collect()) }
 
@@ -50,10 +50,7 @@ pub fn evaluate(expr: &Expr, ctx: &EvalContext) -> Result<Vec<f64>, String> {
         Expr::Sqrt(a) => { let v = evaluate(a, ctx)?; Ok(v.iter().map(|x| x.max(0.0).sqrt()).collect()) }
         Expr::Scale(a) => {
             let v = evaluate(a, ctx)?;
-            let mn = v.iter().copied().filter(|x| x.is_finite()).fold(f64::INFINITY, f64::min);
-            let mx = v.iter().copied().filter(|x| x.is_finite()).fold(f64::NEG_INFINITY, f64::max);
-            let range = mx - mn + 1e-10;
-            Ok(v.iter().map(|x| (x - mn) / range).collect())
+            cross_sectional_scale(&v, ctx)
         }
 
         // Cross-sectional
@@ -133,6 +130,8 @@ fn build_date_groups(ctx: &EvalContext) -> Vec<Vec<usize>> {
             }
         }
         map.into_values().collect()
+    } else if ctx.date_groups.is_empty() {
+        vec![(0..ctx.n_rows).collect()]
     } else {
         ctx.date_groups.iter().map(|&(s, e)| (s..e).collect()).collect()
     }
@@ -148,8 +147,31 @@ fn cross_sectional_rank(data: &[f64], ctx: &EvalContext) -> Result<Vec<f64>, Str
         let count = valid.len() as f64;
         if count < 1.0 { continue; }
         valid.sort_by(|&a, &b| data[a].partial_cmp(&data[b]).unwrap_or(std::cmp::Ordering::Equal));
-        for (rank, &idx) in valid.iter().enumerate() {
-            out[idx] = rank as f64 / (count - 1.0).max(1.0);
+        let mut first = 0;
+        while first < valid.len() {
+            let mut end = first + 1;
+            while end < valid.len() && data[valid[end]] == data[valid[first]] {
+                end += 1;
+            }
+            let percentile = (first + 1 + end) as f64 / (2.0 * count);
+            for &idx in &valid[first..end] {
+                out[idx] = percentile;
+            }
+            first = end;
+        }
+    }
+    Ok(out)
+}
+
+fn cross_sectional_scale(data: &[f64], ctx: &EvalContext) -> Result<Vec<f64>, String> {
+    let mut out = vec![f64::NAN; data.len()];
+    for rows in build_date_groups(ctx) {
+        let lo = rows.iter().map(|&i| data[i]).filter(|x| x.is_finite()).fold(f64::INFINITY, f64::min);
+        let hi = rows.iter().map(|&i| data[i]).filter(|x| x.is_finite()).fold(f64::NEG_INFINITY, f64::max);
+        for i in rows {
+            if data[i].is_finite() {
+                out[i] = if hi == lo { 0.0 } else { (data[i] - lo) / (hi - lo) };
+            }
         }
     }
     Ok(out)
@@ -285,8 +307,9 @@ fn ts_rank(data: &[f64], w: usize, out: &mut [f64]) {
         if !cur.is_finite() { out[i] = f64::NAN; continue; }
         let vals: Vec<f64> = data[start..=i].iter().copied().filter(|v| v.is_finite()).collect();
         if vals.is_empty() { out[i] = f64::NAN; continue; }
-        let rank = vals.iter().filter(|&&v| v <= cur).count();
-        out[i] = rank as f64 / vals.len() as f64;
+        let lower = vals.iter().filter(|&&v| v < cur).count();
+        let equal = vals.iter().filter(|&&v| v == cur).count();
+        out[i] = (lower as f64 + (equal + 1) as f64 / 2.0) / vals.len() as f64;
     }
 }
 
@@ -502,5 +525,45 @@ fn rolling_cov(a: &[f64], b: &[f64], w: usize, out: &mut [f64]) {
         let my = pairs.iter().map(|(_, y)| y).sum::<f64>() / n_f;
         let cov = pairs.iter().map(|(x, y)| (x - mx) * (y - my)).sum::<f64>() / (n_f - 1.0);
         out[i] = cov;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::expression::parser::parse;
+
+    fn run(expression: &str, values: Vec<f64>, dates: Vec<f64>) -> Vec<f64> {
+        let ctx = EvalContext {
+            n_rows: values.len(),
+            columns: HashMap::from([("close".into(), values), ("__date__".into(), dates)]),
+            stock_groups: vec![], date_groups: vec![],
+        };
+        evaluate(&parse(expression).unwrap(), &ctx).unwrap()
+    }
+
+    #[test]
+    fn rank_averages_ties_and_excludes_nonfinite_values() {
+        let result = run("rank(close)", vec![10., 10., 20., f64::NAN, f64::INFINITY], vec![1.; 5]);
+        assert_eq!(&result[..3], &[0.5, 0.5, 1.0]);
+        assert!(result[3].is_nan() && result[4].is_nan());
+    }
+
+    #[test]
+    fn scale_uses_each_session_and_defines_constant_sections() {
+        let result = run("scale(close)", vec![1., 3., 100., 100.], vec![1., 1., 2., 2.]);
+        assert_eq!(result, vec![0., 1., 0., 0.]);
+    }
+
+    #[test]
+    fn rolling_rank_uses_average_percentile_for_ties() {
+        let result = run("ts_rank(close, 3)", vec![10., 10., 10.], vec![1., 2., 3.]);
+        assert_eq!(result, vec![1., 0.75, 2. / 3.]);
+    }
+
+    #[test]
+    fn division_preserves_nonzero_small_denominators() {
+        let result = run("close / 0.0000000000000001", vec![1.], vec![1.]);
+        assert_eq!(result, vec![1e16]);
     }
 }

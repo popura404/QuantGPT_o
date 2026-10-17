@@ -23,7 +23,6 @@ import type { MainTab } from "./components/TabNavigation";
 import AppSidebar from "./components/AppSidebar";
 import TaskProgressPanel from "./components/tasks/TaskProgressPanel";
 import { saveFactor, fetchFactors } from "./api/factorLibrary";
-import { submitCompositeBacktest } from "./api/composite";
 import type { CompositeBacktestPayload } from "./api/composite";
 
 function getTabFromHash(): MainTab {
@@ -94,7 +93,8 @@ export default function App() {
     isLoading,
     submit,
     cancel,
-    setActiveTask,
+    selectTask,
+    submitComposite,
     iterationTask,
     isIterating,
     iterate,
@@ -111,39 +111,21 @@ export default function App() {
   const handleSwitchSession = useCallback(
     (id: string) => {
       switchSession(id);
-      setActiveTask(null);
+      selectTask(null);
     },
-    [switchSession, setActiveTask]
+    [switchSession, selectTask]
   );
 
   const handleCreateSession = useCallback(async () => {
     await createSession();
-    setActiveTask(null);
-  }, [createSession, setActiveTask]);
+    selectTask(null);
+  }, [createSession, selectTask]);
 
   const handleCompositeSubmit = useCallback(
     async (payload: CompositeBacktestPayload) => {
-      setActiveTab("backtest");
-      const { task_id } = await submitCompositeBacktest({
-        ...payload,
-        session_id: activeSessionId ?? undefined,
-      });
-      const { streamTask } = await import("./api/client");
-      const initial: Task = { task_id, status: "pending", task_type: "composite" as Task["task_type"] };
-      setActiveTask(initial);
-      streamTask(
-        task_id,
-        (task) => {
-          setActiveTask(task);
-          if (task.status === "completed" || task.status === "failed") {
-            onComplete(task);
-          }
-        },
-        () => {},
-        () => {},
-      );
+      if (await submitComposite(payload)) setActiveTab("backtest");
     },
-    [activeSessionId, setActiveTask, onComplete]
+    [submitComposite]
   );
 
   const handleSaveFactor = useCallback(async () => {
@@ -180,11 +162,10 @@ export default function App() {
 
   const showProgress =
     activeTask &&
-    activeTask.status !== "pending" &&
     activeTask.status !== "completed" &&
     activeTask.status !== "failed";
   const activeBacktestResult = isBacktestResult(activeTask?.result) ? activeTask.result : null;
-  const showResults = activeTask?.status === "completed" && activeBacktestResult;
+  const showResults = activeTask?.status === "completed" && !activeTask.summary_only && activeBacktestResult;
   const showError = activeTask?.status === "failed";
 
 
@@ -208,6 +189,12 @@ export default function App() {
           {activeTab === "backtest" && (
             <>
               <BacktestForm onSubmit={handleSubmit} isLoading={isLoading} />
+
+              {activeTask?.summary_only && (
+                <div className="rounded-xl border border-gray-200 p-4 text-sm text-gray-600">
+                  {isLoading ? "正在读取完整任务结果…" : <p role="alert">{activeTask.error || "任务详情尚未加载，请重新选择任务。"}</p>}
+                </div>
+              )}
 
               {showProgress && (
                 <TaskProgressPanel task={activeTask} onCancel={cancel} />
@@ -278,7 +265,7 @@ export default function App() {
             onSwitchSession={handleSwitchSession}
             onRenameSession={renameSession}
             onDeleteSession={deleteSession}
-            onSelectTask={(task) => setActiveTask(task)}
+            onSelectTask={selectTask}
             factorLibKey={factorLibKey}
           />
         )}

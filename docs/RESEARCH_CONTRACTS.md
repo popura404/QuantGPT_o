@@ -13,6 +13,8 @@
 | 定义 | `factor_definition/v1` / `FactorDefinitionV1` |
 | 评价配置 | `evaluation_config/v1` / `EvaluationConfigV1` |
 | 本地模拟配置 | `simulation_config/v1` / `SimulationConfigV1` |
+| 离线验证报告 | `offline_validation/v1`，服务器重放生成的独立不可变 artifact |
+| 外部数据验收待办 | `offline_data_acceptance/v1`，快照完整性与供应商覆盖分开记录 |
 | 引用 | `artifact_ref/v1`、`evaluation_ref/v1`、`signal_ref/v1`、`strategy_run_ref/v1` |
 | WQ | `backend=wq`、`scope=platform`，使用实际平台语义版本；未知时明确 `wq_platform/unknown` |
 
@@ -23,6 +25,7 @@
 
 哈希使用带域前缀的 SHA-256，JSON key 排序、紧凑 UTF-8 编码，拒绝 NaN/Infinity；不声称字符串日期/数字类型的任意表达形式等价。
 DTO 的 frozen 限制不代替数据库不可变存储；服务端必须保存完整规范化配置和 manifest，不能原地修改已完成 evaluation。
+离线验证绑定 evaluation、来源收益 artifact、可选 selection、政策版本和实际观察试验数。selection 的收益证据必须在 final 暴露记录之前生成；事后补跑过去日期不能变成独立样本外证明。缺少独立 placebo、预登记对照库或外部数据验收时继续阻断，即使数值重放一致。完整入口和证据范围见 [研究 API](RESEARCH_API.md#离线验证闭环2026-10-18)。
 project 权限不是 hash 的替代品，跨项目同内容缓存仍需当前成员授权。evaluation/strategy 的最终可信状态只由服务端登记产生。
 
 ## 字段单位、行身份和可用性
@@ -66,6 +69,8 @@ project 权限不是 hash 的替代品，跨项目同内容缓存仍需当前成
 scale 保持本项目的 min-max 定义，不冒充 WQ 同名算子，也不具有时序窗口含义。
 滚动缩放如后续新增必须另起名字和明示窗口。
 非有限值统一视为缺失，不通过清零产生有效信号。该政策也适用于算术后产生的 inf。
+
+2026-10-18 的真实 Rust 差分范围限定为 rank/scale/ts_rank/ts_shift/ts_delta、基础字段和明确分组的四则运算，输入限定 float64/nullable Float64。共享 golden 与随机面板验证并列、缺失、行序和预热掩码；白名单之外继续 Python 回退。差分子集通过不等于完整构建认证，`RUST_VERIFIED_SEMANTICS_VERSION` 与 metrics 认证门仍关闭，默认研究身份保持 Python。
 
 `required_observations` 包括当前观测，`prior_sessions = required_observations-1`：字段=1、截面算子不增加历史、有限窗口=子需求+n−1、lag=n+子需求、双输入取最大子需求。
 `ts_mean(ts_mean(close,20),60)` 要79个观测，不是60个；horizon purge 至少覆盖真实 label horizon。

@@ -69,6 +69,7 @@ def _task_payload(record: TaskModel) -> dict[str, Any]:
             "candidates_total": len(record.result.get("candidates", [])),
             "search_attempts": record.result.get("search_attempts", []),
             "search_summary": record.result.get("search_summary", {}),
+            "selected_candidate_index": record.result.get("selected_candidate_index"),
             "task_type": "iteration", "parent_task_id": record.result.get("parent_task_id"),
         })
     return payload

@@ -16,7 +16,7 @@ import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
-from sqlalchemy import desc, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import GUEST_USER_ID, get_current_user, get_current_user_or_guest, get_optional_user
@@ -57,11 +57,11 @@ from ..task_store import (
     MAX_DATE_RANGE_YEARS,
     MAX_PROMPT_LENGTH,
     MAX_SSE_CONNECTIONS,
+    PROGRESS_FIELDS,
     SSE_TIMEOUT_SECONDS,
     TERMINAL_TASK_STATUSES,
     CancelledException,
     TaskConflictError,
-    _task_payload,
     active_task_count,
     cancel_durable_task,
     check_cancelled,
@@ -898,41 +898,168 @@ async def auto_backtest(
     return {"task_id": task_id, "status": "pending"}
 
 
+# Lists deliberately project scalar summaries; full result artifacts are fetched
+# through GET /tasks/{task_id} after a user selects a task.
+_TASK_LIST_FIELDS = (
+    "project_id", "session_id", "parent_task_id", "status", "task_type", "expression", "error",
+    "created_at", "updated_at", "revision", "cancel_requested", "retryable", "dispatch_pending",
+    "remote_run_ref", "attempt_id",
+)
+_TASK_LIST_PARAMS = (
+    "prompt", "expression", "tag", "universe", "start_date", "end_date", "n_groups", "holding_period", "benchmark",
+)
+_TASK_LIST_SCORE_FIELDS = ("score", "grade", "decision", "overfit_risk", "train_score", "valid_score", "test_score", "metrics_scope")
+_TASK_LIST_RESULT_SECTIONS = {
+    "params": _TASK_LIST_PARAMS,
+    "llm": ("prompt", "generated_expression"),
+    "metrics": ("sharpe", "cagr", "max_drawdown"),
+    "backtest_summary": (
+        "long_short_sharpe", "long_short_annual", "top_group_sharpe", "monotonicity_score", "spread",
+        "ic_mean", "rank_ic_mean", "ic_ir", "ic_win_rate", "turnover", "wq_fitness", "wq_rating",
+    ),
+    "interpretation": ("rating",),
+    "scoring": _TASK_LIST_SCORE_FIELDS,
+    "strategy_score": _TASK_LIST_SCORE_FIELDS,
+}
+_TASK_LIST_JSON_PATHS = (
+    tuple(("params", key) for key in _TASK_LIST_PARAMS)
+    + tuple(("result", section, key) for section, keys in _TASK_LIST_RESULT_SECTIONS.items() for key in keys)
+    + tuple(("result", key) for key in (
+        "report_url", "experiment_id", "factor_hash", "data_snapshot_id", "data_source", "promotion_state",
+        "alpha_id", "submitted", "submit_state", "platform_status",
+    ))
+)
+
+
+def _task_rating(task: dict) -> str:
+    result = task.get("result") or {}
+    return ((result.get("interpretation") or {}).get("rating")
+            or (result.get("backtest_summary") or {}).get("wq_rating") or "")
+
+
+def _task_rating_sql():
+    return func.coalesce(
+        func.nullif(TaskModel.result["interpretation"]["rating"].as_string(), ""),
+        TaskModel.result["backtest_summary"]["wq_rating"].as_string(),
+        "",
+    )
+
+
+def _set_summary_value(payload: dict, path: tuple[str, ...], value: Any) -> None:
+    if value is None or isinstance(value, (dict, list)):
+        return
+    target = payload
+    for key in path[:-1]:
+        target = target.setdefault(key, {})
+    target[path[-1]] = value
+
+
+def _finish_task_summary(payload: dict) -> dict:
+    for key in ("project_id", "session_id"):
+        if payload.get(key) is not None:
+            payload[key] = str(payload[key])
+    for key in ("created_at", "updated_at"):
+        if isinstance(payload.get(key), datetime):
+            payload[key] = _ensure_utc(payload[key]).timestamp()
+    if payload.get("status") in TERMINAL_TASK_STATUSES and payload.get("updated_at") is not None:
+        payload.setdefault("completed_at", payload["updated_at"])
+    payload["cancelled"] = bool(payload.get("cancel_requested") or payload.get("cancelled"))
+    payload.setdefault("params", {})
+    payload.setdefault("result", None)
+    payload["summary_only"] = True
+    return payload
+
+
+def _memory_task_summary(task: dict) -> dict:
+    payload = {key: task[key] for key in ("task_id", *_TASK_LIST_FIELDS, *PROGRESS_FIELDS,
+                                        "completed_at", "duration_seconds", "cancelled") if key in task}
+    for path in _TASK_LIST_JSON_PATHS:
+        value: Any = task
+        for key in path:
+            value = value.get(key) if isinstance(value, dict) else None
+        _set_summary_value(payload, path, value)
+    return _finish_task_summary(payload)
+
+
+async def _legacy_task_summaries(db: AsyncSession, user: User, project_ids: set[str]) -> list[dict]:
+    """Only memory-only legacy tasks supplement the authoritative database."""
+    with tasks_lock:
+        candidates = {
+            task_id: _memory_task_summary(task)
+            for task_id, task in tasks.items()
+            if task_result_published(task) and (
+                str(task.get("project_id")) in project_ids
+                or (not task.get("project_id") and str(task.get("user_id")) == str(user.id))
+            )
+        }
+    ids = list(candidates)
+    # Existence checks also discard stale cache entries whose persisted owner or
+    # project is no longer visible. No cached metadata can override DB access.
+    for start in range(0, len(ids), 500):
+        persisted = await db.scalars(select(TaskModel.id).where(TaskModel.id.in_(ids[start:start + 500])))
+        for task_id in persisted:
+            candidates.pop(task_id, None)
+    return list(candidates.values())
+
+
+def _task_list_projection():
+    return [
+        TaskModel.id.label("task_id"),
+        *(getattr(TaskModel, key) for key in _TASK_LIST_FIELDS),
+        *(getattr(TaskModel, path[0])[path[1:]].label(f"summary_{index}")
+          for index, path in enumerate(_TASK_LIST_JSON_PATHS)),
+        *(TaskModel.progress_json[key].label(f"progress_{key}") for key in PROGRESS_FIELDS),
+    ]
+
+
+def _projected_task_summary(row) -> dict:
+    payload = dict(row)
+    for index, path in enumerate(_TASK_LIST_JSON_PATHS):
+        _set_summary_value(payload, path, payload.pop(f"summary_{index}"))
+    for key in PROGRESS_FIELDS:
+        value = payload.pop(f"progress_{key}")
+        if value is not None:
+            payload[key] = value
+    return _finish_task_summary(payload)
+
+
+def _task_list_sort_key(task: dict) -> tuple[float, str]:
+    created = task.get("created_at")
+    if isinstance(created, str):
+        try:
+            created = _ensure_utc(datetime.fromisoformat(created)).timestamp()
+        except ValueError:
+            created = 0
+    return (float(created) if isinstance(created, (int, float)) else 0, str(task["task_id"]))
+
+
 @router.get("/api/v1/tasks/stats", summary="任务统计")
 async def task_stats(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     projects = list((await db.scalars(select(ProjectMember.project_id).where(ProjectMember.user_id == user.id))).all())
-    project_ids = {str(project) for project in projects}
     visible = (TaskModel.project_id.is_(None) & (TaskModel.user_id == user.id)) | TaskModel.project_id.in_(projects)
-    records = (await db.scalars(select(TaskModel).where(visible))).all()
-    merged = {str(record.id): _task_payload(record) for record in records}
-    with tasks_lock:
-        for task_id, task in tasks.items():
-            if not task_result_published(task):
-                continue
-            if ((task.get("project_id") in project_ids) or
-                    (not task.get("project_id") and task.get("user_id") == str(user.id))):
-                merged[task_id] = dict(task)
-    total = len(merged)
-    completed = sum(task["status"] == "completed" for task in merged.values())
-    failed = sum(task["status"] == "failed" for task in merged.values())
-    running = sum(task["status"] not in TERMINAL_TASK_STATUSES for task in merged.values())
+    memory = await _legacy_task_summaries(db, user, {str(project) for project in projects})
+    rating = case((TaskModel.status == "completed", _task_rating_sql()), else_="")
+    groups = (await db.execute(
+        select(TaskModel.status, rating.label("rating"), func.count().label("count"))
+        .where(visible, TaskModel.id.not_in([task["task_id"] for task in memory]))
+        .group_by(TaskModel.status, rating)
+    )).all()
+    counts = {"total": 0, "completed": 0, "failed": 0, "running": 0}
     rating_dist: dict[str, int] = {}
-    for task in merged.values():
-        r = task.get("result") if task["status"] == "completed" else None
-        if isinstance(r, dict):
-            rating = r.get("interpretation", {}).get("rating") or r.get("backtest_summary", {}).get("wq_rating", "")
-            if rating:
-                rating_dist[rating] = rating_dist.get(rating, 0) + 1
-
+    for task_status, task_rating, count in [*groups, *((t.get("status"), _task_rating(t), 1) for t in memory)]:
+        counts["total"] += count
+        if task_status in {"completed", "failed"}:
+            counts[task_status] += count
+        elif task_status not in TERMINAL_TASK_STATUSES:
+            counts["running"] += count
+        if task_status == "completed" and task_rating:
+            rating_dist[task_rating] = rating_dist.get(task_rating, 0) + count
     return {
-        "total": total,
-        "completed": completed,
-        "failed": failed,
-        "running": running,
-        "success_rate": round(completed / total * 100, 1) if total else 0,
+        **counts,
+        "success_rate": round(counts["completed"] / counts["total"] * 100, 1) if counts["total"] else 0,
         "rating_distribution": rating_dist,
     }
 
@@ -948,83 +1075,54 @@ async def list_tasks(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    user_id = str(user.id)
-    offset = (page - 1) * page_size
-    projects = list((await db.scalars(select(ProjectMember.project_id).where(ProjectMember.user_id == user.id))).all())
-    project_ids = {str(project) for project in projects}
-
-    memory_tasks = []
-    with tasks_lock:
-        for t in tasks.values():
-            if not task_result_published(t):
-                continue
-            if t.get("project_id") in project_ids or (not t.get("project_id") and t.get("user_id") == user_id):
-                if session_id is not None and t.get("session_id") != session_id:
-                    continue
-                if task_type is not None and t.get("task_type") != task_type:
-                    continue
-                if status is not None:
-                    t_status = t.get("status", "")
-                    if status == "running":
-                        if t_status in TERMINAL_TASK_STATUSES:
-                            continue
-                    elif t_status != status:
-                        continue
-                if rating is not None:
-                    r = t.get("result", {}) or {}
-                    t_rating = (r.get("interpretation", {}) or {}).get("rating") or (r.get("backtest_summary", {}) or {}).get("wq_rating", "")
-                    if t_rating != rating:
-                        continue
-                safe = {k: v for k, v in t.items() if k not in ("user_id",)}
-                memory_tasks.append(safe)
-
-    visible = (TaskModel.project_id.is_(None) & (TaskModel.user_id == user.id)) | TaskModel.project_id.in_(projects)
-    query = select(TaskModel).where(visible)
+    """Return bounded scalar summaries; retrieve full results from the detail endpoint."""
+    session_uuid = None
     if session_id is not None:
-        import uuid as _uuid
         try:
-            query = query.where(TaskModel.session_id == _uuid.UUID(session_id))
-        except ValueError:
-            pass
+            session_uuid = uuid.UUID(session_id)
+            session_id = str(session_uuid)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Invalid session_id") from exc
+    projects = list((await db.scalars(select(ProjectMember.project_id).where(ProjectMember.user_id == user.id))).all())
+    visible = (TaskModel.project_id.is_(None) & (TaskModel.user_id == user.id)) | TaskModel.project_id.in_(projects)
+    filters = [visible]
+    if session_uuid is not None:
+        filters.append(TaskModel.session_id == session_uuid)
     if task_type is not None:
-        query = query.where(TaskModel.task_type == task_type)
+        filters.append(TaskModel.task_type == task_type)
     if status is not None:
-        if status == "running":
-            query = query.where(~TaskModel.status.in_(TERMINAL_TASK_STATUSES))
-        else:
-            query = query.where(TaskModel.status == status)
-    query = query.order_by(desc(TaskModel.created_at))
-    result = await db.execute(query)
-    db_tasks = result.scalars().all()
+        filters.append(TaskModel.status.not_in(TERMINAL_TASK_STATUSES) if status == "running" else TaskModel.status == status)
+    if rating is not None:
+        filters.append(_task_rating_sql() == rating)
 
-    memory_ids = {t["task_id"] for t in memory_tasks}
-    merged = list(memory_tasks)
-    for dt in db_tasks:
-        if dt.id not in memory_ids:
-            task_dict = _task_payload(dt)
-            task_dict.pop("user_id", None)
-            if rating is not None:
-                r = task_dict.get("result", {}) or {}
-                t_rating = (r.get("interpretation", {}) or {}).get("rating") or (r.get("backtest_summary", {}) or {}).get("wq_rating", "")
-                if t_rating != rating:
-                    continue
-            merged.append(task_dict)
-
-    def _sort_key(t: dict) -> float:
-        ca = t.get("created_at")
-        if isinstance(ca, (int, float)):
-            return ca
-        if isinstance(ca, str):
-            try:
-                return datetime.fromisoformat(ca).timestamp()
-            except Exception:
-                return 0
-        return 0
-
-    merged.sort(key=_sort_key, reverse=True)
-    total = len(merged)
-    merged = merged[offset:offset + page_size]
-    return {"tasks": [sanitize_task_response(t) for t in merged], "page": page, "page_size": page_size, "total": total}
+    memory = await _legacy_task_summaries(db, user, {str(project) for project in projects})
+    # Keep the sources disjoint if a legacy worker persists after the existence
+    # check. This request retains its memory snapshot instead of counting twice.
+    if memory:
+        filters.append(TaskModel.id.not_in([task["task_id"] for task in memory]))
+    memory = [task for task in memory if (
+        (session_id is None or task.get("session_id") == session_id)
+        and (task_type is None or task.get("task_type") == task_type)
+        and (status is None or (task.get("status") not in TERMINAL_TASK_STATUSES if status == "running"
+                               else task.get("status") == status))
+        and (rating is None or _task_rating(task) == rating)
+    )]
+    total = int(await db.scalar(select(func.count()).select_from(TaskModel).where(*filters)) or 0) + len(memory)
+    offset = (page - 1) * page_size
+    # Every omitted DB row must precede the requested merged page, even if all
+    # memory rows sort before it. Fetch at most one page plus the legacy cache.
+    db_offset = max(0, offset - len(memory))
+    rows = (await db.execute(
+        select(*_task_list_projection()).where(*filters)
+        .order_by(TaskModel.created_at.desc(), TaskModel.id.desc())
+        .offset(db_offset).limit(page_size + len(memory))
+    )).mappings().all()
+    merged = [*memory, *(_projected_task_summary(row) for row in rows)]
+    merged.sort(key=_task_list_sort_key, reverse=True)
+    start = offset - db_offset
+    page_tasks = merged[start:start + page_size]
+    return {"tasks": [sanitize_task_response(task) for task in page_tasks],
+            "page": page, "page_size": page_size, "total": total}
 
 
 @router.get("/api/v1/tasks/{task_id}", summary="查询任务状态和结果")

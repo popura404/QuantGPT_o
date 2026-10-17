@@ -2,15 +2,11 @@
 
 import asyncio
 import logging
-import threading
-import time
 import traceback
-import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import get_current_user
@@ -19,20 +15,27 @@ from ..iteration import compute_factor_score, generate_iteration_candidates
 from ..market_data import MarketDataFetcher, get_universe
 from ..models import Task as TaskModel
 from ..models import User
+from ..research.projects import ProjectAccessError, require_project_member
 from ..search_ledger import summarize_attempts
+from ..task_executor import dispatch_durable_task
 from ..task_store import (
     MAX_ACTIVE_TASKS,
     REPORT_DIR,
     SAFE_FILENAME_RE,
+    CancelledException,
+    TaskConflictError,
     active_task_count,
+    check_cancelled,
     check_rate_limit,
     cleanup_tasks,
     create_report_ticket,
-    main_loop,
-    persist_report_to_db,
+    load_durable_task,
     persist_task_to_db,
+    snapshot_task,
+    submit_durable_task,
     tasks,
     tasks_lock,
+    transition_task,
     validate_report_ticket,
 )
 from ..validation.promotion import BOUNDARY_CANDIDATE, evaluate_promotion_provenance
@@ -62,19 +65,16 @@ class SelectCandidateRequest(BaseModel):
     candidate_index: int = Field(..., ge=0, description="候选因子索引")
 
 
-def _run_iteration_task(task_id: str, parent_task_id: str, user_id: str, n_candidates: int, direction: str | None = None):
-    task = tasks.get(task_id)
+def _run_iteration_task(task_id: str, parent_task_id: str, user_id: str, n_candidates: int,
+                        direction: str | None = None, *, attempt_id: str | None = None):
+    task = snapshot_task(task_id, expected_attempt=attempt_id)
     if not task:
         return
 
-    if not task.get("is_guest"):
-        try:
-            persist_task_to_db(task_id, user_id, task)
-        except Exception:
-            pass
-
     try:
-        parent_task = tasks.get(parent_task_id)
+        check_cancelled(task_id, expected_attempt=attempt_id)
+        task.update(candidates=[], search_attempts=[])
+        parent_task = (task.get("params") or {}).get("parent_snapshot") or snapshot_task(parent_task_id)
         if parent_task and parent_task.get("status") == "completed":
             parent_result = parent_task.get("result", {})
             parent_expression = parent_task.get("expression", "")
@@ -84,13 +84,11 @@ def _run_iteration_task(task_id: str, parent_task_id: str, user_id: str, n_candi
                 from ..db import _get_session_factory
                 factory = _get_session_factory()
                 async with factory() as session:
-                    r = await session.execute(
-                        select(TaskModel).where(TaskModel.id == parent_task_id)
-                    )
-                    return r.scalar_one_or_none()
+                    return await load_durable_task(session, parent_task_id, user_id, write=True)
 
             db_parent = None
-            _loop = main_loop
+            from .. import task_store
+            _loop = task_store.main_loop
             if _loop and _loop.is_running():
                 future = asyncio.run_coroutine_threadsafe(_fetch_parent(), _loop)
                 try:
@@ -98,22 +96,21 @@ def _run_iteration_task(task_id: str, parent_task_id: str, user_id: str, n_candi
                 except Exception as e:
                     logger.error(f"[{task_id}] fetch parent from DB failed: {e}")
 
-            if not db_parent or db_parent.status != "completed":
-                task["status"] = "failed"
-                task["error"] = "父任务未完成或不存在"
+            if not db_parent or db_parent["status"] != "completed":
+                transition_task(task_id, "failed", expected_attempt=attempt_id, error="父任务未完成或不存在")
                 return
 
-            parent_result = db_parent.result or {}
-            parent_expression = db_parent.expression or ""
+            parent_result = db_parent["result"] or {}
+            parent_expression = db_parent["expression"] or ""
             parent_params = parent_result.get("params", {})
 
         if not parent_expression:
-            task["status"] = "failed"
-            task["error"] = "父任务缺少表达式"
+            transition_task(task_id, "failed", expected_attempt=attempt_id, error="父任务缺少表达式")
             return
 
-        task["status"] = "iterating"
-        task["expression"] = parent_expression
+        transition_task(task_id, "iterating", expected_attempt=attempt_id, expression=parent_expression,
+                        parent_task_id=parent_task_id, candidates=[], candidates_done=0,
+                        candidates_total=n_candidates, search_attempts=[], search_summary={})
 
         stock_codes = get_universe(
             parent_params.get("universe", "hs300"),
@@ -126,8 +123,7 @@ def _run_iteration_task(task_id: str, parent_task_id: str, user_id: str, n_candi
             parent_params.get("end_date", "2025-12-31"),
         )
         if market_df is None or len(market_df) == 0:
-            task["status"] = "failed"
-            task["error"] = "无法获取行情数据"
+            transition_task(task_id, "failed", expected_attempt=attempt_id, error="无法获取行情数据")
             return
 
         from ..fundamental_data import detect_fundamental_vars, enrich_market_data
@@ -148,6 +144,7 @@ def _run_iteration_task(task_id: str, parent_task_id: str, user_id: str, n_candi
         }
 
         def on_attempt(attempt):
+            check_cancelled(task_id, expected_attempt=attempt_id)
             existing = task.setdefault("search_attempts", [])
             for idx, item in enumerate(existing):
                 if item.get("id") == attempt.get("id"):
@@ -156,20 +153,24 @@ def _run_iteration_task(task_id: str, parent_task_id: str, user_id: str, n_candi
             else:
                 existing.append(attempt)
             task["search_summary"] = summarize_attempts(existing)
+            transition_task(task_id, expected_attempt=attempt_id, search_attempts=list(existing),
+                            search_summary=task["search_summary"])
 
         def on_progress(done_count, candidate_result):
+            check_cancelled(task_id, expected_attempt=attempt_id)
             task["candidates_done"] = done_count
-            if candidate_result.get("status") == "success":
-                task["candidates"].append(candidate_result)
-                report_filename = candidate_result.get("report_filename")
-                if report_filename:
-                    try:
-                        persist_report_to_db(task_id, user_id, report_filename)
-                    except Exception as e:
-                        logger.error(f"[{task_id}] report persist error: {e}")
-            else:
-                task["candidates"].append(candidate_result)
+            task["candidates"].append(candidate_result)
+            transition_task(task_id, expected_attempt=attempt_id, candidates_done=done_count,
+                            candidates=list(task["candidates"]))
+            report_filename = candidate_result.get("report_filename")
+            if candidate_result.get("status") == "success" and report_filename:
+                current = snapshot_task(task_id, expected_attempt=attempt_id)
+                if current is not None:
+                    # Publish the report in the guarded task transaction so
+                    # cancellation, revoked access and stale attempts also fence it.
+                    persist_task_to_db(task_id, user_id, current, report_filename)
 
+        check_cancelled(task_id, expected_attempt=attempt_id)
         candidates = generate_iteration_candidates(
             parent_expression=parent_expression,
             parent_metrics=parent_metrics,
@@ -187,32 +188,31 @@ def _run_iteration_task(task_id: str, parent_task_id: str, user_id: str, n_candi
             direction=direction,
         )
 
-        task["candidates"] = candidates
-        task["candidates_done"] = len(candidates)
-        task["search_summary"] = summarize_attempts(task.get("search_attempts", []))
-        task["status"] = "iteration_completed"
-        task["result"] = {
+        check_cancelled(task_id, expected_attempt=attempt_id)
+        summary = summarize_attempts(task.get("search_attempts", []))
+        result = {
             "parent_task_id": parent_task_id,
             "parent_expression": parent_expression,
             "parent_score": parent_scoring["score"],
             "parent_grade": parent_scoring["grade"],
             "candidates": candidates,
             "search_attempts": task.get("search_attempts", []),
-            "search_summary": task.get("search_summary", {}),
+            "search_summary": summary,
         }
+        transition_task(task_id, "iteration_completed", expected_attempt=attempt_id, result=result,
+                        candidates=candidates, candidates_done=len(candidates), search_summary=summary)
         logger.info(f"[{task_id}] iteration completed: {len(candidates)} candidates")
 
+    except CancelledException:
+        transition_task(task_id, "cancelled", expected_attempt=attempt_id)
     except Exception as e:
         logger.error(f"[{task_id}] iteration failed: {traceback.format_exc()}")
-        task["status"] = "failed"
-        task["error"] = f"迭代过程中发生错误: {str(e)}"
+        transition_task(task_id, "failed", expected_attempt=attempt_id, error=f"迭代过程中发生错误: {str(e)}")
     finally:
-        if "completed_at" not in task:
-            import time as _time
-            task["completed_at"] = _time.time()
-        if not task.get("is_guest"):
+        current_task = snapshot_task(task_id, expected_attempt=attempt_id)
+        if current_task is not None and not current_task.get("is_guest"):
             try:
-                persist_task_to_db(task_id, user_id, task)
+                persist_task_to_db(task_id, user_id, current_task)
             except Exception as e:
                 logger.error(f"[{task_id}] DB persist error: {e}")
 
@@ -231,62 +231,41 @@ async def iterate_task(
 
     user_id = str(user.id)
 
-    parent_task = tasks.get(task_id)
-    if parent_task:
-        if parent_task.get("user_id") != user_id:
-            raise HTTPException(status_code=404, detail="Task not found")
-        if parent_task.get("status") != "completed":
-            raise HTTPException(status_code=400, detail="只能对已完成的任务进行迭代优化")
-        parent_params = parent_task.get("result", {}).get("params", {})
-        parent_expression = parent_task.get("expression")
-    else:
-        result = await db.execute(
-            select(TaskModel).where(TaskModel.id == task_id, TaskModel.user_id == user.id)
-        )
-        db_task = result.scalar_one_or_none()
-        if not db_task:
-            raise HTTPException(status_code=404, detail="Task not found")
-        if db_task.status != "completed":
-            raise HTTPException(status_code=400, detail="只能对已完成的任务进行迭代优化")
-        parent_params = (db_task.result or {}).get("params", {})
-        parent_expression = db_task.expression
+    try:
+        parent_task = await load_durable_task(db, task_id, user_id, write=True)
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+    parent_task = parent_task or snapshot_task(task_id)
+    if not parent_task or (not parent_task.get("project_id") and parent_task.get("user_id") != user_id):
+        raise HTTPException(status_code=404, detail="Task not found")
+    if parent_task.get("status") != "completed":
+        raise HTTPException(status_code=400, detail="只能对已完成的任务进行迭代优化")
+    parent_params = (parent_task.get("result") or {}).get("params", {})
+    parent_expression = parent_task.get("expression")
 
     if active_task_count() >= MAX_ACTIVE_TASKS:
         raise HTTPException(status_code=503, detail="当前任务已满，请稍后再试")
 
     cleanup_tasks()
 
-    iter_task_id = uuid.uuid4().hex[:12]
-    with tasks_lock:
-        tasks[iter_task_id] = {
-            "task_id": iter_task_id,
-            "user_id": user_id,
-            "status": "pending",
-            "task_type": "iteration",
-            "parent_task_id": task_id,
-            "params": {
-                **parent_params,
-                "parent_task_id": task_id,
-                "n_candidates": req.n_candidates,
-            },
-            "expression": parent_expression,
-            "candidates": [],
-            "candidates_done": 0,
-            "candidates_total": req.n_candidates,
-            "search_attempts": [],
-            "search_summary": {},
-            "created_at": time.time(),
-        }
-    logger.info(f"iteration task {iter_task_id} created for parent {task_id}")
-
-    thread = threading.Thread(
-        target=_run_iteration_task,
-        args=(iter_task_id, task_id, user_id, req.n_candidates, req.direction),
-        daemon=True,
-    )
-    thread.start()
-
-    return {"task_id": iter_task_id, "status": "pending"}
+    # Freeze the authorized parent input before acceptance; restart never depends
+    # on an expiring in-memory parent or on changing legacy result dictionaries.
+    parent_snapshot = {"status": "completed", "expression": parent_expression,
+                       "result": parent_task.get("result") or {}}
+    try:
+        task, created = await submit_durable_task(db, actor_id=user_id, task_type="iteration",
+            params={**parent_params, "parent_task_id": task_id, "parent_snapshot": parent_snapshot,
+                    **req.model_dump()}, expression=parent_expression,
+            project_id=parent_task.get("project_id"),
+            session_id=parent_task.get("session_id") if parent_task.get("user_id") == user_id else None,
+            idempotency_key=request.headers.get("Idempotency-Key"))
+    except TaskConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if created:
+        await dispatch_durable_task(db, task["task_id"])
+    return {"task_id": task["task_id"], "status": task["status"], "reused": not created}
 
 
 @router.post("/api/v1/tasks/{task_id}/select_candidate", summary="选择迭代候选因子")
@@ -294,14 +273,25 @@ async def select_candidate(
     task_id: str,
     req: SelectCandidateRequest,
     user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     user_id = str(user.id)
 
-    task = tasks.get(task_id)
+    try:
+        task = await load_durable_task(db, task_id, user_id, write=True)
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+    persisted = task is not None
+    task = task or snapshot_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    if task.get("user_id") != user_id:
+    if not task.get("project_id") and task.get("user_id") != user_id:
         raise HTTPException(status_code=404, detail="Task not found")
+    if not persisted and task.get("project_id"):
+        try:
+            await require_project_member(db, user_id, task["project_id"], write=True)
+        except ProjectAccessError as exc:
+            raise HTTPException(status_code=404, detail="Task not found") from exc
     if task.get("status") != "iteration_completed":
         raise HTTPException(status_code=400, detail="迭代任务尚未完成")
 
@@ -327,6 +317,14 @@ async def select_candidate(
         )
 
     task["selected_candidate_index"] = req.candidate_index
+    if persisted:
+        record = await db.get(TaskModel, task_id)
+        assert record is not None
+        record.result = {**(record.result or {}), "selected_candidate_index": req.candidate_index}
+        await db.commit()
+    with tasks_lock:
+        if task_id in tasks:
+            tasks[task_id]["selected_candidate_index"] = req.candidate_index
 
     return {
         "task_id": task_id,

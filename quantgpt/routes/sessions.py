@@ -59,11 +59,11 @@ async def list_sessions(
 ):
     """列出当前用户的会话，按 updated_at 降序。"""
     result = await db.execute(
-        select(Session)
+        select(Session.id, Session.name, Session.market, Session.created_at, Session.updated_at)
         .where(Session.user_id == user.id)
         .order_by(desc(Session.updated_at))
     )
-    sessions = result.scalars().all()
+    sessions = result.all()
     return {
         "sessions": [
             {

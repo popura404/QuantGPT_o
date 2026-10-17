@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import func, select
 
 from quantgpt.models import Experiment, ExperimentArtifact
-from quantgpt.research.evaluations import get_evaluation, verify_frozen_config
+from quantgpt.research.evaluations import get_evaluation, read_artifact, verify_frozen_config
 
 VALIDATION_PROFILES = {
     "local_factor": {"required": ("definition_config", "replayable_data", "data_quality", "oos",
@@ -59,6 +59,25 @@ async def evaluate_profile(session, actor_id, project_id, evaluation_id: str, *,
             blockers.append("FINAL_TEST_REQUIRED")
     summary = row.result_summary or {}
     checks = summary.get("validation_checks") or {}
+    offline = None
+    if profile != "wq_remote":
+        record = (await session.scalars(select(ExperimentArtifact).where(
+            ExperimentArtifact.experiment_id == evaluation_id,
+            ExperimentArtifact.artifact_type == "offline_validation",
+            ExperimentArtifact.payload["profile"].as_string() == profile,
+        ).order_by(ExperimentArtifact.created_at.desc()))).first()
+        if record is not None:
+            artifact = await read_artifact(session, actor_id, project_id, record.id)
+            report = artifact["payload"]
+            if report.get("evaluation_hash") != row.evaluation_hash:
+                raise ValueError("VALIDATION_EVIDENCE_IDENTITY_MISMATCH")
+            offline = {"artifact_id": str(record.id), "content_sha256": record.content_hash,
+                       "scope": report["scope"], "report_key": report["report_key"]}
+            if report["observed_project_trials"] != await observed_trial_count(session, project_id):
+                blockers.append("OFFLINE_VALIDATION_STALE_TRIAL_COUNT")
+            else:
+                checks = report["checks"]
+            blockers.extend(report["external_acceptance"]["blockers"])
     for name in rules["required"]:
         check = checks.get(name)
         if not isinstance(check, dict) or check.get("status") != "passed":
@@ -68,4 +87,5 @@ async def evaluate_profile(session, actor_id, project_id, evaluation_id: str, *,
     return {"schema_version": "validation_profile/v1", "profile": profile, "evaluation_id": evaluation_id,
             "evaluation_hash": row.evaluation_hash, "allowed": not blockers, "blockers": blockers,
             "checks": checks, "requirements": rules,
+            "offline_validation": offline,
             "research_decision": "accepted" if not blockers else summary.get("research_decision", "insufficient_data")}

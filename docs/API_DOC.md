@@ -324,7 +324,7 @@ curl -X POST http://localhost:8003/api/v1/auto_backtest \
 
 ### GET /api/v1/tasks
 
-分页查询当前用户的任务列表。
+分页查询当前用户及其所属项目的任务摘要，按创建时间和任务 ID 倒序排列。列表只返回提示词、表达式、评级、评分和核心指标等标量字段，不包含净值序列、逐股票数据或完整候选结果。每条记录标记 `summary_only: true`；查看图表或详细结果时，请再调用 `GET /api/v1/tasks/{task_id}`。已持久化任务以数据库为准，兼容尚未落库的旧内存任务。
 
 **查询参数:**
 
@@ -332,7 +332,10 @@ curl -X POST http://localhost:8003/api/v1/auto_backtest \
 |------|--------|------|
 | `page` | 1 | 页码 |
 | `page_size` | 20 | 每页数量 (1~100) |
-| `session_id` | — | 按会话过滤 |
+| `session_id` | — | 按会话 UUID 过滤；格式无效返回 422 |
+| `task_type` | — | 按任务类型过滤 |
+| `status` | — | 按状态过滤；`running` 包括所有非终态任务 |
+| `rating` | — | 按评级过滤；优先采用 `interpretation.rating`，否则采用 `backtest_summary.wq_rating` |
 
 **响应 200:**
 
@@ -342,13 +345,15 @@ curl -X POST http://localhost:8003/api/v1/auto_backtest \
     {
       "task_id": "a1b2c3d4e5f6",
       "status": "completed",
+      "summary_only": true,
       "params": { "...": "..." },
       "expression": "rank(close/ts_mean(close, 20))",
       "result": { "...": "..." }
     }
   ],
   "page": 1,
-  "page_size": 20
+  "page_size": 20,
+  "total": 1
 }
 ```
 

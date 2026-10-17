@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import { evaluateResearchFactors, exportResearchStrategy, getResearchArtifact, getResearchEvaluation, getResearchRun, optimizeResearchSignal, prepareOfflineDemo, registerResearchHypothesis, runResearchStrategy, saveEvaluationToPool, type OfflineResearchDemo, type ResearchEvaluation, type ResearchRun } from "../api/research";
 import { useResearchProject } from "../hooks/useResearchProject";
+import OfflineValidationPanel from "./OfflineValidationPanel";
+import { canValidateLocally, matchingSelectionEvaluation } from "../utils/researchValidation";
 
 function display(value: unknown): string {
   return typeof value === "number" ? (Number.isFinite(value) ? value.toFixed(4) : "—") : String(value ?? "—");
@@ -134,6 +136,7 @@ export default function ResearchWorkflow() {
       <Metrics values={item.summary?.metrics} />
       {item.summary?.blockers?.map((blocker, n) => <p key={n} className="text-xs text-amber-800">阻断：{blockerLabel(blocker)}</p>)}
       <button disabled={busy || !demo} className="rounded border px-3 py-2 text-sm disabled:opacity-50" onClick={() => void action(async (current) => { if (!demo) return; await saveEvaluationToPool(projectId, item, demo.definitions[index], demo.config); if (current()) setNotice("已收藏到项目共同因子池，保留服务端评价引用。"); })}>收藏评价到共同池</button>
+      {canValidateLocally(item) && <OfflineValidationPanel projectId={projectId} evaluationId={item.evaluation_id} selectionEvaluationId={matchingSelectionEvaluation(item, evaluations)} disabled={busy} />}
       <details className="text-xs text-gray-500"><summary>评价引用</summary><p className="break-all">{item.evaluation_id}</p><p className="break-all">{item.evaluation_hash}</p></details>
     </article>)}
     {demo && evaluations.length > 0 && <button disabled={busy || evaluations.some((item) => item.status === "rejected")} className="rounded bg-blue-600 px-4 py-2 text-sm text-white disabled:opacity-50" onClick={() => void action(async (current) => {

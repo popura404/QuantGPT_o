@@ -11,13 +11,16 @@ export function useTaskHistory(sessionId: string | null, taskType?: string) {
       setTasks([]);
       return;
     }
+    let current = true;
+    setTasks([]);
     fetchTasks(1, 50, sessionId, taskType)
       .then(({ tasks: loaded }) => {
-        setTasks(loaded);
+        if (current) setTasks(loaded);
       })
       .catch(() => {
-        setTasks([]);
+        if (current) setTasks([]);
       });
+    return () => { current = false; };
   }, [sessionId, taskType]);
 
   const addTask = useCallback((task: Task) => {

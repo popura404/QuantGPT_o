@@ -18,7 +18,8 @@ from scipy import stats as sp_stats
 
 from .expression_parser import parse_expression
 from .research.contracts import SEMANTICS_VERSION, SimulationConfigV1
-from .research.ledger import simulate_target_weights
+from .research.ledger import prepare_market_context, simulate_target_weights
+from .research.returns import annualized_return, forward_total_returns
 from .wq_simulate import wq_simulate
 
 logger = logging.getLogger(__name__)
@@ -294,11 +295,13 @@ def run_factor_backtest(
     actual_groups = sorted(rebal_data["_group"].unique())
     ledgers = {}
     first_fill = market_df.loc[market_df["trade_date"] > min(rebalance_dates_set), "trade_date"].min()
+    market_context = prepare_market_context(market_df)
     for group_id in actual_groups:
         targets = rebal_data.loc[rebal_data["_group"] == group_id, ["trade_date", "stock_code"]].copy()
+        targets.attrs = {}
         targets["target_weight"] = 1.0 / targets.groupby("trade_date")["stock_code"].transform("count")
         ledgers[group_id] = simulate_target_weights(
-            market_df, targets, simulation,
+            market_context, targets, simulation,
             evaluation_start=evaluation_start or first_fill,
             evaluation_end=evaluation_end,
         )
@@ -354,7 +357,7 @@ def run_factor_backtest(
 
     ls_mean, ls_std = ls_series.mean(), ls_series.std()
     ls_sharpe = float((ls_mean / ls_std * annualize) if ls_std > 0 else 0.0)
-    ls_annual = float((1 + ls_mean) ** trading_days_per_year - 1)
+    ls_annual = annualized_return(ls_series, trading_days_per_year)
 
     group_means = [float(cast(pd.Series, daily_group_ret[g]).mean()) for g in actual_groups]
     mono = _calc_monotonicity(group_means)
@@ -410,7 +413,7 @@ def run_factor_backtest(
         group_ret_summary[int(g)] = {
             "group": f"G{int(g)+1}",
             "mean_return": float(s.mean()),
-            "annual_return": float((1 + s.mean()) ** trading_days_per_year - 1),
+            "annual_return": annualized_return(s, trading_days_per_year),
             "sharpe": float((s.mean() / std * annualize) if std > 0 else 0.0),
             "max_drawdown": float(_calc_max_drawdown(s)),
         }
@@ -546,25 +549,7 @@ def _calc_ic_series(
     work = work.sort_values(["stock_code", "trade_date"]).reset_index(drop=True)
     work["trade_date"] = pd.to_datetime(work["trade_date"])
 
-    # Calendar-based forward returns: every stock on date T uses the same
-    # market trading date T+N, so suspensions or missing rows do not shift
-    # individual stocks onto a different horizon.
-    all_dates = sorted(work["trade_date"].dropna().unique())
-    date_fwd_map = {
-        all_dates[i]: all_dates[i + holding_period]
-        for i in range(len(all_dates) - holding_period)
-    }
-    work["_fwd_date"] = cast(pd.Series, work["trade_date"]).map(date_fwd_map)
-    future_close = cast(pd.DataFrame, work[["trade_date", "stock_code", "close"]]).rename(
-        columns={"trade_date": "_fwd_date", "close": "_fwd_close"}
-    )
-    work = work.merge(future_close, on=["_fwd_date", "stock_code"], how="left")
-    work["fwd_ret"] = np.where(
-        (work["close"] > 0) & work["_fwd_close"].notna(),
-        work["_fwd_close"] / work["close"] - 1,
-        np.nan,
-    )
-    work = work.drop(columns=["_fwd_date", "_fwd_close"])
+    work["fwd_ret"] = forward_total_returns(work, holding_period)
 
     valid = work.dropna(subset=["factor_value", "fwd_ret"])
     if valid.empty:

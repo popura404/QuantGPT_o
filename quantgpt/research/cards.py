@@ -107,8 +107,11 @@ def _check_output(evidence: EvaluationEvidence) -> None:
 
 
 def _factor_frame(evidence: EvaluationEvidence) -> pd.DataFrame:
-    frame = evidence.output.get("_factor_df")
-    if not isinstance(frame, pd.DataFrame) or frame.empty:
+    value = evidence.output.get("_factor_df")
+    if not isinstance(value, pd.DataFrame):
+        return pd.DataFrame(columns=["trade_date", "stock_code", "factor_value"])
+    frame = cast(pd.DataFrame, value)
+    if frame.empty:
         return pd.DataFrame(columns=["trade_date", "stock_code", "factor_value"])
     required = ["trade_date", "stock_code", "factor_value"]
     if any(name not in frame for name in required):

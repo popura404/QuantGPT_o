@@ -4,7 +4,11 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_offline_evaluation_retry_strategy_lineage_and_export(client, auth_headers, tmp_path, monkeypatch):
+async def test_offline_evaluation_retry_strategy_lineage_and_export(client, auth_headers, tmp_path, monkeypatch,
+                                                                   db_session, test_user):
+    import uuid
+
+    from quantgpt.research.validation_runner import run_local_validation
     monkeypatch.setenv("QUANTGPT_RESEARCH_SNAPSHOT_ROOT", str(tmp_path / "snapshots"))
     created = await client.post("/api/v1/research/projects", headers=auth_headers,
                                 json={"name": "Offline contract", "market": "demo_global_equity"})
@@ -35,6 +39,12 @@ async def test_offline_evaluation_retry_strategy_lineage_and_export(client, auth
     result = run.json()
     assert result["spec"]["schema_version"] == "strategy_spec/v2"
     assert result["metrics"] and result["signal_ref"]
+    validation = await run_local_validation(db_session, test_user.id, uuid.UUID(created.json()["id"]),
+        result["evaluation_id"], snapshot_root=tmp_path / "snapshots")
+    for name in ("simulation", "risk", "costs", "strategy_identity", "factor_lineage"):
+        assert validation["checks"][name]["status"] == "passed", validation["checks"]
+    unchanged = await client.get(base + "/strategy-runs/" + result["strategy_run_id"], headers=auth_headers)
+    assert unchanged.status_code == 200 and unchanged.json() == result
     signal = await client.get(base + "/artifacts/" + result["signal_ref"]["artifact_id"], headers=auth_headers)
     assert signal.json()["payload"][0]["factor_value"] is not None
     assert "score" in signal.json()["payload"][0]

@@ -290,7 +290,7 @@ async def evaluate_factor_batch(session: AsyncSession, actor_id: uuid.UUID, proj
             continue
         try:
             if panel is None:
-                panel = load_evaluation_panel(config, snapshot_root)
+                panel = await asyncio.to_thread(load_evaluation_panel, config, snapshot_root)
                 dates = pd.to_datetime(panel["trade_date"])
                 # Never pass the held-out future to parsing, grouping or scoring.
                 panel = cast(pd.DataFrame, panel[dates <= pd.Timestamp(config.window.end_session)].copy())

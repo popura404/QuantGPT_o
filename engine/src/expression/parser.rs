@@ -324,6 +324,9 @@ fn parse_args(tokens: &[Token], mut pos: usize, _depth: usize) -> Result<(Vec<Ex
 fn expect_window(args: &[Expr], idx: usize, name: &str) -> Result<usize, String> {
     match &args[idx] {
         Expr::Literal(n) => {
+            if !n.is_finite() || n.fract() != 0.0 {
+                return Err(format!("{name}: window must be a literal integer"));
+            }
             let w = *n as usize;
             if w == 0 || w > MAX_WINDOW {
                 return Err(format!("{name}: window must be 1..{MAX_WINDOW}, got {w}"));
@@ -455,5 +458,10 @@ mod tests {
     fn test_ternary_python() {
         let expr = parse("close if close > open else open").unwrap();
         assert!(matches!(expr, Expr::Where(_, _, _)));
+    }
+
+    #[test]
+    fn test_fractional_window_is_not_truncated() {
+        assert!(parse("ts_mean(close, 2.5)").is_err());
     }
 }

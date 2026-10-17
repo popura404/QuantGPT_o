@@ -30,7 +30,7 @@ export interface ResearchEvaluation {
   status: string;
   evidence_status: string;
   failure_reason?: string | null;
-  summary?: { metrics?: Record<string, unknown>; artifacts?: Record<string, unknown>[]; blockers?: unknown[]; research_decision?: string };
+  summary?: { performance_observed?: boolean; metrics?: Record<string, unknown>; artifacts?: Record<string, unknown>[]; blockers?: unknown[]; research_decision?: string };
   frozen_config?: { definition: Record<string, unknown>; config: Record<string, unknown> };
 }
 
@@ -90,3 +90,26 @@ export async function exportResearchStrategy(projectId: string, runId: string): 
   if (!response.ok) throw new Error(await parseError(response));
   return response.json();
 }
+
+export interface ResearchValidationProfile {
+  evaluation_id: string;
+  profile: string;
+  allowed: boolean;
+  blockers: string[];
+  checks: Record<string, { status: string; [key: string]: unknown }>;
+  offline_validation?: { artifact_id: string; content_sha256: string; report_key: string; scope: string } | null;
+  external_blockers?: string[];
+}
+
+export async function getResearchValidation(projectId: string, evaluationId: string, signal?: AbortSignal): Promise<ResearchValidationProfile> {
+  const response = await authFetch(`${BASE}/api/v1/research/projects/${encodeURIComponent(projectId)}/evaluations/${encodeURIComponent(evaluationId)}/validation?profile=local_factor`, { signal });
+  if (!response.ok) throw new Error(await parseError(response));
+  return response.json();
+}
+
+export const submitResearchValidation = (projectId: string, evaluationId: string, selectionEvaluationId?: string, idempotencyKey?: string) =>
+  projectRequest<{ task_id: string; status: string; poll_url: string }>(projectId,
+    `evaluations/${encodeURIComponent(evaluationId)}/validation-runs`, {
+      ...(selectionEvaluationId ? { selection_evaluation_id: selectionEvaluationId } : {}),
+      ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
+    });

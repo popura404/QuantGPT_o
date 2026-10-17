@@ -34,7 +34,8 @@ def _dispatch_handler(payload: dict):
     """Only registered local requests may be replayed from the durable outbox."""
     if payload["task_type"] == "research_evaluation":
         from quantgpt.research.jobs import run_research_job
-        return lambda: run_research_job(payload)
+        event_loop = asyncio.get_running_loop()
+        return lambda: run_research_job(payload, event_loop=event_loop)
     if (payload.get("params") or {}).get("source") == "mcp":
         return None
     if payload["task_type"] == "strategy_backtest":
@@ -45,6 +46,15 @@ def _dispatch_handler(payload: dict):
         from .routes.backtest_tasks import AutoBacktestRequest, _run_backtest_task
         return lambda: _run_backtest_task(payload["task_id"], AutoBacktestRequest(**payload["params"]), payload["user_id"],
                                          attempt_id=payload.get("attempt_id"))
+    if payload["task_type"] == "composite":
+        from .routes.composite import CompositeBacktestRequest, _run_composite_task
+        return lambda: _run_composite_task(payload["task_id"], CompositeBacktestRequest(**payload["params"]),
+                                           payload["user_id"], attempt_id=payload.get("attempt_id"))
+    if payload["task_type"] == "iteration":
+        from .routes.iteration_routes import _run_iteration_task
+        params = payload["params"]
+        return lambda: _run_iteration_task(payload["task_id"], params["parent_task_id"], payload["user_id"],
+            params["n_candidates"], params.get("direction"), attempt_id=payload.get("attempt_id"))
     return None
 
 
@@ -113,7 +123,7 @@ async def dispatch_pending_tasks_once(session=None) -> int:
         return 0
     rows = (await session.scalars(select(Task).where(
         Task.dispatch_pending.is_(True), Task.status.in_(["queued", "pending"]),
-        Task.task_type.in_(["backtest", "strategy_backtest", "research_evaluation"]),
+        Task.task_type.in_(["backtest", "strategy_backtest", "research_evaluation", "composite", "iteration"]),
     ).order_by(Task.created_at).limit(available))).all()
     count = 0
     for record in rows:

@@ -15,10 +15,12 @@ from quantgpt.strategy.spec import StrategySpecV2
 
 def _validate_request_keys(params: dict, *, durable: bool = False) -> None:
     kind = params.get("kind")
-    allowed = {"kind", "config", "definitions" if kind == "factor" else "spec"}
+    allowed = ({"kind", "evaluation_id", "selection_evaluation_id"} if kind == "validation"
+               else {"kind", "config", "definitions" if kind == "factor" else "spec"})
     if durable:
         allowed.add("server_config_frozen")
-    if kind not in {"factor", "strategy"}:
+        allowed.add("config")
+    if kind not in {"factor", "strategy", "validation"}:
         raise ValueError("Unsupported research request kind")
     if set(params) - allowed:
         raise ValueError(f"UNKNOWN_RESEARCH_REQUEST_FIELDS: {sorted(set(params) - allowed)}")
@@ -28,6 +30,18 @@ async def execute_research_request(session, actor_id: uuid.UUID, project_id: uui
                                     params: dict, *, cancel_check=None, task_context: dict | None = None) -> dict:
     await require_project_member(session, actor_id, project_id, write=True)
     _validate_request_keys(params, durable=task_context is not None)
+    if params["kind"] == "validation":
+        from quantgpt.research.evaluations import get_evaluation, verify_frozen_config
+        from quantgpt.research.validation_runner import run_local_validation
+
+        row = await get_evaluation(session, actor_id, project_id, params["evaluation_id"])
+        effective = verify_frozen_config(row)
+        if task_context is not None and (params.get("server_config_frozen") is not True
+                or params.get("config") != effective.model_dump(mode="json")):
+            raise ValueError("SERVER_FROZEN_CONFIG_REQUIRED")
+        return await run_local_validation(session, actor_id, project_id, params["evaluation_id"],
+            selection_evaluation_id=params.get("selection_evaluation_id"), snapshot_root=snapshot_root(),
+            cancel_check=cancel_check, task_context=task_context)
     config = EvaluationConfigV1.model_validate(params["config"])
     if task_context is not None:
         if params.get("server_config_frozen") is not True:
@@ -65,6 +79,23 @@ async def submit_research_request(session, actor_id: uuid.UUID, project_id: uuid
 
     # Freeze the server's complete effective configuration before acceptance.
     _validate_request_keys(params)
+    if params["kind"] == "validation":
+        from quantgpt.research.evaluations import get_evaluation, verify_frozen_config
+
+        await require_project_member(session, actor_id, project_id, write=True)
+        row = await get_evaluation(session, actor_id, project_id, params["evaluation_id"])
+        config = verify_frozen_config(row)
+        if config.backend != "local" or not (row.result_summary or {}).get("performance_observed"):
+            raise ValueError("SUCCESSFUL_LOCAL_EVALUATION_REQUIRED")
+        if config.engine != local_engine_identity():
+            raise ValueError("CODE_VERSION_CHANGED: recompute before validating")
+        if params.get("selection_evaluation_id"):
+            await get_evaluation(session, actor_id, project_id, params["selection_evaluation_id"])
+        payload, created = await submit_durable_task(session, actor_id=str(actor_id), project_id=str(project_id),
+            task_type="research_evaluation", params={**params, "config": config.model_dump(mode="json"),
+                                                      "server_config_frozen": True}, idempotency_key=idempotency_key)
+        return {"task_id": payload["task_id"], "status": payload["status"], "created": created,
+                "result": payload.get("result"), "poll_url": f"/api/v1/tasks/{payload['task_id']}"}
     config = EvaluationConfigV1.model_validate(params["config"])
     if config.backend == "local":
         config = normalize_local_config(config)
@@ -92,8 +123,8 @@ async def submit_research_request(session, actor_id: uuid.UUID, project_id: uuid
             "result": payload.get("result"), "poll_url": f"/api/v1/tasks/{payload['task_id']}"}
 
 
-def run_research_job(payload: dict) -> None:
-    """Registered local worker; the durable dispatcher owns lease heartbeats."""
+def run_research_job(payload: dict, *, event_loop: asyncio.AbstractEventLoop | None = None) -> None:
+    """Keep database sessions on the dispatcher's loop; numerical work uses threads."""
     from quantgpt.db import _get_session_factory
     from quantgpt.task_store import (
         CancelledException,
@@ -134,4 +165,7 @@ def run_research_job(payload: dict) -> None:
         if current:
             await persist_task_to_db_async(task_id, actor, current, strict=True)
 
-    asyncio.run(run())
+    if event_loop is None:
+        asyncio.run(run())
+    else:
+        asyncio.run_coroutine_threadsafe(run(), event_loop).result()

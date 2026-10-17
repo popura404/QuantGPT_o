@@ -101,3 +101,61 @@ test("missing data capability is shown as failed research and cannot run a strat
   await expect(page.getByRole("alert")).toContainText("market_cap");
   await expect(page.getByRole("button", { name: "使用评价证据运行策略" })).toBeDisabled();
 });
+
+test("failed combination submission preserves inputs and shows the error in place", async ({ page }) => {
+  await login(page);
+  await page.route("**/api/v1/composite-backtest", route => route.fulfill({
+    status: 422, contentType: "application/json", body: JSON.stringify({ detail: "组合输入校验失败（浏览器测试）" }),
+  }));
+  await page.getByRole("button", { name: "多因子组合", exact: true }).click();
+  const factors = page.getByPlaceholder("因子表达式", { exact: true });
+  await factors.nth(0).fill("rank(close)");
+  await factors.nth(1).fill("rank(volume)");
+  await page.getByRole("button", { name: "开始组合回测", exact: true }).click();
+  await expect(page.getByText("组合输入校验失败（浏览器测试）", { exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/#composite$/);
+  await expect(factors.nth(0)).toHaveValue("rank(close)");
+  await expect(factors.nth(1)).toHaveValue("rank(volume)");
+  await expect(page.getByRole("button", { name: "开始组合回测", exact: true })).toBeEnabled();
+});
+
+test("task list summaries fetch the full result only when opening the detail drawer", async ({ page }) => {
+  let detailReads = 0;
+  await page.route(/\/api\/v1\/tasks\?/, route => route.fulfill({
+    contentType: "application/json", body: JSON.stringify({ tasks: [
+      { task_id: "summary-browser-test", status: "completed", summary_only: true, expression: "rank(close)" },
+    ], total: 1, page: 1, page_size: 20 }),
+  }));
+  await page.route("**/api/v1/tasks/summary-browser-test", route => {
+    detailReads++;
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify({
+      task_id: "summary-browser-test", status: "completed", result: { detail_marker: "完整结果已按需读取" },
+    }) });
+  });
+  await login(page);
+  const row = page.getByRole("row").filter({ hasText: "summary-browser-test" });
+  await expect(row).toBeVisible();
+  expect(detailReads).toBe(0);
+  await row.click();
+  await expect(page.getByText('"detail_marker": "完整结果已按需读取"', { exact: false })).toBeVisible();
+  expect(detailReads).toBe(1);
+});
+
+test("offline validation runs as a durable task and retains external acceptance blockers", async ({ page }) => {
+  await login(page);
+  await page.getByLabel("研究项目选择").selectOption({ label: "MCP 共享测试项目 · demo_global_equity" });
+  await page.getByRole("button", { name: "项目研究", exact: true }).click();
+  await page.getByRole("button", { name: "准备离线合成数据", exact: true }).click();
+  await page.getByRole("button", { name: "评价因子", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "因子评价 · backtested_train" })).toBeVisible();
+  const accepted = page.waitForResponse(response => response.request().method() === "POST" && response.url().endsWith("/validation-runs"));
+  await page.getByRole("button", { name: "运行离线验证", exact: true }).click();
+  expect((await accepted).status()).toBe(202);
+  await expect(page.getByRole("heading", { name: "离线验证结果已保存", exact: true })).toBeVisible({ timeout: 90_000 });
+  await expect(page.getByRole("table", { name: "离线验证检查" })).toBeVisible();
+  await expect(page.getByText("真实数据验收未完成", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重新运行离线验证", exact: true })).toBeEnabled();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "离线验证结果已保存", exact: true })).toBeVisible();
+  await expect(page.getByText("真实数据验收未完成", { exact: true })).toBeVisible();
+});

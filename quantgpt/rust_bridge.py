@@ -10,6 +10,7 @@ Trusted research uses Python until the compiled extension passes the v2
 differential suite. Installing an extension alone never changes semantics.
 """
 
+import ast
 import logging
 import os
 import platform
@@ -49,6 +50,77 @@ RUST_ENABLED = RUST_AVAILABLE and os.environ.get("QUANTGPT_RUST_ENGINE", "1").lo
 # A mocked Rust call or an importable extension does not certify an operator.
 RUST_VERIFIED_SEMANTICS_VERSION: str | None = None
 RUST_METRICS_VERIFIED = False
+# This is the scope exercised by the compiled-extension differential suite,
+# not permission to enable a build. Keep the build-level gate above separate.
+RUST_DIFFERENTIAL_OPERATORS = frozenset({"rank", "scale", "ts_rank", "ts_shift", "ts_delta"})
+RUST_DIFFERENTIAL_FIELDS = frozenset({"open", "high", "low", "close", "volume", "amount", "pct_change"})
+
+
+def rust_expression_supported(expression: str) -> bool:
+    """Fail closed outside the finite expression subset tested against Python.
+
+    Mixed unparenthesized arithmetic is excluded because the legacy Python
+    parser and Rust parser have different associativity/precedence contracts.
+    Derived fields, aliases, comparisons and other operators stay on Python.
+    """
+    if len(expression) > 1000:
+        return False
+    try:
+        root = ast.parse(expression.strip(), mode="eval")
+    except (SyntaxError, ValueError, RecursionError):
+        return False
+    source = expression.strip()
+
+    def visit(node: ast.AST, depth: int = 0) -> bool:
+        if depth > 100:
+            return False
+        if isinstance(node, ast.Expression):
+            return visit(node.body, depth + 1)
+        if isinstance(node, ast.Name):
+            return node.id in RUST_DIFFERENTIAL_FIELDS
+        if isinstance(node, ast.Constant):
+            segment = ast.get_source_segment(source, node) or ""
+            if type(node.value) not in (int, float) or "e" in segment.lower():
+                return False
+            try:
+                return bool(np.isfinite(float(cast(int | float, node.value))))
+            except (OverflowError, ValueError):
+                return False
+        if isinstance(node, ast.UnaryOp):
+            return isinstance(node.op, ast.USub) and visit(node.operand, depth + 1)
+        if isinstance(node, ast.BinOp):
+            if not isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):
+                return False
+            nesting, operators = 0, 0
+            for index, char in enumerate(ast.get_source_segment(source, node) or ""):
+                if char == "(":
+                    nesting += 1
+                elif char == ")":
+                    nesting -= 1
+                elif nesting == 0 and char in "+-*/" and index > 0:
+                    operators += 1
+            return operators == 1 and visit(node.left, depth + 1) and visit(node.right, depth + 1)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
+            name = node.func.id
+            if name not in RUST_DIFFERENTIAL_OPERATORS:
+                return False
+            if name in {"rank", "scale"}:
+                return len(node.args) == 1 and visit(node.args[0], depth + 1)
+            if len(node.args) != 2:
+                return False
+            window = node.args[1]
+            return (isinstance(window, ast.Constant) and type(window.value) is int
+                    and 1 <= window.value <= 500 and visit(node.args[0], depth + 1))
+        return False
+
+    return bool(visit(root))
+
+
+def _rust_input_supported(df: pd.DataFrame, expression: str) -> bool:
+    """Native f64 conversion is only certified for already-floating inputs."""
+    names = {node.id for node in ast.walk(ast.parse(expression.strip(), mode="eval")) if isinstance(node, ast.Name)}
+    fields = names & RUST_DIFFERENTIAL_FIELDS
+    return all(field in df and str(df[field].dtype) in {"float64", "Float64"} for field in fields)
 
 
 @dataclass(frozen=True)
@@ -79,6 +151,9 @@ def engine_capabilities() -> dict:
         "rust_metrics_verified": RUST_METRICS_VERIFIED,
         "default_engine": "python",
         "semantics_version": OPERATOR_SEMANTICS_VERSION,
+        "rust_differential_operators": sorted(RUST_DIFFERENTIAL_OPERATORS),
+        "rust_differential_fields": sorted(RUST_DIFFERENTIAL_FIELDS),
+        "rust_differential_input_dtypes": ["float64", "Float64"],
     }
 
 
@@ -102,13 +177,17 @@ def eval_factor_expression_with_metadata(
         reason = "rust_disabled"
     elif trusted and RUST_VERIFIED_SEMANTICS_VERSION != OPERATOR_SEMANTICS_VERSION:
         reason = "rust_semantics_unverified"
+    elif trusted and not rust_expression_supported(expression):
+        reason = "rust_expression_outside_verified_subset"
+    elif trusted and not _rust_input_supported(df, expression):
+        reason = "rust_input_dtype_unverified"
     if reason is None:
         try:
             values = _evaluate_panel(lambda work: _eval_rust_expression(work, expression), df)
             result = FactorEvaluationResult(
                 values, "rust", str(getattr(_engine, "__version__", "unknown")), None,
                 OPERATOR_SEMANTICS_VERSION,
-                RUST_VERIFIED_SEMANTICS_VERSION == OPERATOR_SEMANTICS_VERSION,
+                trusted and RUST_VERIFIED_SEMANTICS_VERSION == OPERATOR_SEMANTICS_VERSION,
             )
             values.attrs.update(result.metadata())
             return result
@@ -128,6 +207,11 @@ def _eval_rust_expression(df: pd.DataFrame, expression: str) -> pd.Series:
     engine = _engine
     if engine is None:
         raise RuntimeError("Rust engine unavailable")
+    if "stock_code" in df and "trade_date" not in df:
+        # Preserve each security's observation order on keyless time axes, but
+        # provide contiguous groups to the native engine. _evaluate_panel
+        # restores the original positional IDs after this local stable sort.
+        df = df.sort_values("stock_code", kind="stable")
 
     columns = {}
     for col in df.columns:

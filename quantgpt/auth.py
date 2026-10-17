@@ -16,6 +16,7 @@ import jwt
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import raiseload
 
 from .db import get_db
 from .models import ApiKey, User
@@ -237,7 +238,7 @@ async def _authenticate_api_key(raw_key: str, db: AsyncSession) -> User | None:
         )
     )
     await db.commit()
-    result = await db.execute(select(User).where(User.id == api_key.user_id))
+    result = await db.execute(select(User).options(raiseload("*")).where(User.id == api_key.user_id))
     return result.scalar_one_or_none()
 
 
@@ -285,7 +286,7 @@ async def get_current_user(
     except (ValueError, AttributeError):
         raise HTTPException(status_code=401, detail="无效的 Token")
 
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(select(User).options(raiseload("*")).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="用户不存在或已禁用")
@@ -322,7 +323,7 @@ async def get_current_user_or_admin(
     except (ValueError, AttributeError):
         raise HTTPException(status_code=401, detail="无效的 Token")
 
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(select(User).options(raiseload("*")).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="用户不存在或已禁用")
@@ -383,7 +384,7 @@ async def get_current_user_or_guest(
     except (ValueError, AttributeError):
         raise HTTPException(status_code=401, detail="无效的 Token")
 
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(select(User).options(raiseload("*")).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="用户不存在或已禁用")
@@ -420,7 +421,7 @@ async def get_optional_user(
         user_id = UUID(user_id_str)
     except (ValueError, AttributeError):
         return None
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(select(User).options(raiseload("*")).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         return None

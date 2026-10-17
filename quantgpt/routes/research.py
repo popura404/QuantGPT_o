@@ -112,6 +112,30 @@ class ResearchTaskRequest(BaseModel):
     idempotency_key: str | None = Field(None, min_length=1, max_length=160)
 
 
+class ValidationRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    selection_evaluation_id: str | None = Field(None, min_length=1, max_length=80)
+    idempotency_key: str | None = Field(None, min_length=1, max_length=160)
+
+
+@router.post("/projects/{project_id}/evaluations/{evaluation_id}/validation-runs", status_code=202)
+async def post_validation_run(project_id: uuid.UUID, evaluation_id: str, req: ValidationRunRequest,
+                              user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from quantgpt.research.jobs import submit_research_request
+    from quantgpt.task_store import TaskConflictError
+
+    try:
+        return await submit_research_request(db, uuid.UUID(str(user.id)), project_id,
+            {"kind": "validation", "evaluation_id": evaluation_id,
+             "selection_evaluation_id": req.selection_evaluation_id}, req.idempotency_key)
+    except ProjectAccessError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except TaskConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 class PortfolioRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     signal_ref: dict

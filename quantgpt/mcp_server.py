@@ -3915,6 +3915,28 @@ async def run_research_strategy(project_id: str, spec: dict, config: dict,
 
 
 @mcp.tool()
+async def validate_research_evaluation(project_id: str, evaluation_id: str,
+                                       selection_evaluation_id: str | None = None,
+                                       idempotency_key: str | None = None) -> str:
+    """Queue immutable offline replay/validation; external data acceptance remains blocked."""
+    import uuid
+
+    from .db import _get_session_factory
+    from .research.jobs import submit_research_request
+    from .task_executor import start_task_dispatcher
+
+    try:
+        async with _get_session_factory()() as session:
+            result = await submit_research_request(session, resolve_mcp_actor(), uuid.UUID(project_id),
+                {"kind": "validation", "evaluation_id": evaluation_id,
+                 "selection_evaluation_id": selection_evaluation_id}, idempotency_key)
+        start_task_dispatcher()
+        return _strategy_dumps(result)
+    except Exception as exc:
+        return _strategy_dumps({"error_code": "RESEARCH_VALIDATION_BLOCKED", "message": str(exc), "retryable": False})
+
+
+@mcp.tool()
 async def get_research_artifact(project_id: str, artifact_id: str) -> str:
     """Read a content-verified artifact after checking live project membership."""
     import uuid

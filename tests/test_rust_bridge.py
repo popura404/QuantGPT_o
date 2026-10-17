@@ -131,3 +131,56 @@ class TestComputeMetricsRust:
         rets = pd.Series([0.01, -0.02, 0.015, -0.005, 0.008])
         result = compute_metrics_rust(rets)
         assert result == {}
+
+
+@pytest.mark.parametrize("expression", [
+    "rank(close)", "scale(close)", "rank(ts_rank(close, 3))", "ts_delta(close, 2)",
+    "close / open", "((close + open) * volume) / (volume + 1)",
+])
+def test_differential_subset_accepts_only_supported_syntax(expression):
+    from quantgpt.rust_bridge import rust_expression_supported
+
+    assert rust_expression_supported(expression)
+
+
+@pytest.mark.parametrize("expression", [
+    "ts_mean(close, 3)", "cap", "returns", "vwap", "rank(ts_std(close, 3))", "close > open",
+    "close + open - volume", "close * open / volume", "ts_rank(close, 2.5)", "ts_rank(close, 501)",
+    "ts_shift(close, 0)", "close ** 2", "1e-10", "True", "unknown(close)", "rank(close, 2)",
+])
+def test_differential_subset_fails_closed(expression):
+    from quantgpt.rust_bridge import rust_expression_supported
+
+    assert not rust_expression_supported(expression)
+
+
+def test_build_gate_cannot_enable_unverified_operators(market_df, monkeypatch):
+    from quantgpt import rust_bridge
+
+    class MustNotRun:
+        def eval_expression(self, *args):
+            pytest.fail("An operator outside the differential subset must remain on Python")
+
+    monkeypatch.setattr(rust_bridge, "_engine", MustNotRun())
+    monkeypatch.setattr(rust_bridge, "RUST_ENABLED", True)
+    monkeypatch.setattr(rust_bridge, "RUST_VERIFIED_SEMANTICS_VERSION", rust_bridge.OPERATOR_SEMANTICS_VERSION)
+    result = rust_bridge.eval_factor_expression_with_metadata(market_df, "ts_mean(close, 3)")
+    assert result.engine_used == "python"
+    assert result.fallback_reason == "rust_expression_outside_verified_subset"
+
+
+def test_native_float_conversion_cannot_silently_change_large_integer_ranks(monkeypatch):
+    from quantgpt import rust_bridge
+
+    class MustNotRun:
+        def eval_expression(self, *args):
+            pytest.fail("Integer precision has not been certified for native f64 conversion")
+
+    frame = pd.DataFrame({"close": [2**53, 2**53 + 1]})
+    monkeypatch.setattr(rust_bridge, "_engine", MustNotRun())
+    monkeypatch.setattr(rust_bridge, "RUST_ENABLED", True)
+    monkeypatch.setattr(rust_bridge, "RUST_VERIFIED_SEMANTICS_VERSION", rust_bridge.OPERATOR_SEMANTICS_VERSION)
+    result = rust_bridge.eval_factor_expression_with_metadata(frame, "rank(close)")
+    assert result.engine_used == "python"
+    assert result.fallback_reason == "rust_input_dtype_unverified"
+    np.testing.assert_allclose(result.values, [.5, 1.])

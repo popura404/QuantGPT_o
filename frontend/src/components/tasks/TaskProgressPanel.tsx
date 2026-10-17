@@ -6,6 +6,7 @@ import TaskStatusBadge from "./TaskStatusBadge";
 
 function taskTypeLabel(taskType?: string): string {
   if (taskType === "strategy_backtest") return "策略回测";
+  if (taskType === "research_evaluation") return "研究计算";
   if (taskType === "composite") return "组合回测";
   if (taskType === "iteration") return "因子迭代";
   if (taskType === "wq_brain_submit") return "WQ 模拟";

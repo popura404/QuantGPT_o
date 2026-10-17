@@ -362,6 +362,7 @@ export interface Session {
 }
 
 export interface Task {
+  summary_only?: boolean;
   task_id: string;
   status: TaskStatus;
   revision?: number;

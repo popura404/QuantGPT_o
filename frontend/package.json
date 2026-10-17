@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit --incremental false",
     "build": "tsc --noEmit --incremental false && vite build",
     "preview": "vite preview",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test": "node --test tests/*.test.cjs"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

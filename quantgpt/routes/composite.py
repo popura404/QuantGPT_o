@@ -1,18 +1,27 @@
 """Composite (multi-factor) backtest API routes."""
 
 import logging
-import threading
-import time
-import uuid
 from pathlib import Path
 from typing import Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import get_current_user
+from ..db import get_db
 from ..models import User
+from ..research.projects import ProjectAccessError
 from ..schemas import fetch_market_data, validate_date_format, validate_universe_value
+from ..task_executor import dispatch_durable_task
+from ..task_store import (
+    CancelledException,
+    TaskConflictError,
+    check_cancelled,
+    snapshot_task,
+    submit_durable_task,
+    transition_task,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,12 +90,12 @@ async def composite_backtest(
     req: CompositeBacktestRequest,
     request: Request,
     user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """提交多因子等权/加权组合回测任务，评估因子组合的综合表现。"""
     from ..task_store import (  # noqa: I001
         MAX_ACTIVE_TASKS, active_task_count as _active_task_count,
         check_rate_limit as _check_rate_limit, cleanup_tasks as _cleanup_tasks,
-        tasks as _tasks, tasks_lock as _tasks_lock,
     )
 
     client_ip = request.client.host if request.client else "unknown"
@@ -97,41 +106,23 @@ async def composite_backtest(
 
     _cleanup_tasks()
 
-    task_id = uuid.uuid4().hex[:12]
     user_id = str(user.id)
-    factors_list = [f.model_dump() for f in req.factors]
-
-    with _tasks_lock:
-        _tasks[task_id] = {
-            "task_id": task_id,
-            "user_id": user_id,
-            "session_id": req.session_id,
-            "status": "pending",
-            "task_type": "composite",
-            "params": {
-                "factors": factors_list,
-                "combination_method": req.combination_method,
-                "universe": req.universe,
-                "start_date": req.start_date,
-                "end_date": req.end_date,
-                "n_groups": req.n_groups,
-                "holding_period": req.holding_period,
-                "benchmark": req.benchmark,
-            },
-            "created_at": time.time(),
-        }
-
-    thread = threading.Thread(
-        target=_run_composite_task,
-        args=(task_id, req, user_id),
-        daemon=True,
-    )
-    thread.start()
-
-    return {"task_id": task_id, "status": "pending"}
+    try:
+        task, created = await submit_durable_task(
+            db, actor_id=user_id, task_type="composite", params=req.model_dump(),
+            session_id=req.session_id, idempotency_key=request.headers.get("Idempotency-Key"),
+        )
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TaskConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if created:
+        await dispatch_durable_task(db, task["task_id"])
+    return {"task_id": task["task_id"], "status": task["status"], "reused": not created}
 
 
-def _run_composite_task(task_id: str, req: CompositeBacktestRequest, user_id: str):
+def _run_composite_task(task_id: str, req: CompositeBacktestRequest, user_id: str, *,
+                        attempt_id: str | None = None):
     """Background worker for composite backtest."""
     import traceback
 
@@ -140,20 +131,18 @@ def _run_composite_task(task_id: str, req: CompositeBacktestRequest, user_id: st
     from ..report import generate_report
     from ..task_store import cleanup_reports as _cleanup_reports
     from ..task_store import persist_task_to_db as _persist_task_to_db
-    from ..task_store import tasks as _tasks
-
-    task = _tasks.get(task_id)
+    task = snapshot_task(task_id, expected_attempt=attempt_id)
     if not task:
         return
 
     report_filename = None
     try:
-        task["status"] = "fetching_data"
+        check_cancelled(task_id, expected_attempt=attempt_id)
+        transition_task(task_id, "fetching_data", expected_attempt=attempt_id)
         try:
             market_df, stock_codes = fetch_market_data(req.universe, req.start_date, req.end_date)
         except ValueError as e:
-            task["status"] = "failed"
-            task["error"] = str(e)
+            transition_task(task_id, "failed", expected_attempt=attempt_id, error=str(e))
             return
 
         # Enrich with fundamental data if any factor uses fundamental vars
@@ -162,11 +151,13 @@ def _run_composite_task(task_id: str, req: CompositeBacktestRequest, user_id: st
         for f in req.factors:
             all_fund_vars |= detect_fundamental_vars(f.expression)
         if all_fund_vars:
-            task["status"] = "fetching_fundamentals"
+            check_cancelled(task_id, expected_attempt=attempt_id)
+            transition_task(task_id, "fetching_fundamentals", expected_attempt=attempt_id)
             logger.info(f"[{task_id}] composite: enriching with fundamentals: {all_fund_vars}")
             market_df = enrich_market_data(market_df, all_fund_vars, stock_codes, req.start_date, req.end_date)
 
-        task["status"] = "backtesting"
+        check_cancelled(task_id, expected_attempt=attempt_id)
+        transition_task(task_id, "backtesting", expected_attempt=attempt_id)
         factors_list = [f.model_dump() for f in req.factors]
         result = run_composite_backtest(
             market_df=market_df,
@@ -176,7 +167,8 @@ def _run_composite_task(task_id: str, req: CompositeBacktestRequest, user_id: st
             holding_period=req.holding_period,
         )
 
-        task["status"] = "generating_report"
+        check_cancelled(task_id, expected_attempt=attempt_id)
+        transition_task(task_id, "generating_report", expected_attempt=attempt_id)
         bm_returns = None
         try:
             bm_returns = fetch_benchmark_returns(req.benchmark, req.start_date, req.end_date)
@@ -195,9 +187,7 @@ def _run_composite_task(task_id: str, req: CompositeBacktestRequest, user_id: st
         report_filename = Path(report_result["report_path"]).name
 
         composite_expr = result.get("composite_expression", "")
-        task["expression"] = composite_expr
-        task["status"] = "completed"
-        task["result"] = {
+        task_result = {
             "report_url": f"/api/v1/reports/{report_filename}",
             "metrics": report_result["metrics"],
             "backtest_summary": {
@@ -231,23 +221,28 @@ def _run_composite_task(task_id: str, req: CompositeBacktestRequest, user_id: st
                 "generated_expression": composite_expr,
             },
         }
+        check_cancelled(task_id, expected_attempt=attempt_id)
+        transition_task(task_id, "completed", expected_attempt=attempt_id,
+                        expression=composite_expr, result=task_result)
         _cleanup_reports(user_id)
 
+    except CancelledException:
+        transition_task(task_id, "cancelled", expected_attempt=attempt_id)
+        report_filename = None
     except Exception as e:
         logger.error(f"[{task_id}] composite backtest failed: {traceback.format_exc()}")
-        task["status"] = "failed"
-        task["error"] = f"多因子组合回测失败: {str(e)}"
+        transition_task(task_id, "failed", expected_attempt=attempt_id, error=f"多因子组合回测失败: {str(e)}")
     finally:
-        if "completed_at" not in task:
-            task["completed_at"] = time.time()
+        task = snapshot_task(task_id, expected_attempt=attempt_id)
         try:
-            _persist_task_to_db(task_id, user_id, task, report_filename)
+            if task is not None:
+                _persist_task_to_db(task_id, user_id, task, report_filename)
         except Exception as e:
             logger.error(f"[{task_id}] DB persist error: {e}")
 
 
 @router.post("/factor-correlation")
-async def factor_correlation(
+def factor_correlation(
     req: CorrelationRequest,
     user: User = Depends(get_current_user),
 ):
@@ -273,7 +268,7 @@ async def factor_correlation(
 
 
 @router.post("/factor-attribution")
-async def factor_attribution(
+def factor_attribution(
     req: AttributionRequest,
     user: User = Depends(get_current_user),
 ):

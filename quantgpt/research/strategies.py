@@ -138,7 +138,7 @@ async def run_strategy_evaluation(session: AsyncSession, actor_id: uuid.UUID, pr
         row.evidence_status = "research_only"
     await guard_evaluation_window(session, actor_id, row, config)
     await session.commit()
-    panel = load_evaluation_panel(config, snapshot_root)
+    panel = await asyncio.to_thread(load_evaluation_panel, config, snapshot_root)
     panel = cast(pd.DataFrame, panel[pd.to_datetime(panel["trade_date"]) <= pd.Timestamp(config.window.end_session)].copy())
     panel.attrs["frozen_research_input"] = True
     numeric_spec = spec.calculation_spec()

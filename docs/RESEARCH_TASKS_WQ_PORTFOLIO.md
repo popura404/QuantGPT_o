@@ -4,7 +4,7 @@
 
 ## 1. P11：接受、派发与不可变请求
 
-核心入口为 `task_store.submit_durable_task`、`task_executor.dispatch_durable_task`、`research.jobs.submit_research_request`。新研究任务为 `task_type=research_evaluation`，完整请求保存在 `params`，`kind` 为 `factor` 或 `strategy`。
+核心入口为 `task_store.submit_durable_task`、`task_executor.dispatch_durable_task`、`research.jobs.submit_research_request`。新研究任务为 `task_type=research_evaluation`，完整请求保存在 `params`，`kind` 为 `factor`、`strategy` 或 `validation`。
 
 1. 校验请求字段；未知顶层字段明确拒绝。因子定义、评价配置及策略规格使用版本化模型验证。
 2. 服务端补齐实际有效配置。本地引擎身份来自运行版本和源文件内容；WQ 补齐固定及可配置远程 settings，不能由调用者声明已验证引擎或底层数据版本。
@@ -43,6 +43,10 @@ worker 发布使用两层保护：
 2026-10-05 补充的缓存竞态修复针对一个不能仅靠数据库保护解决的缺陷：旧 worker 在数据库被拒绝前，曾可能先把新 attempt 缓存标记为取消或完成。新增真实线程/SQLite 回归覆盖迟到成功、迟到取消异常、claim 快照不受缓存改变影响，以及旧 attempt 不得覆盖重试 queued 状态。
 
 SSE 使用 revision 作为事件 ID，同阶段进度变化也发送；携带 `Last-Event-ID` 重连时返回当前快照并继续订阅。当前没有历史事件流保留或完整事件重放承诺。内存完成结果在其 revision 持久化前不作为已发布结果展示。
+
+2026-10-18：组合回测和迭代入口也使用持久接受/outbox，支持 `Idempotency-Key`。迭代接受时冻结父任务结果，重启后不依赖内存；选定候选的索引写回持久结果。两个 worker 均按 attempt 校验更新，在计算及报告发布边界检查取消。对比、相关性与归因等同步计算路由在 FastAPI 线程池执行，避免行情等待或 Future.result 阻塞事件循环。
+
+研究任务的线程外壳将数据库协程交回 dispatcher 所属事件循环，避免共享 AsyncEngine 的连接池在不同 loop 间争用；快照读取和数值计算使用 `asyncio.to_thread`。独立 worker 无调度 loop 时仍支持原 standalone 入口。单连接文件 SQLite 的真实争用测试覆盖 API/worker 使用同一 loop 并成功完成持久任务。迭代候选报告也通过任务的条件更新事务发布，取消先提交时不能再新增报告记录。
 
 ## 3. 项目权限与撤权
 

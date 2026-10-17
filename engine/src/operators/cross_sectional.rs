@@ -13,9 +13,18 @@ pub fn par_rank(data: &[f64], date_groups: &[(usize, usize)]) -> Vec<f64> {
         });
         let count = indices.len() as f64;
         if count < 1.0 { return vec![]; }
-        indices.iter().enumerate().map(|(rank, &idx)| {
-            (start + idx, rank as f64 / (count - 1.0).max(1.0))
-        }).collect()
+        let mut ranked = Vec::with_capacity(indices.len());
+        let mut first = 0;
+        while first < indices.len() {
+            let mut end = first + 1;
+            while end < indices.len() && data[start + indices[end]] == data[start + indices[first]] {
+                end += 1;
+            }
+            let percentile = (first + 1 + end) as f64 / (2.0 * count);
+            ranked.extend(indices[first..end].iter().map(|&idx| (start + idx, percentile)));
+            first = end;
+        }
+        ranked
     }).collect();
 
     for group in results {

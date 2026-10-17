@@ -116,8 +116,8 @@ export async function cancelTask(taskId: string): Promise<void> {
   if (!res.ok) throw new Error(await parseError(res));
 }
 
-export async function getTask(taskId: string): Promise<Task> {
-  const res = await authFetch(`${BASE}/api/v1/tasks/${taskId}`);
+export async function getTask(taskId: string, signal?: AbortSignal): Promise<Task> {
+  const res = await authFetch(`${BASE}/api/v1/tasks/${taskId}`, { signal });
   if (!res.ok) throw new TaskFetchError(res.status, await parseError(res));
   return res.json();
 }
@@ -126,46 +126,61 @@ export function streamTask(
   taskId: string,
   onUpdate: (task: Task) => void,
   onDone: () => void,
-  onError?: (message: string) => void,
+  onError?: (message: string, fatal?: boolean) => void,
 ): () => void {
   let closed = false;
-  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let eventSource: EventSource | null = null;
   let retryCount = 0;
-  let lastStreamError: string | null = null;
   let lastPollingError: string | null = null;
+  const controller = new AbortController();
   const MAX_RETRIES = 3;
 
   function cleanup() {
     closed = true;
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    controller.abort();
+    if (timer !== null) { clearTimeout(timer); timer = null; }
+    eventSource?.close();
+    eventSource = null;
   }
 
-  function startPolling(context?: string) {
-    if (closed || pollTimer) return;
-    if (context) lastStreamError = context;
-    pollTimer = setInterval(async () => {
-      if (closed) { cleanup(); return; }
-      try {
-        const task = await getTask(taskId);
-        lastPollingError = null;
-        onUpdate(task);
-        if (TERMINAL_TASK_STATUSES.has(task.status)) {
-          cleanup();
-          onDone();
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "任务状态读取失败";
-        if (err instanceof TaskFetchError && [401, 403, 404].includes(err.status)) {
-          cleanup();
-          onError?.(message);
-          return;
-        }
-        if (message !== lastPollingError) {
-          lastPollingError = message;
-          onError?.(message);
-        }
+  function complete() {
+    if (closed) return;
+    cleanup();
+    onDone();
+  }
+
+  function schedule(work: () => void, delay: number) {
+    if (closed) return;
+    timer = setTimeout(() => { timer = null; work(); }, delay);
+  }
+
+  async function poll() {
+    if (closed) return;
+    try {
+      const task = await getTask(taskId, controller.signal);
+      if (closed) return;
+      lastPollingError = null;
+      onUpdate(task);
+      if (TERMINAL_TASK_STATUSES.has(task.status)) {
+        complete();
+        return;
       }
-    }, 3000);
+    } catch (err) {
+      if (closed) return;
+      const message = err instanceof Error ? err.message : "任务状态读取失败";
+      if (err instanceof TaskFetchError && [401, 403, 404].includes(err.status)) {
+        cleanup();
+        onError?.(message, true);
+        return;
+      }
+      if (message !== lastPollingError) {
+        lastPollingError = message;
+        onError?.(message);
+      }
+    }
+    // Schedule only after this request settles, so slow responses cannot overlap.
+    schedule(() => { void poll(); }, 3000);
   }
 
   async function acquireTicket(): Promise<{ ticket: string | null; error?: string; fatal?: boolean }> {
@@ -173,77 +188,60 @@ export function streamTask(
     try {
       const res = await authFetch(`${BASE}/api/v1/tasks/${taskId}/sse-ticket`, {
         method: "POST",
+        signal: controller.signal,
       });
       if (!res.ok) {
-        return {
-          ticket: null,
-          error: await parseError(res),
-          fatal: [401, 403, 404].includes(res.status),
-        };
+        return { ticket: null, error: await parseError(res), fatal: [401, 403, 404].includes(res.status) };
       }
       const data = await res.json();
       return { ticket: data.ticket as string };
     } catch (err) {
-      return {
-        ticket: null,
-        error: err instanceof Error ? err.message : "SSE ticket 获取失败",
-      };
+      return { ticket: null, error: err instanceof Error ? err.message : "SSE ticket 获取失败" };
     }
   }
 
   async function connect() {
     if (closed) return;
-
     const { ticket, error: ticketError, fatal } = await acquireTicket();
     if (closed) return;
     if (ticketError) {
-      lastStreamError = ticketError;
       if (fatal) {
         cleanup();
-        onError?.(ticketError);
-        return;
+        onError?.(ticketError, true);
+      } else {
+        schedule(() => { void poll(); }, 3000);
       }
-      startPolling(ticketError);
       return;
     }
     const url = `${BASE}/api/v1/tasks/${taskId}/stream${ticket ? `?ticket=${ticket}` : ""}`;
-
     const es = new EventSource(url);
+    eventSource = es;
 
     es.addEventListener("update", (e) => {
+      if (closed || eventSource !== es) return;
       retryCount = 0;
       const task: Task = JSON.parse(e.data);
       onUpdate(task);
+      if (TERMINAL_TASK_STATUSES.has(task.status)) complete();
     });
-
     es.addEventListener("done", () => {
-      es.close();
-      cleanup();
-      onDone();
+      if (eventSource === es) complete();
     });
-
     es.addEventListener("error", () => {
+      if (closed || eventSource !== es) return;
       es.close();
-      if (closed) return;
+      eventSource = null;
       retryCount++;
-      lastStreamError = "任务流连接失败";
       if (retryCount <= MAX_RETRIES) {
-        // Retry SSE after a short delay (need new ticket each time)
-        setTimeout(connect, 2000 * retryCount);
+        schedule(() => { void connect(); }, 2000 * retryCount);
       } else {
-        // Fall back to polling
-        startPolling(lastStreamError);
+        schedule(() => { void poll(); }, 3000);
       }
     });
-
-    // Store close function
-    closeFn = () => { es.close(); cleanup(); };
   }
 
-  let closeFn = () => { cleanup(); };
-  connect();
-
-  return () => closeFn();
+  void connect();
+  return cleanup;
 }
 
 export function getReportUrl(reportUrl: string): string {

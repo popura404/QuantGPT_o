@@ -16,6 +16,7 @@ from ..fundamental_data import detect_fundamental_vars, enrich_market_data
 from ..neutralize import neutralize_factor
 from ..research.contracts import SEMANTICS_VERSION, SimulationConfigV1
 from ..research.ledger import simulate_target_weights
+from ..research.returns import annualized_return
 from ..validation.oos_score import compute_oos_score, compute_oos_selection_score
 from ..validation.split import OOSConfig, split_by_dates
 from .adapters import get_adapter
@@ -676,7 +677,7 @@ def _strategy_metrics(strategy_returns: pd.Series, turnover_by_rebalance: pd.Dat
     ic_std = float(cast(float, rank_ic_series.std())) if len(rank_ic_series) else 0.0
     return {
         "total_return": float((1 + strategy_returns).prod() - 1),
-        "annual_return": float((1 + mean) ** 252 - 1),
+        "annual_return": annualized_return(strategy_returns),
         "sharpe": float(mean / std * np.sqrt(252)) if std > 0 else 0.0,
         "max_drawdown": float(_calc_max_drawdown(strategy_returns)),
         "turnover": turnover,
