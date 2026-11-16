@@ -130,6 +130,24 @@ async def test_final_validation_uses_same_selected_candidate_and_reruns_folds(cl
     assert sum(fold["sessions"] for fold in folds["windows"]) == 80
     assert all(fold["sessions"] >= 20 for fold in folds["windows"])
     assert report["allowed"] is False and report["external_acceptance"]["status"] == "not_run"
+    # A second caller can request an unpaired diagnostic. Its arrival cannot
+    # overwrite the current paired evidence, even when the paired retry is cached.
+    from quantgpt.models import User
+    from quantgpt.research.projects import set_project_member
+    from quantgpt.research.validation import evaluate_profile
+
+    member = User(id=uuid.uuid4(), email="validator@example.com", is_active=True)
+    db_session.add(member)
+    await db_session.flush()
+    await set_project_member(db_session, test_user.id, project, member.id, "researcher")
+    await db_session.commit()
+    unpaired = await run_local_validation(db_session, member.id, project, evaluated["evaluation_id"], snapshot_root=root)
+    assert unpaired["checks"]["oos"]["status"] == "failed"
+    again = await run_local_validation(db_session, test_user.id, project, evaluated["evaluation_id"],
+        snapshot_root=root, selection_evaluation_id=selected["evaluation_id"])
+    profile = await evaluate_profile(db_session, member.id, project, evaluated["evaluation_id"], profile="local_factor")
+    assert profile["offline_validation"]["report_key"] == again["report_key"] == report["report_key"]
+    assert profile["checks"]["oos"]["status"] == "passed"
     demo["definitions"][0]["expression"] = "-rank(close)"
     wrong = await _evaluate(client, auth_headers, base, demo)
     with pytest.raises(ValueError, match="SELECTION_LINEAGE_MISMATCH"):

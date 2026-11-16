@@ -52,3 +52,44 @@ async def test_unknown_request_fields_rejected_before_durable_acceptance(db_sess
     request = {**_request(), "extra_behavior": "silently ignored"}
     with pytest.raises(ValueError, match="UNKNOWN_RESEARCH_REQUEST_FIELDS"):
         await submit_research_request(db_session, test_user.id, project.id, request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra", [
+    {"round_id": "untrusted"}, {"direction_id": "untrusted"},
+    {"parent_evaluation_id": "untrusted"}, {"kind": "round_final", "round_id": "untrusted"},
+])
+async def test_public_task_payload_cannot_set_round_worker_metadata(db_session, test_user, extra):
+    project = await create_project(db_session, test_user.id, name="Untrusted metadata")
+    request = {**_request(), **extra}
+    for call in (submit_research_request, execute_research_request):
+        with pytest.raises(ValueError, match="Unsupported research request kind|UNKNOWN_RESEARCH_REQUEST_FIELDS"):
+            await call(db_session, test_user.id, project.id, request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("backend", "failures", "calls"), [("local", 1, 2), ("local", 3, 3), ("wq", 1, 1)])
+async def test_retry_local_transaction_only(db_session, test_user, monkeypatch, backend, failures, calls):
+    from quantgpt.research.evaluation_leases import ExecutionLeaseLost
+
+    actor = test_user.id
+    project = await create_project(db_session, actor, name="Retry fenced local computation")
+    project_id = project.id
+    await db_session.commit()
+    attempts = []
+
+    async def execute(*args):
+        attempts.append(True)
+        if len(attempts) <= failures:
+            raise ExecutionLeaseLost("lost")
+        return {"completed": True}
+
+    monkeypatch.setattr("quantgpt.research.jobs._execute_once", execute)
+    request = _request()
+    request["config"]["backend"] = backend
+    if calls > failures:
+        assert await execute_research_request(db_session, actor, project_id, request) == {"completed": True}
+    else:
+        with pytest.raises(ExecutionLeaseLost):
+            await execute_research_request(db_session, actor, project_id, request)
+    assert len(attempts) == calls

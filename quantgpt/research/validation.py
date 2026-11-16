@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from collections.abc import Iterable
 
-from quantgpt.models import Experiment, ExperimentArtifact
+from sqlalchemy import case, func, select
+
+from quantgpt.models import Experiment, ExperimentArtifact, ResearchDirection, ResearchRound
+from quantgpt.research.contracts import content_hash
 from quantgpt.research.evaluations import get_evaluation, read_artifact, verify_frozen_config
 
+POLICY_VERSION = "offline_validation/v2"
 VALIDATION_PROFILES = {
     "local_factor": {"required": ("definition_config", "replayable_data", "data_quality", "oos",
                                   "label_boundaries", "walk_forward", "placebo", "trial_correction", "similarity"),
@@ -19,28 +23,80 @@ VALIDATION_PROFILES = {
 }
 
 
-async def observed_trial_count(session, project_id) -> int:
-    # JSON predicate is portable across SQLite/PG and counts observed rejected
-    # candidates too. Same immutable retries share one evaluation identity.
-    evaluations = int((await session.scalar(select(func.count()).select_from(Experiment).where(
-        Experiment.project_id == project_id,
-        Experiment.result_summary["performance_observed"].as_boolean().is_(True),
-    ))) or 0)
-    payloads = (await session.scalars(select(ExperimentArtifact.payload).join(Experiment).where(
-        Experiment.project_id == project_id, ExperimentArtifact.artifact_type == "portfolio_optimization",
-    ))).all()
-    portfolios: dict[str, int] = {}
+def _portfolio_trial_keys(payloads: Iterable) -> set[str]:
+    recorded: dict[str, set[str]] = {}
+    declared_counts: dict[str, int] = {}
     for payload in payloads:
         if not isinstance(payload, dict) or not payload.get("portfolio_hash"):
             continue
-        trials = payload.get("parameter_trials") or []
-        observed = sum(isinstance(trial, dict) and trial.get("performance_observed") is True for trial in trials)
+        portfolio_hash = str(payload["portfolio_hash"])
+        keys = recorded.setdefault(portfolio_hash, set())
+        config = dict(payload.get("config") or {})
+        config.pop("risk_aversion_candidates", None)
+        config.pop("risk_aversion", None)
+        # The final as-of allocation is not one of the observed validation trials.
+        config.pop("asof_session", None)
+        for idx, trial in enumerate(payload.get("parameter_trials") or []):
+            if not isinstance(trial, dict) or trial.get("performance_observed") is not True:
+                continue
+            costs = [item["cost_bps"] for item in trial.get("cost_sensitivity", []) if "cost_bps" in item]
+            for cost in set(costs or [config.get("transaction_cost_bps")]):
+                if payload.get("signal_ref") and "risk_aversion" in trial:
+                    identity = [payload["signal_ref"]["content_sha256"], payload["evaluation_id"],
+                                config, trial["risk_aversion"], cost]
+                else:
+                    identity = [portfolio_hash, idx, cost]
+                keys.add("portfolio:" + content_hash("quantgpt.portfolio_trial/v1", identity))
         declared = payload.get("performance_observed_trials")
         if isinstance(declared, int) and not isinstance(declared, bool):
-            observed = max(observed, declared)
-        identity = str(payload["portfolio_hash"])
-        portfolios[identity] = max(portfolios.get(identity, 0), observed)
-    return evaluations + sum(portfolios.values())
+            declared_counts[portfolio_hash] = max(declared, declared_counts.get(portfolio_hash, 0))
+    # A retry may preserve only a count. Fill that gap once after combining
+    # every persisted copy of the same optimization.
+    combined: set[str] = set()
+    for portfolio_hash, keys in recorded.items():
+        combined.update(keys)
+        combined.update(f"portfolio:{portfolio_hash}:legacy:{i}"
+                        for i in range(len(keys), declared_counts.get(portfolio_hash, 0)))
+    return combined
+
+
+async def build_trial_manifest(session, project_id, evaluation_ids: Iterable[str] | None, *,
+                               legacy_trials: Iterable[dict] = ()) -> dict:
+    """Create a stable family of server-observed calculations for this project or a frozen round."""
+    selection = select(Experiment.experiment_id, Experiment.evaluation_hash,
+                       Experiment.result_summary["performance_observed"].as_boolean()).where(
+        Experiment.project_id == project_id)
+    optimization = select(ExperimentArtifact.payload).join(Experiment).where(
+        Experiment.project_id == project_id, ExperimentArtifact.artifact_type == "portfolio_optimization")
+    requested = set(evaluation_ids) if evaluation_ids is not None else None
+    if requested is not None:
+        selection = selection.where(Experiment.experiment_id.in_(requested))
+        optimization = optimization.where(Experiment.experiment_id.in_(requested))
+    rows = (await session.execute(selection)).all()
+    if requested is not None and requested != {r[0] for r in rows}:
+        raise ValueError("ROUND_EVALUATION_NOT_FOUND")
+    evaluations = {f"evaluation:{digest or identity}" for identity, digest, observed in rows if observed}
+    portfolios = _portfolio_trial_keys((await session.scalars(optimization)).all())
+    imported = {record["trial_key"] for record in legacy_trials}
+    keys = sorted(evaluations | portfolios | imported)
+    manifest = {"schema_version": "trial_manifest/v1", "observed_trials": len(keys), "trial_keys": keys,
+                "evaluation_ids": sorted(r[0] for r in rows if r[2]),
+                "unobserved_evaluation_ids": sorted(r[0] for r in rows if not r[2]),
+                "evaluation_trials": len(evaluations), "portfolio_trials": len(portfolios),
+                "legacy_trials": len(imported)}
+    return {**manifest, "manifest_hash": content_hash("quantgpt.trial_manifest/v1", manifest)}
+
+
+async def observed_trial_count(session, project_id) -> int:
+    identity = func.coalesce(Experiment.evaluation_hash, Experiment.experiment_id)
+    evaluations = await session.scalar(select(func.count(func.distinct(identity))).where(
+        Experiment.project_id == project_id, Experiment.result_summary["performance_observed"].as_boolean().is_(True)))
+    payloads = await session.scalars(select(ExperimentArtifact.payload).join(Experiment).where(
+        Experiment.project_id == project_id, ExperimentArtifact.artifact_type == "portfolio_optimization"))
+    sources = await session.scalars(select(ResearchDirection.legacy_sources).join(ResearchRound).where(
+        ResearchRound.project_id == project_id))
+    legacy_keys = {trial["trial_key"] for direction in sources for source in direction for trial in source["trials"]}
+    return int(evaluations or 0) + len(_portfolio_trial_keys(payloads)) + len(legacy_keys)
 
 
 async def evaluate_profile(session, actor_id, project_id, evaluation_id: str, *, profile: str) -> dict:
@@ -61,11 +117,32 @@ async def evaluate_profile(session, actor_id, project_id, evaluation_id: str, *,
     checks = summary.get("validation_checks") or {}
     offline = None
     if profile != "wq_remote":
-        record = (await session.scalars(select(ExperimentArtifact).where(
+        round_context = None
+        if row.evaluation_config is not None and row.evaluation_config["config"]["window"]["phase"] == "final":
+            from quantgpt.research.round_final import final_validation_context
+
+            round_context = await final_validation_context(session, project_id, evaluation_id)
+        query = select(ExperimentArtifact).where(
             ExperimentArtifact.experiment_id == evaluation_id,
             ExperimentArtifact.artifact_type == "offline_validation",
             ExperimentArtifact.payload["profile"].as_string() == profile,
-        ).order_by(ExperimentArtifact.created_at.desc()))).first()
+        )
+        payload = ExperimentArtifact.payload
+        if round_context is not None:
+            manifest = round_context["trial_manifest"]
+            n_trials = manifest["observed_trials"]
+            query = query.where(payload["round_id"].as_string() == str(round_context["round_id"]),
+                                payload["selection_evaluation_id"].as_string() == round_context["selection_evaluation_id"],
+                                payload["trial_manifest_hash"].as_string() == manifest["manifest_hash"])
+        else:
+            n_trials = await observed_trial_count(session, project_id)
+        # An unpaired diagnostic or a late completion of an older replay cannot
+        # supersede a current report with pre-exposure selection evidence.
+        query = query.order_by(case((payload["observed_project_trials"].as_integer() == n_trials, 0), else_=1),
+                               case((payload["selection_hash"].as_string().is_not(None), 0), else_=1),
+                               case((payload["policy"].as_string() == POLICY_VERSION, 0), else_=1),
+                               ExperimentArtifact.created_at.asc(), ExperimentArtifact.id.asc()).limit(1)
+        record = await session.scalar(query)
         if record is not None:
             artifact = await read_artifact(session, actor_id, project_id, record.id)
             report = artifact["payload"]
@@ -73,7 +150,10 @@ async def evaluate_profile(session, actor_id, project_id, evaluation_id: str, *,
                 raise ValueError("VALIDATION_EVIDENCE_IDENTITY_MISMATCH")
             offline = {"artifact_id": str(record.id), "content_sha256": record.content_hash,
                        "scope": report["scope"], "report_key": report["report_key"]}
-            if report["observed_project_trials"] != await observed_trial_count(session, project_id):
+            if round_context is not None:
+                offline.update(round_id=report["round_id"], trial_manifest_hash=report["trial_manifest_hash"],
+                               selection_evaluation_id=report["selection_evaluation_id"])
+            if report["observed_project_trials"] != n_trials:
                 blockers.append("OFFLINE_VALIDATION_STALE_TRIAL_COUNT")
             else:
                 checks = report["checks"]

@@ -142,6 +142,35 @@ async def test_removed_project_member_cannot_read_cached_task(db_session, test_u
 
 
 @pytest.mark.asyncio
+async def test_revoked_queued_researcher_cannot_prevent_other_directions(db_session, test_user, monkeypatch):
+    import uuid
+
+    from quantgpt import task_executor
+    from quantgpt.models import User
+    from quantgpt.research.projects import set_project_member
+
+    project = await create_project(db_session, test_user.id, name="Two contributors")
+    colleague = User(id=uuid.uuid4(), email="old-researcher@example.invalid", is_active=True)
+    db_session.add(colleague)
+    await db_session.flush()
+    await set_project_member(db_session, test_user.id, project.id, colleague.id, "researcher")
+    tasks_to_check = []
+    for actor in (colleague.id, test_user.id):
+        task, _ = await submit_durable_task(db_session, actor_id=str(actor), project_id=str(project.id),
+            task_type="research_evaluation", params={"kind": "factor", "config": {"backend": "local"}})
+        tasks_to_check.append(task["task_id"])
+    await set_project_member(db_session, test_user.id, project.id, colleague.id, None)
+    await db_session.commit()
+    workers = []
+    monkeypatch.setattr(task_executor, "_dispatch_handler", lambda payload: lambda: workers.append(payload["task_id"]))
+    assert await task_executor.dispatch_pending_tasks_once(db_session) == 1
+    await asyncio.gather(*task_executor._worker_monitors)
+    rejected = await db_session.get(Task, tasks_to_check[0], populate_existing=True)
+    assert rejected.status == "failed" and rejected.error == "TASK_PROJECT_ACCESS_REVOKED"
+    assert workers == [tasks_to_check[1]]
+
+
+@pytest.mark.asyncio
 async def test_worker_cannot_publish_after_project_membership_removed(db_session, test_user):
     project = await create_project(db_session, test_user.id, name="research")
     await db_session.commit()
@@ -276,6 +305,28 @@ async def test_stale_attempt_cannot_publish_while_retry_is_queued(db_session, te
         await persist_task_to_db_async(task["task_id"], str(test_user.id), old, strict=True)
     persisted = await load_durable_task(db_session, task["task_id"], str(test_user.id))
     assert persisted["status"] == "queued" and persisted["result"] is None
+
+
+@pytest.mark.asyncio
+async def test_research_terminal_result_survives_same_attempt_heartbeat(db_session, test_user, engine, monkeypatch):
+    from quantgpt import db
+    from quantgpt.task_store import persist_task_to_db_async
+
+    project = await create_project(db_session, test_user.id, name="Heartbeat publication")
+    actor = str(test_user.id)
+    accepted, _ = await submit_durable_task(db_session, actor_id=actor, project_id=str(project.id),
+        task_type="research_evaluation", params={"kind": "factor", "config": {"backend": "local"}})
+    task_id = accepted["task_id"]
+    claimed = await claim_durable_task(db_session, task_id)
+    finished = {**claimed, "status": "completed", "result": {"batch_diagnostics": {"engine_calls": 1}}}
+    heartbeat = await update_durable_attempt(db_session, task_id, attempt_id=claimed["attempt_id"],
+                                            expected_revision=claimed["revision"])
+    monkeypatch.setattr(db, "_get_session_factory", lambda: async_sessionmaker(engine, expire_on_commit=False))
+    await persist_task_to_db_async(task_id, actor, finished, strict=True)
+    db_session.expire_all()
+    saved = await load_durable_task(db_session, task_id, actor)
+    assert saved["status"] == tasks[task_id]["status"] == "completed"
+    assert saved["result"] == finished["result"] and saved["revision"] == heartbeat["revision"] + 1
 
 
 def test_strategy_cancel_during_compute_blocks_report_and_success(monkeypatch):

@@ -39,6 +39,10 @@ class TaskConflictError(ValueError):
     """An idempotency key or worker attempt no longer identifies this update."""
 
 
+class RoundTaskCredentialRequired(ValueError):
+    """Managed tasks use the direction or coordinator cancellation tool."""
+
+
 def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
@@ -97,6 +101,7 @@ async def submit_durable_task(
     session: AsyncSession, *, actor_id: str, task_type: str, params: dict,
     expression: str | None = None, project_id: str | None = None,
     idempotency_key: str | None = None, session_id: str | None = None,
+    existing_only: bool = False,
 ) -> tuple[dict, bool]:
     """Commit the task and pending dispatch flag together before acceptance."""
     from .research.projects import ProjectAccessError, require_project_member
@@ -123,7 +128,12 @@ async def submit_durable_task(
         if existing:
             if existing.request_hash != request_hash:
                 raise TaskConflictError("IDEMPOTENCY_CONFLICT: key was already used with a different payload")
+            if (task_type == "research_evaluation" and str(existing.status) == "interrupted" and existing.retryable
+                    and (existing.params or {}).get("config", {}).get("backend") == "local"):
+                return await _retry_authorized_task(session, existing), False
             return _task_payload(existing), False
+    if existing_only:
+        raise TaskConflictError("EXISTING_TASK_REQUIRED: use the original idempotency key and payload")
     record = TaskModel(
         id=uuid_mod.uuid4().hex[:12], user_id=actor, project_id=project,
         session_id=uuid_mod.UUID(session_id) if session_id else None,
@@ -213,15 +223,29 @@ async def cancel_durable_task(session: AsyncSession, task_id: str, actor_id: str
     if record is None:
         return None
     await authorize_task(session, record, actor_id, write=True)
-    if record.status not in TERMINAL_TASK_STATUSES:
+    if str(record.task_type) == "research_evaluation" and (record.params or {}).get("round_id"):
+        raise RoundTaskCredentialRequired("Use cancel_research_round_task with the direction or coordinator credential")
+    return await _cancel_authorized_task(session, record)
+
+
+async def _cancel_authorized_task(session: AsyncSession, record: TaskModel) -> dict:
+    task_id = str(record.id)
+    terminal = TERMINAL_TASK_STATUSES
+    params = record.params or {}
+    if (str(record.task_type) == "research_evaluation" and params.get("round_id")
+            and params.get("config", {}).get("backend") == "local"):
+        # This attempt stopped without a definitive research outcome. The
+        # authorized branch can abandon it so the coordinator can seal the round.
+        terminal = terminal - {"interrupted"}
+    if record.status not in terminal:
         remote = (str(record.task_type or "").startswith("wq_") or bool(record.remote_run_ref)
                   or (record.params or {}).get("config", {}).get("backend") == "wq")
         status = "local_wait_cancelled" if remote else "cancelled"
         await session.execute(update(TaskModel).where(
-            TaskModel.id == task_id, TaskModel.revision == record.revision,
-            TaskModel.status.not_in(TERMINAL_TASK_STATUSES),
-        ).values(status=status, cancel_requested=True, revision=record.revision + 1,
-                 lease_expires_at=None, dispatch_pending=False, updated_at=datetime.now(timezone.utc)))
+            TaskModel.id == task_id,
+            TaskModel.status.not_in(terminal),
+        ).values(status=status, cancel_requested=True, revision=TaskModel.revision + 1,
+                 lease_expires_at=None, retryable=False, dispatch_pending=False, updated_at=datetime.now(timezone.utc)))
         await session.commit()
         await session.refresh(record)
     payload = _task_payload(record)
@@ -234,7 +258,7 @@ async def cancel_durable_task(session: AsyncSession, task_id: str, actor_id: str
 
 
 async def recover_expired_tasks(session: AsyncSession | None = None) -> int:
-    """Mark lost local attempts retryable; never blindly resend a remote POST."""
+    """Requeue replayable local research and preserve reconciliation for remote submissions."""
     if session is None:
         from .db import _get_session_factory
         async with _get_session_factory()() as owned:
@@ -248,12 +272,16 @@ async def recover_expired_tasks(session: AsyncSession | None = None) -> int:
     for record in records:
         remote = (str(record.task_type or "").startswith("wq_") or bool(record.remote_run_ref)
                   or (record.params or {}).get("config", {}).get("backend") == "wq")
+        replayable = (not remote and str(record.task_type) == "research_evaluation" and not record.cancel_requested
+                      and (record.params or {}).get("config", {}).get("backend") == "local")
         changed = await session.execute(update(TaskModel).where(
             TaskModel.id == record.id, TaskModel.revision == record.revision,
             TaskModel.status.not_in(TERMINAL_TASK_STATUSES),
-        ).values(status="remote_outcome_unknown" if remote else "interrupted", retryable=not remote,
+        ).values(status="queued" if replayable else "remote_outcome_unknown" if remote else "interrupted",
+                 retryable=not (remote or replayable),
                  attempt_id=None, lease_expires_at=None, revision=record.revision + 1,
-                 dispatch_pending=False, error="Worker lease expired; prior attempt is fenced", updated_at=now))
+                 dispatch_pending=replayable, error=None if replayable else "Worker lease expired; prior attempt is fenced",
+                 updated_at=now))
         count += cast(CursorResult, changed).rowcount
     await session.commit()
     with tasks_lock:
@@ -268,6 +296,16 @@ async def retry_durable_task(session: AsyncSession, task_id: str, actor_id: str)
     if record is None:
         return None
     await authorize_task(session, record, actor_id, write=True)
+    if str(record.task_type) == "research_evaluation" and (record.params or {}).get("round_id"):
+        raise RoundTaskCredentialRequired("Resume using the original credentialed research round tool")
+    return await _retry_authorized_task(session, record)
+
+
+async def _retry_authorized_task(session: AsyncSession, record: TaskModel) -> dict:
+    task_id = str(record.id)
+    if (str(record.task_type) == "research_evaluation" and (record.params or {}).get("config", {}).get("backend") == "local"
+            and str(record.status) in {"queued", "running"}):
+        return _task_payload(record)
     if str(record.status) != "interrupted" or not record.retryable:
         raise TaskConflictError("TASK_NOT_RETRYABLE: reconcile remote outcomes before any dispatch")
     changed = await session.execute(update(TaskModel).where(
@@ -275,9 +313,9 @@ async def retry_durable_task(session: AsyncSession, task_id: str, actor_id: str)
     ).values(status="queued", retryable=False, dispatch_pending=True, attempt_id=None,
              revision=record.revision + 1, error=None, updated_at=datetime.now(timezone.utc)))
     await session.commit()
-    if cast(CursorResult, changed).rowcount != 1:
-        raise TaskConflictError("TASK_REVISION_CONFLICT")
     await session.refresh(record)
+    if cast(CursorResult, changed).rowcount != 1 and record.status not in {"queued", "running", "completed"}:
+        raise TaskConflictError("TASK_REVISION_CONFLICT")
     return _task_payload(record)
 
 
@@ -499,6 +537,14 @@ async def _persist_task_impl(task_id: str, user_id: str, task_data: dict,
 
             now = datetime.now(timezone.utc)
             existing = await session.get(TaskModel, task_id)
+            # The worker owns one terminal publication for its active attempt.
+            # A heartbeat may advance its revision between taking a completion
+            # snapshot and this transaction, without changing that ownership.
+            final_research_attempt = (
+                existing is not None and str(existing.task_type) == "research_evaluation"
+                and (existing.params or {}).get("config", {}).get("backend") == "local"
+                and bool(task_data.get("attempt_id")) and task_data.get("status") in TERMINAL_TASK_STATUSES
+            )
             if existing is not None:
                 await authorize_task(session, existing, user_id, write=True)
                 if str(existing.user_id) != str(user_id):
@@ -510,7 +556,7 @@ async def _persist_task_impl(task_id: str, user_id: str, task_data: dict,
                     return
                 if (existing.attempt_id or task_data.get("attempt_id")) and (
                     existing.attempt_id != task_data.get("attempt_id")
-                    or existing.revision != task_data.get("_persisted_revision", existing.revision)
+                    or (not final_research_attempt and existing.revision != task_data.get("_persisted_revision", existing.revision))
                     or existing.lease_expires_at is None or _utc(existing.lease_expires_at) <= now
                 ):
                     raise TaskConflictError("TASK_STALE_ATTEMPT: stale worker cannot publish")
@@ -541,9 +587,13 @@ async def _persist_task_impl(task_id: str, user_id: str, task_data: dict,
                 session.add(TaskModel(**values))
             else:
                 guards = [
-                    TaskModel.id == task_id, TaskModel.revision == existing.revision,
+                    TaskModel.id == task_id,
                     TaskModel.status.not_in(TERMINAL_TASK_STATUSES), TaskModel.cancel_requested.is_(False),
                 ]
+                if final_research_attempt:
+                    values["revision"] = TaskModel.revision + 1
+                else:
+                    guards.append(TaskModel.revision == existing.revision)
                 if existing.attempt_id or task_data.get("attempt_id"):
                     guards.extend([TaskModel.attempt_id == task_data.get("attempt_id"),
                                    TaskModel.lease_expires_at > datetime.now(timezone.utc)])
@@ -573,9 +623,14 @@ async def _persist_task_impl(task_id: str, user_id: str, task_data: dict,
                         sess_record.name = prompt[:30]
 
             await session.commit()
+            if final_research_attempt and existing is not None:
+                await session.refresh(existing)
+                revision = existing.revision
             with tasks_lock:
                 cached = tasks.get(task_id)
                 if cached and cached.get("attempt_id") == task_data.get("attempt_id"):
+                    if final_research_attempt and existing is not None:
+                        cached.update(_task_payload(existing))
                     cached["_persisted_revision"] = revision
                     cached["revision"] = max(cached.get("revision", 0), revision)
             logger.info(f"[{task_id}] persisted to DB")

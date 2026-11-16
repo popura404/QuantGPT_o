@@ -1,11 +1,28 @@
 """Trial-aware multiple-testing helper regressions."""
 
+import pytest
+
 from quantgpt.statistics.multiple_testing import (
     benjamini_hochberg,
+    block_sign_test,
     bonferroni_adjust,
     bootstrap_mean_ci,
     multiple_testing_report,
 )
+
+
+@pytest.mark.parametrize("trials", [50, 51, 100])
+def test_block_sign_tail_resolution_scales_with_trial_count(trials):
+    result = block_sign_test([1.] * 24, trials)
+    assert result["resolution_sufficient"] and result["adjusted_p_value"] <= .05
+    assert result["p_value"] >= 1 / (result["randomizations"] + 1)
+    assert block_sign_test([1., -1.] * 12, trials)["adjusted_p_value"] > .05
+
+
+def test_few_independent_blocks_report_exact_resolution_limit():
+    result = block_sign_test([1., 1., 1., 0.], 51)
+    assert result["exact"] and not result["resolution_sufficient"]
+    assert result["minimum_attainable_p"] == result["p_value"] == 1 / 8
 
 
 def test_bonferroni_adjustment_caps_at_one():

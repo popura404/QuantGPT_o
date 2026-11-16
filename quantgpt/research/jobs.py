@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import TimeoutError as DatabaseTimeout
 
 from quantgpt.research.contracts import EvaluationConfigV1, FactorDefinitionV1, evaluation_hash
+from quantgpt.research.evaluation_leases import retryable_local_conflict
 from quantgpt.research.evaluations import evaluate_factor_batch
 from quantgpt.research.projects import require_project_member
 from quantgpt.research.runtime import local_engine_identity, normalize_local_config, snapshot_root
@@ -13,14 +18,38 @@ from quantgpt.research.strategies import run_strategy_evaluation
 from quantgpt.strategy.spec import StrategySpecV2
 
 
+def _retryable_execution_error(params: dict, exc: Exception) -> bool:
+    if retryable_local_conflict(exc):
+        return True
+    if params.get("kind") != "round_final" or isinstance(exc, PermissionError):
+        return False
+    if isinstance(exc, (OSError, DatabaseTimeout)):
+        return True
+    if isinstance(exc, OperationalError):
+        original = exc.orig
+        if isinstance(original, PermissionError):
+            return False
+        state = getattr(original, "sqlstate", None)
+        if state:
+            return state.startswith(("08", "53", "58")) or state in {"57P01", "57P02", "57P03"}
+        code = getattr(original, "sqlite_errorcode", None)
+        # Explicit syntax/authorization failures are permanent. IO, space and
+        # unavailable files can recover without changing frozen inputs.
+        return code is None or (code & 255) in {5, 6, 10, 13, 14}
+    return False
+
+
 def _validate_request_keys(params: dict, *, durable: bool = False) -> None:
     kind = params.get("kind")
+    kinds = {"factor", "strategy", "validation"}
     allowed = ({"kind", "evaluation_id", "selection_evaluation_id"} if kind == "validation"
                else {"kind", "config", "definitions" if kind == "factor" else "spec"})
     if durable:
-        allowed.add("server_config_frozen")
-        allowed.add("config")
-    if kind not in {"factor", "strategy", "validation"}:
+        kinds.add("round_final")
+        allowed.update({"server_config_frozen", "config"})
+        if kind in {"factor", "strategy", "round_final"} and params.get("round_id"):
+            allowed.update({"round_id", "direction_id", "parent_evaluation_id"})
+    if kind not in kinds:
         raise ValueError("Unsupported research request kind")
     if set(params) - allowed:
         raise ValueError(f"UNKNOWN_RESEARCH_REQUEST_FIELDS: {sorted(set(params) - allowed)}")
@@ -28,8 +57,54 @@ def _validate_request_keys(params: dict, *, durable: bool = False) -> None:
 
 async def execute_research_request(session, actor_id: uuid.UUID, project_id: uuid.UUID,
                                     params: dict, *, cancel_check=None, task_context: dict | None = None) -> dict:
-    await require_project_member(session, actor_id, project_id, write=True)
     _validate_request_keys(params, durable=task_context is not None)
+    remote = (params.get("config") or {}).get("backend") == "wq"
+    for attempt in range(3):
+        if cancel_check:
+            cancel_check()
+        try:
+            await require_project_member(session, actor_id, project_id, write=True)
+            return await _execute_once(session, actor_id, project_id, params, cancel_check, task_context)
+        except Exception as exc:
+            if remote or not _retryable_execution_error(params, exc):
+                raise
+            await session.rollback()
+            if attempt == 2:
+                raise
+            await asyncio.sleep(.05 * (2 ** attempt))
+    raise AssertionError("unreachable")
+
+
+async def _execute_once(session, actor_id, project_id, params, cancel_check, task_context):
+    from quantgpt.research.rounds import RUNNING_ROUND
+
+    round_id = params.get("round_id")
+    kind = params["kind"]
+    if kind == "round_final" and not round_id:
+        raise ValueError("SERVER_ROUND_TASK_REQUIRED")
+    if round_id:
+        from sqlalchemy import select
+
+        from quantgpt.models import Task
+
+        if (not task_context or task_context.get("params") != params
+                or (params.get("config") or {}).get("backend") != "local"):
+            raise ValueError("SERVER_ROUND_TASK_REQUIRED")
+        stored = await session.scalar(select(Task.params).where(
+            Task.id == task_context["task_id"], Task.attempt_id == task_context["attempt_id"],
+            Task.project_id == project_id, Task.user_id == actor_id, Task.status == "running",
+            Task.cancel_requested.is_(False), Task.lease_expires_at > datetime.now(timezone.utc),
+        ))
+        if stored != params:
+            raise ValueError("SERVER_ROUND_TASK_REQUIRED")
+    token = RUNNING_ROUND.set((str(round_id), kind) if round_id else None)
+    try:
+        return await _dispatch_request(session, actor_id, project_id, params, cancel_check, task_context)
+    finally:
+        RUNNING_ROUND.reset(token)
+
+
+async def _dispatch_request(session, actor_id, project_id, params, cancel_check, task_context):
     if params["kind"] == "validation":
         from quantgpt.research.evaluations import get_evaluation, verify_frozen_config
         from quantgpt.research.validation_runner import run_local_validation
@@ -48,6 +123,11 @@ async def execute_research_request(session, actor_id: uuid.UUID, project_id: uui
             raise ValueError("SERVER_FROZEN_CONFIG_REQUIRED")
         if config.backend == "local" and config.engine != local_engine_identity():
             raise ValueError("CODE_VERSION_CHANGED: accepted engine identity differs from this worker; submit a new request")
+    if params["kind"] == "round_final":
+        from quantgpt.research.round_final import execute_final
+
+        return await execute_final(session, actor_id, project_id, params, task_context=task_context,
+                                   cancel_check=cancel_check)
     if params["kind"] == "factor":
         definitions = [FactorDefinitionV1.model_validate(item) for item in params["definitions"]]
         if config.backend == "wq":
@@ -160,7 +240,9 @@ def run_research_job(payload: dict, *, event_loop: asyncio.AbstractEventLoop | N
             transition_task(task_id, "local_wait_cancelled" if remote else "cancelled", cancelled=True,
                             expected_attempt=attempt)
         except Exception as exc:
-            transition_task(task_id, "failed", error=str(exc), expected_attempt=attempt)
+            retryable = not remote and _retryable_execution_error(payload["params"], exc)
+            transition_task(task_id, "interrupted" if retryable else "failed", error=str(exc), retryable=retryable,
+                            expected_attempt=attempt)
         current = snapshot_task(task_id, expected_attempt=attempt)
         if current:
             await persist_task_to_db_async(task_id, actor, current, strict=True)

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from quantgpt.experiment_ledger import record_experiment
 from quantgpt.models import Experiment, Strategy, StrategyRun
 from quantgpt.research.contracts import EvaluationConfigV1, FactorDefinitionV1, strategy_hash
+from quantgpt.research.evaluation_leases import evaluation_execution, fence_evaluation_execution
 from quantgpt.research.evaluations import (
     assert_publication_attempt,
     authorize_data_inputs,
@@ -25,6 +26,7 @@ from quantgpt.research.evaluations import (
     verify_frozen_config,
     write_artifact,
 )
+from quantgpt.research.hypotheses import lock_research_registration
 from quantgpt.research.projects import ProjectAccessError, require_project_member
 from quantgpt.research.runtime import normalize_local_config
 from quantgpt.strategy.backtest import StrategyBacktestRequest, run_strategy_backtest
@@ -83,7 +85,7 @@ async def get_strategy_run(session: AsyncSession, actor_id: uuid.UUID, project_i
     row = (await session.scalars(select(Experiment).where(
         Experiment.project_id == project_id, Experiment.strategy_id == strategy.id,
         Experiment.strategy_run_id == run.id,
-    ))).one_or_none()
+    ).execution_options(populate_existing=True))).one_or_none()
     payload = run.result
     if row is None or not isinstance(payload, dict) or cast(str, strategy.schema_version) != "strategy_spec/v2":
         raise ValueError("STRATEGY_RUN_ORIGIN_REQUIRED")
@@ -121,11 +123,17 @@ async def run_strategy_evaluation(session: AsyncSession, actor_id: uuid.UUID, pr
     await check_factor_lineage(session, actor_id, project_id, spec, config)
     identity = strategy_hash(spec.model_dump(mode="json"), config, spec.factor_evaluations)
     run_id = uuid.uuid5(project_id, "strategy:" + identity)
+    evaluation_id = "se_" + run_id.hex
+    await lock_research_registration(session, actor_id, project_id)
     existing = await session.get(StrategyRun, run_id)
     if existing is not None:
+        if config.window.phase in {"selection", "final"}:
+            from quantgpt.research.rounds import guard_round_execution
+
+            await guard_round_execution(session, project_id, config, evaluation_id)
         existing = await get_strategy_run(session, actor_id, project_id, run_id)
+        await session.commit()
         return cast(dict, existing.result)
-    evaluation_id = "se_" + run_id.hex
     row = (await session.scalars(select(Experiment).where(Experiment.experiment_id == evaluation_id))).one_or_none()
     if row is None:
         row = await record_experiment(session, expression="; ".join(f.expression for f in spec.factors),
@@ -138,7 +146,21 @@ async def run_strategy_evaluation(session: AsyncSession, actor_id: uuid.UUID, pr
         row.evidence_status = "research_only"
     await guard_evaluation_window(session, actor_id, row, config)
     await session.commit()
-    panel = await asyncio.to_thread(load_evaluation_panel, config, snapshot_root)
+    async with evaluation_execution(session, evaluation_id, cancel_check=cancel_check, task_context=task_context) as token:
+        if token is None:
+            saved = await get_strategy_run(session, actor_id, project_id, run_id)
+            return cast(dict, saved.result)
+        output = await asyncio.to_thread(_compute_strategy_artifacts, spec, config, snapshot_root)
+        if cancel_check:
+            cancel_check()
+        await fence_evaluation_execution(session, evaluation_id, token)
+        await assert_publication_attempt(session, task_context)
+        await require_project_member(session, actor_id, project_id, write=True)
+        return await _publish_strategy(session, actor_id, project_id, spec, config, row, run_id, identity, output)
+
+
+def _compute_strategy_artifacts(spec: StrategySpecV2, config: EvaluationConfigV1, snapshot_root: str | Path) -> dict:
+    panel = load_evaluation_panel(config, snapshot_root)
     panel = cast(pd.DataFrame, panel[pd.to_datetime(panel["trade_date"]) <= pd.Timestamp(config.window.end_session)].copy())
     panel.attrs["frozen_research_input"] = True
     numeric_spec = spec.calculation_spec()
@@ -147,25 +169,27 @@ async def run_strategy_evaluation(session: AsyncSession, actor_id: uuid.UUID, pr
         simulation_config=spec.simulation_config,
         neutralize_industry="industry" in config.neutralization, neutralize_cap="market_cap" in config.neutralization,
         validation_stage="final" if config.window.phase == "final" else "selection")
-    result = await asyncio.to_thread(run_strategy_backtest, request, panel, final_authorized=True)
-    if cancel_check:
-        cancel_check()
-    await assert_publication_attempt(session, task_context)
-    await require_project_member(session, actor_id, project_id, write=True)
+    result = run_strategy_backtest(request, panel, final_authorized=True)
     if result.factor_frame is None:
         raise ValueError("STRATEGY_SIGNAL_ARTIFACT_MISSING")
     signal_frame = build_rank_threshold_signals(result.factor_frame, numeric_spec)
     signal_frame = cast(pd.DataFrame, signal_frame[pd.to_datetime(signal_frame["trade_date"]) >= pd.Timestamp(config.window.start_session)])
-    signal = await write_artifact(session, row, "signal", serialize_frame(signal_frame))
-    returns = await write_artifact(session, row, "returns", serialize_frame(
-        result.strategy_returns.rename("return").rename_axis("session").reset_index()))
-    weights = await write_artifact(session, row, "target_weights", serialize_frame(result.target_weights))
-    report = await write_artifact(session, row, "report", result.to_summary())
+    return {"signal": serialize_frame(signal_frame),
+            "returns": serialize_frame(result.strategy_returns.rename("return").rename_axis("session").reset_index()),
+            "target_weights": serialize_frame(result.target_weights), "report": result.to_summary()}
+
+
+async def _publish_strategy(session: AsyncSession, actor_id: uuid.UUID, project_id: uuid.UUID,
+                            spec: StrategySpecV2, config: EvaluationConfigV1, row: Experiment,
+                            run_id: uuid.UUID, identity: str, output: dict) -> dict:
+    evaluation_id = str(row.experiment_id)
+    artifacts = [await write_artifact(session, row, kind, output[kind])
+                 for kind in ("signal", "returns", "target_weights", "report")]
     payload = {"schema_version": "strategy_run/v2", "strategy_run_id": str(run_id), "project_id": str(project_id),
         "strategy_hash": identity, "evaluation_hash": identity, "evaluation_id": evaluation_id,
         "scope": config.window.phase, "spec": spec.model_dump(mode="json"), "config": config.model_dump(mode="json"),
-        "metrics": result.to_summary()["metrics"], "diagnostics": result.to_summary()["diagnostics"],
-        "signal_ref": signal, "artifacts": [signal, returns, weights, report], "evidence_status": "research_only",
+        "metrics": output["report"]["metrics"], "diagnostics": output["report"]["diagnostics"],
+        "signal_ref": artifacts[0], "artifacts": artifacts, "evidence_status": "research_only",
         "research_decision": "not_evaluated", "blockers": ["VALIDATION_PROFILE_INCOMPLETE"]}
     row.result_summary = {**payload, "performance_observed": True}
     row.status = "validated_oos" if config.window.phase == "final" else "backtested_train"

@@ -61,6 +61,7 @@ from ..task_store import (
     SSE_TIMEOUT_SECONDS,
     TERMINAL_TASK_STATUSES,
     CancelledException,
+    RoundTaskCredentialRequired,
     TaskConflictError,
     active_task_count,
     cancel_durable_task,
@@ -812,6 +813,8 @@ async def cancel_task(
     if user is not None:
         try:
             persisted = await cancel_durable_task(db, task_id, user_id)
+        except RoundTaskCredentialRequired as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ProjectAccessError as exc:
             raise HTTPException(status_code=404, detail="Task not found") from exc
         if persisted is not None:
@@ -819,6 +822,8 @@ async def cancel_task(
 
     task = tasks.get(task_id)
     if task:
+        if (task.get("params") or {}).get("round_id"):
+            raise HTTPException(status_code=404, detail="Task not found")
         if task.get("user_id") != user_id:
             raise HTTPException(status_code=403, detail="无权操作此任务")
         if task["status"] in TERMINAL_TASK_STATUSES:

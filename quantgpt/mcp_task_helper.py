@@ -17,9 +17,10 @@ import uuid as uuid_mod
 from contextvars import ContextVar, Token
 from typing import Any
 
-from .research.projects import resolve_mcp_actor
+from .research.projects import ProjectAccessError, resolve_mcp_actor
 from .task_store import (
     TERMINAL_TASK_STATUSES,
+    RoundTaskCredentialRequired,
     cancel_durable_task,
     claim_durable_task,
     load_durable_task,
@@ -218,7 +219,12 @@ async def request_mcp_task_cancel(task_id: str) -> dict[str, Any]:
     if cached is None or cached.get("project_id"):
         from .db import _get_session_factory
         async with _get_session_factory()() as session:
-            payload = await cancel_durable_task(session, task_id, actor_id)
+            try:
+                payload = await cancel_durable_task(session, task_id, actor_id)
+            except RoundTaskCredentialRequired:
+                return {"error_code": "ROUND_TASK_CREDENTIAL_REQUIRED", "next_tool": "cancel_research_round_task"}
+            except ProjectAccessError:
+                return {"error_code": "MCP_TASK_NOT_FOUND", "task_id": task_id}
             return sanitize_task_response(payload) if payload else {"error_code": "MCP_TASK_NOT_FOUND", "task_id": task_id}
     if cached.get("user_id") != actor_id:
         return {"error_code": "MCP_TASK_NOT_FOUND", "task_id": task_id}

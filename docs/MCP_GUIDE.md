@@ -1,8 +1,16 @@
 # QuantGPT MCP 配置指南
 
-共享研究使用 `list_research_projects`、`evaluate_factors`、`run_research_strategy`、`get_research_artifact`、`optimize_research_portfolio` 和 `export_research_strategy`。完整配置、项目身份和任务说明见 [研究 API/MCP](RESEARCH_API.md)。系统身份须显式加入项目；project_id 不是访问凭据。MCP 1.x 是当前锁定兼容通道。
+主代理通过 MCP 建立共享项目和研究轮次，子代理在同一冻结快照和选择窗口上并行探索不同假设。可通过 Claude Code、Claude Desktop 等 MCP 客户端调用。连接后用 `tools/list` 查询当前服务注册的工具。服务使用 MCP 1.x。
 
-QuantGPT 提供标准 MCP (Model Context Protocol) 接口，支持因子研究工具、StrategySpec v0 策略工具，以及当前仓库已实现的 Post-MVP StrategySpec v1 扩展。可通过 Claude Code、Claude Desktop 等 MCP 客户端直接调用。
+## 主代理与子代理的研究流程
+
+1. 主代理通过 `create_research_project` 或 `list_research_projects` 选择项目。用 `list_research_snapshot_imports` 查找已发布的面板，调用 `register_research_snapshot` 登记，再用 `get_research_preparation` 核对实际字段、日期和证券覆盖。离线演练可用 `prepare_research_demo` 准备合成面板。
+2. 主代理用 `create_research_round` 登记选择期、最终留出窗口和方向假设。工具会先检查快照能否覆盖两个窗口及热身期，再创建轮次。要比较现有组合的增量时，先用 `register_research_holdout` 登记留出窗口，在选择期跑基线，再把基线的 `strategy_run_id` 传给 `create_research_round`。每个子代理只领取自己的方向凭据。
+3. 子代理分别调用 `submit_research_direction`，从 `get_mcp_task_status` 读取结果，可将本轮已评价候选的 `evaluation_id` 作为后续候选的 `parent_evaluation_id`。用 `cancel_research_round_task` 取消本方向任务，用 `finish_research_direction` 结束提交。
+4. 主代理用 `get_research_round` 取回各方向的候选评价引用，调用 `submit_round_strategy` 回测组合。有预登记基线时用 `compare_research_strategies_to_baseline` 比较净收益、换手与信号相关性。
+5. 主代理用 `finalize_research_round` 冻结入选组合，轮询该任务取得 `validation` 和 `validation_artifact`。`export_research_strategy` 按服务端验证结果处理导出。项目成员可随时凭引用读取有权访问的历史产物。
+
+同一 MCP 身份可以持不同方向凭据同时工作。各代理以独立身份登录时，应先加入同一项目，并在创建轮次时指定相应方向的 `actor_id`。参数和返回值详见[研究 API/MCP](RESEARCH_API.md)。
 
 ## 快速开始（推荐）
 
@@ -51,7 +59,7 @@ QuantGPT 提供标准 MCP (Model Context Protocol) 接口，支持因子研究�
 3. **cwd 必须用绝对路径** — 指向项目根目录，确保 `python3 -m quantgpt` 能找到包
 4. **deepseek MCP 需要 `.env` 中配置 `DEEPSEEK_API_KEY`** — 脚本会自动从 `.env` 读取
 5. **因子重工具默认只读本地缓存** — `score_factor` / `run_backtest` / `compute_factor_values` / 验证类重工具在缓存缺失时会快速返回 `MARKET_DATA_UNAVAILABLE`，避免 Agent 长时间无输出后断流；确认要阻塞式拉取远程行情时再传 `allow_remote_fetch=true`
-6. **长任务可异步提交** — 5 个因子重工具支持 `submit_only=true` 返回 `task_id`，再用 `get_mcp_task_status` 查询进度或 `cancel_mcp_task` 请求协作式取消
+6. **长任务可异步提交** — 支持 `submit_only=true` 的工具返回 `task_id`，再用 `get_mcp_task_status` 查询进度或 `cancel_mcp_task` 请求协作式取消
 7. **单股研究先读单股缓存** — 研究 `600487` 这类单只 A 股时先调用 `get_stock_history` / `check_market_cache`，不要直接调用 `compute_factor_values(csi500)` 或 `score_factor(csi500)`
 
 配置完成后**重启 Claude Code**（退出后重新进入项目目录），验证连接：
@@ -150,13 +158,11 @@ MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先�
 | `list_factor_pool_tags` | 返回因子池 tag/category/status facets |
 | `wq_brain_submit` | 调用 WorldQuant BRAIN 远程模拟；正式 submit 受 preflight/override 约束 |
 
-`ask_deepseek` 由 `scripts/mcp_deepseek.py` 提供，是可选的独立 MCP server，不计入 QuantGPT 的 49 个内置工具。
+`ask_deepseek` 由可选的独立 MCP 服务 `scripts/mcp_deepseek.py` 提供。
 
 ### StrategySpec 策略工具
 
-这些工具保持非实盘边界。`export_strategy_candidate` 只输出候选调仓信号，
-不是订单协议，也不包含 broker/account/order/api_key/execution 字段。该导出仍属于
-candidate/export 边界，调用方必须提供 promotion-ready `validation_provenance`。
+v0/v1 工具用于历史策略回测与诊断。共享项目的候选信号导出使用 `export_research_strategy`，需要可追溯的 v2 `strategy_run_id` 和服务端验证结果。
 
 | 工具 | 说明 |
 |------|------|
@@ -166,7 +172,7 @@ candidate/export 边界，调用方必须提供 promotion-ready `validation_prov
 | `run_strategy_backtest` | 运行单因子 top quantile 等权策略回测 |
 | `score_strategy` | 根据策略回测结果计算策略级评分 |
 | `generate_strategy_report` | 根据策略回测结果生成 HTML 报告和 summary JSON |
-| `export_strategy_candidate` | 导出候选调仓信号，不包含执行字段 |
+| `export_strategy_candidate` | 历史接口，返回 `SERVER_STRATEGY_RUN_REQUIRED` 并提示按项目重新计算 |
 | `diagnose_strategy` | 输出策略诊断 taxonomy 和 spec 调整建议 |
 | `run_strategy_anti_overfit` | 基于策略回测结果执行策略级反过拟合摘要 |
 | `run_strategy_rolling_validation` | 基于策略收益执行 rolling validation 摘要 |
@@ -258,10 +264,7 @@ data-quality 会优先使用免费行情源可取得的 A 股元数据：`is_st`
 取消是协作式：无法强杀已经进入的单次 baostock/rqdatac/socket 阻塞调用，实际响应时间受当前调用和
 `QUANTGPT_BAOSTOCK_TIMEOUT` 影响。
 
-candidate / submit / export 边界统一要求 `validation_provenance.suite_version="factor_validation/v1"`，
-且必须同时具备 `data_snapshot_id`，并通过 data-quality gate、train/valid/test、rolling window、
-placebo test 和 time-shift test。
-缺少该证明的 `allowed=true` preflight 会被降级为 blocked。
+共享项目的候选晋级和导出读取服务端冻结的配置、评价与验证报告。`export_research_strategy` 返回实际阻断原因或候选信号。
 
 WQ BRAIN 远程模拟本身不强制本地 OOS/data-quality，因为 WQ-only 字段和算子可能无法在本地执行。
 所有正式提交动作仍会经过 preflight gate：`auto_submit=true`、`submit-alpha`、`submit-by-id`
@@ -350,7 +353,7 @@ A 股 `a_share` / `hs300` 代理检查，不能直接授权 WQ `USA` / `TOP3000`
 
 ## 使用示例
 
-### Agent 工作流
+### 单表达式诊断工具示例
 
 ```
 1. list_operators         → 了解可用算子
@@ -372,8 +375,7 @@ A 股 `a_share` / `hs300` 代理检查，不能直接授权 WQ `USA` / `TOP3000`
 4. run_strategy_backtest        → 生成策略收益、目标权重和风控日志
 5. score_strategy               → 计算策略级评分
 6. generate_strategy_report     → 生成 HTML 报告和 summary JSON
-7. export_strategy_candidate    → 导出候选信号
-8. diagnose_strategy            → 获取诊断与修改建议
+7. diagnose_strategy            → 获取诊断与修改建议
 ```
 
 最小 `validate_strategy_spec` 输入：

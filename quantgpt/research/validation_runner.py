@@ -31,12 +31,10 @@ from quantgpt.research.evaluations import (
 from quantgpt.research.projects import require_project_member
 from quantgpt.research.returns import annualized_return
 from quantgpt.research.runtime import local_engine_identity
-from quantgpt.research.validation import observed_trial_count
-from quantgpt.statistics.multiple_testing import bonferroni_adjust
+from quantgpt.research.validation import POLICY_VERSION, observed_trial_count
+from quantgpt.statistics.multiple_testing import block_sign_test
 
-POLICY_VERSION = "offline_validation/v1"
 MIN_SESSIONS = 20
-N_RANDOMIZATIONS = 999
 
 
 def _data_contract(config: EvaluationConfigV1) -> dict:
@@ -189,7 +187,7 @@ def _numerical_checks(frame: pd.DataFrame, frozen: dict, config: EvaluationConfi
         for positions in np.array_split(np.arange(len(scored)), 3):
             if cancel_check:
                 cancel_check()
-            first, last = scored[positions[0]], scored[positions[-1]]
+            first, last = cast(pd.Timestamp, scored[positions[0]]), cast(pd.Timestamp, scored[positions[-1]])
             result = _replay(frame, frozen, config, first.date().isoformat(), last.date().isoformat())
             returns = result["returns"]
             folds.append({"start": first.date().isoformat(), "end": last.date().isoformat(),
@@ -204,20 +202,16 @@ def _numerical_checks(frame: pd.DataFrame, frozen: dict, config: EvaluationConfi
         checks["placebo"] = {"status": "insufficient_data", "reason": "At least 20 observations and registered trials required"}
         checks["trial_correction"] = dict(checks["placebo"])
     else:
-        rng = np.random.default_rng(20261018)
         values = actual.to_numpy(dtype=float)
         blocks = [values[i:i + block] for i in range(0, len(values), block)]
-        totals = np.array([chunk.sum() for chunk in blocks])
-        signs = rng.choice([-1, 1], size=(N_RANDOMIZATIONS, len(blocks)))
-        null_means = signs @ totals / len(values)
-        p_value = float((1 + np.count_nonzero(null_means >= values.mean())) / (N_RANDOMIZATIONS + 1))
-        adjusted = bonferroni_adjust(p_value, n_trials)
-        checks["placebo"] = {"status": "diagnostic", "null_passed": p_value <= .05,
-            "method": "block_sign_randomization_of_net_returns", "p_value": p_value,
-            "block_length": block, "randomizations": N_RANDOMIZATIONS,
+        test = block_sign_test([float(chunk.sum()) for chunk in blocks], n_trials)
+        checks["placebo"] = {"status": "diagnostic", "null_passed": test["p_value"] <= test["alpha"],
+            "method": "block_sign_randomization_of_net_returns", **test, "block_length": block,
             "reason": "Independent cross-sectional factor placebo and benchmark evidence remain required"}
-        checks["trial_correction"] = _check(adjusted <= .05, observed_project_trials=n_trials,
-            raw_p_value=p_value, adjusted_p_value=adjusted, alpha=.05, method="bonferroni")
+        checks["trial_correction"] = _check(test["adjusted_p_value"] <= test["alpha"], observed_project_trials=n_trials,
+            raw_p_value=test["p_value"], **test, method="bonferroni")
+        if not test["resolution_sufficient"]:
+            checks["trial_correction"].update(status="insufficient_data", reason="RANDOMIZATION_RESOLUTION_LIMITED")
     return checks
 
 
@@ -230,12 +224,24 @@ async def run_local_validation(session: AsyncSession, actor_id: uuid.UUID, proje
     await require_project_member(session, actor_id, project_id, write=True)
     row = await get_evaluation(session, actor_id, project_id, evaluation_id)
     config = verify_frozen_config(row)
+    frozen = row.evaluation_config
+    assert frozen is not None
     if config.backend != "local" or not (row.result_summary or {}).get("performance_observed"):
         raise ValueError("SUCCESSFUL_LOCAL_EVALUATION_REQUIRED")
     if config.engine != local_engine_identity():
         raise ValueError("CODE_VERSION_CHANGED: recompute the evaluation before validating it")
     await authorize_data_inputs(session, project_id, config)
     saved, returns_ref = await _read_returns(session, actor_id, project_id, row)
+    round_context = None
+    if config.window.phase == "final":
+        from quantgpt.research.round_final import final_validation_context
+
+        round_context = await final_validation_context(session, project_id, evaluation_id)
+        if round_context is not None:
+            canonical = round_context["selection_evaluation_id"]
+            if selection_evaluation_id is not None and selection_evaluation_id != canonical:
+                raise ValueError("ROUND_SELECTION_LINEAGE_MISMATCH")
+            selection_evaluation_id = canonical
     selected = None
     source_refs = [returns_ref]
     if selection_evaluation_id:
@@ -259,11 +265,15 @@ async def run_local_validation(session: AsyncSession, actor_id: uuid.UUID, proje
                 ExperimentArtifact.created_at < exposure))
             if selected_before_exposure is None:
                 raise ValueError("SELECTION_NOT_FROZEN_BEFORE_FINAL_EXPOSURE")
-    trials = await observed_trial_count(session, project_id)
+    trials = (round_context["trial_manifest"]["observed_trials"] if round_context is not None
+              else await observed_trial_count(session, project_id))
     identity = {"policy": POLICY_VERSION, "evaluation_hash": row.evaluation_hash,
                 "selection_hash": selected.evaluation_hash if selected else None, "observed_project_trials": trials,
                 "source_artifacts": source_refs}
-    report_key = content_hash("quantgpt.offline_validation/v1", identity)
+    if round_context is not None:
+        identity.update(round_id=str(round_context["round_id"]), selection_evaluation_id=selection_evaluation_id,
+                        trial_manifest_hash=round_context["trial_manifest"]["manifest_hash"])
+    report_key = content_hash("quantgpt.offline_validation/v2", identity)
     existing = (await session.scalars(select(ExperimentArtifact.id).where(
         ExperimentArtifact.experiment_id == evaluation_id, ExperimentArtifact.artifact_type == "offline_validation",
         ExperimentArtifact.payload["report_key"].as_string() == report_key))).first()
@@ -271,8 +281,10 @@ async def run_local_validation(session: AsyncSession, actor_id: uuid.UUID, proje
         return (await read_artifact(session, actor_id, project_id, existing))["payload"]
     panel = await asyncio.to_thread(load_evaluation_panel, config, snapshot_root)
     panel = cast(pd.DataFrame, panel[pd.to_datetime(panel.trade_date) <= pd.Timestamp(config.window.end_session)].copy())
-    checks = await asyncio.to_thread(_numerical_checks, panel, row.evaluation_config, config, saved, trials, cancel_check)
-    profile = "local_strategy" if "strategy" in (row.evaluation_config or {}) else "local_factor"
+    checks = await asyncio.to_thread(_numerical_checks, panel, frozen, config, saved, trials, cancel_check)
+    count_scope = "frozen_round" if round_context is not None else "project"
+    checks["trial_correction"].update(trial_count_scope=count_scope, observed_trials=trials)
+    profile = "local_strategy" if "strategy" in frozen else "local_factor"
     checks["strategy_identity" if profile == "local_strategy" else "definition_config"] = _check(True, evaluation_hash=row.evaluation_hash)
     checks["replayable_data"] = _check(True, snapshots=[ref.manifest_id for ref in config.data_inputs])
     checks["strategy_oos" if profile == "local_strategy" else "oos"] = _check(
@@ -284,12 +296,13 @@ async def run_local_validation(session: AsyncSession, actor_id: uuid.UUID, proje
         from quantgpt.strategy.spec import StrategySpecV2
 
         await check_factor_lineage(session, actor_id, project_id,
-            StrategySpecV2.model_validate(row.evaluation_config["strategy"]), config)
+            StrategySpecV2.model_validate(frozen["strategy"]), config)
         checks["factor_lineage"] = _check(True)
     else:
         checks["similarity"] = {"status": "insufficient_data", "reason": "A preregistered comparison library of aligned signals is required"}
     report = {"schema_version": POLICY_VERSION, "report_key": report_key, **identity,
               "evaluation_id": evaluation_id, "profile": profile, "status": "completed",
+              "trial_count_scope": count_scope,
               "checks": checks, "scope": "offline_replay_and_diagnostics", "allowed": False,
               "data_contract": _data_contract(config),
               "external_acceptance": {"status": "not_run", "blockers": ["EXTERNAL_DATA_ACCEPTANCE_REQUIRED",

@@ -93,6 +93,10 @@ def _check_research_schema(connection):
     import sqlalchemy as sa
 
     inspector = sa.inspect(connection)
+    if inspector.has_table("alembic_version"):
+        revisions = list(connection.scalars(sa.text("SELECT version_num FROM alembic_version")))
+        if any(str(rev).isdigit() and int(rev) < 18 for rev in revisions):
+            raise RuntimeError("DATABASE_MIGRATION_REQUIRED: run Alembic upgrade head before starting research workers")
     requirements = {"experiments": {"project_id", "evaluation_hash", "evaluation_config"},
                     "factor_pool_entries": {"project_id", "evaluation_id"},
                     "strategies": {"project_id"}, "tasks": {"attempt_id", "dispatch_pending", "revision"}}

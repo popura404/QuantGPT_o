@@ -25,18 +25,14 @@ async def lock_research_registration(session: AsyncSession, actor_id: uuid.UUID,
 
     Evaluation registration must call this too, before inserting its trial row,
     so an uncommitted concurrent trial cannot race a hypothesis registration.
-    Caller owns commit/rollback; a conflict must restart the whole transaction.
+    The database serializes this short write. No stale revision read causes an
+    unrelated branch to fail when another registration commits first.
     """
     await require_project_member(session, actor_id, project_id, write=True)
-    project = (await session.scalars(select(ResearchProject).where(ResearchProject.id == project_id)
-                                    .execution_options(populate_existing=True))).one_or_none()
-    if project is None:
-        raise ProjectAccessError("Project not found or inaccessible")
-    result = await session.execute(update(ResearchProject).where(ResearchProject.id == project.id,
-                                                                 ResearchProject.revision == project.revision)
-                                   .values(revision=project.revision + 1))
+    result = await session.execute(update(ResearchProject).where(ResearchProject.id == project_id)
+                                   .values(revision=ResearchProject.revision + 1))
     if cast(CursorResult, result).rowcount != 1:
-        raise ValueError("RESEARCH_REGISTRATION_CONFLICT: rollback and retry from fresh project state")
+        raise ProjectAccessError("Project not found or inaccessible")
 
 
 def _event_id(project_id: uuid.UUID, identity: str) -> uuid.UUID:

@@ -7,12 +7,51 @@ import random
 from statistics import mean
 from typing import Sequence
 
+import numpy as np
+
 
 def bonferroni_adjust(p_value: float, n_trials: int) -> float:
     """Return a Bonferroni-adjusted p-value capped at 1.0."""
     if not _finite(p_value) or not 0 <= p_value <= 1 or n_trials < 1:
         raise ValueError("A finite p-value and positive registered trial count are required")
     return min(1.0, float(p_value) * int(n_trials))
+
+
+def block_sign_test(block_totals: Sequence[float], n_trials: int, *, alpha: float = .05) -> dict:
+    """One-sided randomization of net-return blocks with trial-aware tail resolution."""
+    values = np.asarray(block_totals, dtype=float)
+    if values.ndim != 1 or not values.size or not np.isfinite(values).all() or n_trials < 1 or not 0 < alpha < 1:
+        raise ValueError("Finite return blocks, positive trials, and a valid alpha are required")
+    # A zero block contributes the same test statistic under either sign.
+    values = values[values != 0]
+    threshold = alpha / n_trials
+    requested = max(999, math.ceil(10 / threshold) - 1)
+    max_draws = 200_000
+    support = 2 ** len(values) if len(values) < 53 else None
+    exact = support is not None and support <= min(max_draws, requested + 1)
+    draws = support if exact and support is not None else min(requested, max_draws)
+    rng = np.random.default_rng(20261018)
+    # The observed all-positive assignment must count even if a summation order differs.
+    cutoff = values.sum() - 8 * np.finfo(float).eps * np.abs(values).sum()
+    extreme = 0
+    chunk_size = min(512, max(1, 250_000 // max(1, len(values))))
+    for first in range(0, draws, chunk_size):
+        count = min(draws - first, chunk_size)
+        if exact:
+            indices = np.arange(first, first + count)[:, None]
+            signs = 1 - 2 * ((indices >> np.arange(len(values))) & 1)
+        else:
+            signs = rng.choice([-1, 1], size=(count, len(values)))
+        extreme += int(np.count_nonzero((signs * values).sum(axis=1) >= cutoff))
+    p_value = extreme / draws if exact else (extreme + 1) / (draws + 1)
+    minimum = 1 / (draws if exact else draws + 1)
+    if support is not None:
+        minimum = max(minimum, 1 / support)
+        p_value = max(p_value, 1 / support)
+    adjusted = bonferroni_adjust(p_value, n_trials)
+    return {"p_value": p_value, "adjusted_p_value": adjusted, "randomizations": draws,
+            "exact": exact, "minimum_attainable_p": minimum, "resolution_sufficient": minimum <= threshold,
+            "alpha": alpha, "per_trial_alpha": threshold}
 
 
 def benjamini_hochberg(p_values: Sequence[float], alpha: float = 0.05) -> list[dict]:

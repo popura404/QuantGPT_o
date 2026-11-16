@@ -8,16 +8,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from quantgpt.auth import get_current_user
 from quantgpt.db import get_db
-from quantgpt.models import ResearchAuditEvent, User
+from quantgpt.models import User
+from quantgpt.research.comparison import compare_research_strategies
 from quantgpt.research.contracts import EvaluationConfigV1, EvaluationRef, FactorDefinitionV1
 from quantgpt.research.evaluations import (
-    evaluate_factor_batch,
     evaluation_summary,
     get_evaluation,
     read_artifact,
     register_holdout,
 )
+from quantgpt.research.jobs import execute_research_request
 from quantgpt.research.portfolio import PortfolioOptimizationConfig, optimize_signal_reference
+from quantgpt.research.preparation import (
+    get_project_preparation,
+    list_project_imports,
+    prepare_project_demo,
+    register_project_snapshot,
+)
 from quantgpt.research.projects import (
     ProjectAccessError,
     create_project,
@@ -27,7 +34,7 @@ from quantgpt.research.projects import (
     set_project_member,
 )
 from quantgpt.research.runtime import snapshot_root
-from quantgpt.research.strategies import export_strategy_run, get_strategy_run, run_strategy_evaluation
+from quantgpt.research.strategies import export_strategy_run, get_strategy_run
 from quantgpt.research.validation import evaluate_profile
 from quantgpt.strategy.spec import StrategySpecV2
 
@@ -37,18 +44,8 @@ router = APIRouter(prefix="/api/v1/research", tags=["research"])
 @router.post("/projects/{project_id}/offline-demo")
 async def prepare_demo(project_id: uuid.UUID, user: User = Depends(get_current_user),
                          db: AsyncSession = Depends(get_db)):
-    import asyncio
-
-    from quantgpt.research.demo import prepare_offline_demo
-
     try:
-        await require_project_member(db, str(user.id), project_id, write=True)
-        payload = await asyncio.to_thread(prepare_offline_demo, snapshot_root())
-        db.add(ResearchAuditEvent(project_id=project_id, actor_id=uuid.UUID(str(user.id)),
-            action="snapshot_registered", payload={"snapshot_id": payload["config"]["data_inputs"][0]["manifest_id"],
-                                                   "source": "synthetic_offline_fixture"}))
-        await db.commit()
-        return payload
+        return await prepare_project_demo(db, uuid.UUID(str(user.id)), project_id, snapshot_root=snapshot_root())
     except ProjectAccessError as exc:
         raise HTTPException(404, str(exc)) from exc
 
@@ -225,14 +222,8 @@ async def post_holdout(project_id: uuid.UUID, req: HoldoutRequest, user: User = 
 async def post_evaluations(project_id: uuid.UUID, req: EvaluationRequest, user: User = Depends(get_current_user),
                             db: AsyncSession = Depends(get_db)):
     try:
-        if req.config.backend == "wq":
-            from quantgpt.research.jobs import execute_research_request
-
-            return await execute_research_request(db, uuid.UUID(str(user.id)), project_id,
-                {"kind": "factor", "definitions": [item.model_dump(mode="json") for item in req.definitions],
-                 "config": req.config.model_dump(mode="json")})
-        return await evaluate_factor_batch(db, uuid.UUID(str(user.id)), project_id, req.definitions, req.config,
-                                           snapshot_root=snapshot_root())
+        return await execute_research_request(db, uuid.UUID(str(user.id)), project_id,
+                                               {"kind": "factor", **req.model_dump(mode="json")})
     except ProjectAccessError as exc:
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
@@ -275,8 +266,8 @@ async def read_research_artifact(project_id: uuid.UUID, artifact_id: uuid.UUID,
 async def post_strategy_run(project_id: uuid.UUID, req: StrategyRunRequest,
                               user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     try:
-        return await run_strategy_evaluation(db, uuid.UUID(str(user.id)), project_id, req.spec, req.config,
-                                              snapshot_root=snapshot_root())
+        return await execute_research_request(db, uuid.UUID(str(user.id)), project_id,
+                                               {"kind": "strategy", **req.model_dump(mode="json")})
     except ProjectAccessError as exc:
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:
@@ -341,6 +332,48 @@ async def cancel_remote_wait(project_id: uuid.UUID, evaluation_id: str,
 
     try:
         return await cancel_wq_evaluation(db, uuid.UUID(str(user.id)), project_id, evaluation_id)
+    except ProjectAccessError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/preparation")
+async def read_preparation(project_id: uuid.UUID, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    try:
+        return await get_project_preparation(db, uuid.UUID(str(user.id)), project_id, snapshot_root=snapshot_root())
+    except ProjectAccessError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/snapshots/{manifest_id}")
+async def import_snapshot(project_id: uuid.UUID, manifest_id: str, user: User = Depends(get_current_user),
+                          db: AsyncSession = Depends(get_db)):
+    try:
+        return await register_project_snapshot(db, uuid.UUID(str(user.id)), project_id, manifest_id, snapshot_root=snapshot_root())
+    except ProjectAccessError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/projects/{project_id}/snapshot-imports")
+async def list_snapshot_imports(project_id: uuid.UUID, after: str = "", limit: int = 25,
+                                user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    try:
+        return await list_project_imports(db, uuid.UUID(str(user.id)), project_id, snapshot_root=snapshot_root(),
+                                          after=after, limit=limit)
+    except ProjectAccessError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/rounds/{round_id}/comparisons/{augmented_run_id}")
+async def compare_round_strategy(project_id: uuid.UUID, round_id: uuid.UUID, augmented_run_id: uuid.UUID,
+                                 user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    try:
+        return await compare_research_strategies(db, uuid.UUID(str(user.id)), project_id, round_id, augmented_run_id)
     except ProjectAccessError as exc:
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:

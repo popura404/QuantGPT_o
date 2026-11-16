@@ -124,9 +124,7 @@ def test_selection_dates_and_long_only_contract_are_validated(panel):
         config(panel, previous_weights={"A": 1.2})
 
 
-@pytest.mark.asyncio
-async def test_saved_signal_requires_current_project_grant_and_matching_digest(db_session, test_user, panel, monkeypatch):
-    from quantgpt.models import ResearchAuditEvent
+async def prepare_signal(db_session, actor_id, panel):
     from quantgpt.research.contracts import (
         US_RESEARCH_FIELDS,
         DataInputRef,
@@ -138,10 +136,9 @@ async def test_saved_signal_requires_current_project_grant_and_matching_digest(d
         SimulationConfigV1,
     )
     from quantgpt.research.evaluations import register_evaluation, serialize_frame, write_artifact
-    from quantgpt.research.portfolio import optimize_signal_reference
-    from quantgpt.research.projects import ProjectAccessError, create_project
+    from quantgpt.research.projects import create_project
 
-    project = await create_project(db_session, test_user.id, name="Portfolio")
+    project = await create_project(db_session, actor_id, name="Portfolio")
     dates = sorted(panel["session"].unique())
     evaluation_config = EvaluationConfigV1(
         backend="local", direction="higher_is_better",
@@ -156,8 +153,19 @@ async def test_saved_signal_requires_current_project_grant_and_matching_digest(d
         simulation_config=SimulationConfigV1(rebalance_anchor_session=pd.Timestamp(dates[0]).date()),
     )
     definition = FactorDefinitionV1(expression="close", fields=(US_RESEARCH_FIELDS[2],))
-    row, _ = await register_evaluation(db_session, test_user.id, project.id, definition, evaluation_config)
+    row, _ = await register_evaluation(db_session, actor_id, project.id, definition, evaluation_config)
     reference = await write_artifact(db_session, row, "signal", serialize_frame(signals(panel)))
+    return project, row, reference
+
+
+@pytest.mark.asyncio
+async def test_saved_signal_requires_current_project_grant_and_matching_digest(db_session, test_user, panel, monkeypatch):
+    from quantgpt.models import ResearchAuditEvent
+    from quantgpt.research.evaluations import write_artifact
+    from quantgpt.research.portfolio import optimize_signal_reference
+    from quantgpt.research.projects import ProjectAccessError
+
+    project, row, reference = await prepare_signal(db_session, test_user.id, panel)
     monkeypatch.setattr("quantgpt.research.portfolio.load_evaluation_panel", lambda *args: panel)
     with pytest.raises(ProjectAccessError, match="Snapshot"):
         await optimize_signal_reference(db_session, test_user.id, project.id, reference, config(panel), snapshot_root=".")
@@ -182,3 +190,82 @@ async def test_saved_signal_requires_current_project_grant_and_matching_digest(d
     await write_artifact(db_session, row, "portfolio_optimization", trial_payload)
     await write_artifact(db_session, row, "portfolio_optimization", {**trial_payload, "diagnostic_retry": True})
     assert await observed_trial_count(db_session, project.id) == 2
+
+
+@pytest.mark.asyncio
+async def test_risk_selection_published_before_freeze_is_readable_and_late_result_is_discarded(tmp_path, panel, monkeypatch):
+    import asyncio
+    import threading
+    import uuid
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from quantgpt.models import Base, ResearchAuditEvent, ResearchRound, User
+    from quantgpt.research import portfolio
+    from quantgpt.research.rounds import lock_round
+    from quantgpt.research.validation import build_trial_manifest
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'freeze.sqlite'}")
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    actor = uuid.uuid4()
+    resume = threading.Event()
+    ready = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with factory() as session:
+            session.add(User(id=actor, email="freeze@example.invalid", is_active=True))
+            await session.flush()
+            project, row, reference = await prepare_signal(session, actor, panel)
+            session.add(ResearchAuditEvent(project_id=project.id, actor_id=actor, action="snapshot_registered",
+                                           payload={"snapshot_id": "fixture-snapshot"}))
+            campaign = ResearchRound(project_id=project.id, coordinator_id=actor, coordinator_digest="d" * 64,
+                                     selection_config=row.evaluation_config["config"], holdout={}, status="open")
+            session.add(campaign)
+            await session.commit()
+        monkeypatch.setattr(portfolio, "load_evaluation_panel", lambda *args: panel)
+        dates = sorted(panel["session"].unique())
+        first = config(panel, training_end=pd.Timestamp(dates[35]).date(), validation_end=pd.Timestamp(dates[55]).date(),
+                       risk_aversion_candidates=(10,))
+        late = first.model_copy(update={"risk_aversion_candidates": (20,)})
+
+        async def submit(settings):
+            async with factory() as session:
+                return await portfolio.optimize_signal_reference(session, actor, project.id, reference, settings, snapshot_root=".")
+
+        saved = await submit(first)
+        assert saved["performance_observed_trials"] > 0
+        numeric = portfolio.optimize_portfolio
+
+        def pause_after_selection(signals, frame, config):
+            result = numeric(signals, frame, config)
+            if config.risk_aversion_candidates:
+                assert result["performance_observed_trials"] > 0
+                loop.call_soon_threadsafe(ready.set)
+                assert resume.wait(30)
+            return result
+
+        monkeypatch.setattr(portfolio, "optimize_portfolio", pause_after_selection)
+        job = asyncio.create_task(submit(late))
+        try:
+            await asyncio.wait_for(ready.wait(), 30)
+            async with factory() as coordinator:
+                sealed = await lock_round(coordinator, actor, project.id, campaign.id)
+                before = await build_trial_manifest(coordinator, project.id, [row.experiment_id])
+                assert before["portfolio_trials"] == saved["performance_observed_trials"]
+                sealed.status = "frozen"
+                await coordinator.commit()
+        finally:
+            resume.set()
+        with pytest.raises(ValueError, match="ROUND_PARAMETER_SELECTION_FROZEN"):
+            await job
+        monkeypatch.setattr(portfolio, "load_evaluation_panel", lambda *args: pytest.fail("frozen request computed new trials"))
+        assert (await submit(first))["artifact_ref"] == saved["artifact_ref"]
+        with pytest.raises(ValueError, match="ROUND_PARAMETER_SELECTION_FROZEN"):
+            await submit(late)
+        async with factory() as session:
+            assert await build_trial_manifest(session, project.id, [row.experiment_id]) == before
+    finally:
+        resume.set()
+        await engine.dispose()

@@ -40,6 +40,38 @@ class ResearchProject(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class ResearchRound(Base):
+    """One coordinated selection campaign for the project's single final window."""
+
+    __tablename__ = "research_rounds"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    project_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("research_projects.id"), unique=True)
+    coordinator_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"))
+    coordinator_digest: Mapped[str] = mapped_column(String(64))
+    baseline_run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("strategy_runs.id"))
+    selection_config: Mapped[dict] = mapped_column(JSON)
+    holdout: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(20), default="open")
+    frozen: Mapped[dict | None] = mapped_column(JSON)
+    final_evaluation_id: Mapped[str | None] = mapped_column(String(80), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ResearchDirection(Base):
+    __tablename__ = "research_directions"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    round_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("research_rounds.id"), index=True)
+    actor_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"))
+    name: Mapped[str] = mapped_column(String(160))
+    hypothesis: Mapped[str] = mapped_column(Text)
+    credential_digest: Mapped[str] = mapped_column(String(64))
+    finished: Mapped[bool] = mapped_column(Boolean, default=False)
+    legacy_sources: Mapped[list] = mapped_column(JSON, default=list)
+    __table_args__ = (UniqueConstraint("round_id", "name", name="uq_research_round_direction"),)
+
+
 class ProjectMember(Base):
     __tablename__ = "project_members"
 
@@ -417,6 +449,15 @@ class ExperimentResult(Base):
     __table_args__ = (
         Index("ix_experiment_results_experiment_stage", "experiment_id", "stage"),
     )
+
+
+class EvaluationExecutionLease(Base):
+    __tablename__ = "evaluation_execution_leases"
+
+    evaluation_id: Mapped[str] = mapped_column(String(80), ForeignKey("experiments.experiment_id", ondelete="CASCADE"),
+                                              primary_key=True)
+    owner_token: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class ExperimentArtifact(Base):

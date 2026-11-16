@@ -22,7 +22,7 @@ import time
 from abc import ABC, abstractmethod
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +111,7 @@ async def dispatch_pending_tasks_once(session=None) -> int:
     """Drain known local outbox records; unknown and remote requests remain visible."""
     from .db import _get_session_factory
     from .models import Task
+    from .research.projects import ProjectAccessError
     from .task_store import MAX_ACTIVE_TASKS, TERMINAL_TASK_STATUSES, recover_expired_tasks, tasks
 
     if session is None:
@@ -129,7 +130,17 @@ async def dispatch_pending_tasks_once(session=None) -> int:
     for record in rows:
         if (record.params or {}).get("source") == "mcp" and str(record.task_type) != "research_evaluation":
             continue
-        count += bool(await dispatch_durable_task(session, record.id))
+        try:
+            count += bool(await dispatch_durable_task(session, record.id))
+        except ProjectAccessError:
+            # A membership revoked while queued must not starve the next
+            # authorized direction, or launch numerical work under stale access.
+            await session.execute(update(Task).where(
+                Task.id == record.id, Task.revision == record.revision, Task.status.in_(["queued", "pending"]),
+                Task.dispatch_pending.is_(True),
+            ).values(status="failed", error="TASK_PROJECT_ACCESS_REVOKED", dispatch_pending=False,
+                     retryable=False, revision=Task.revision + 1))
+            await session.commit()
     return count
 
 

@@ -107,7 +107,9 @@ from .research.access_ledger import (
 from .research.access_ledger import (
     transition_status as _ledger_transition_status,
 )
+from .research.preparation_tools import register_preparation_tools
 from .research.projects import resolve_mcp_actor
+from .research.round_tools import register_round_tools
 from .statistics.factor_similarity import factor_similarity_report as _factor_similarity_report
 from .statistics.multiple_testing import multiple_testing_report as _multiple_testing_report
 from .strategy.service import (
@@ -210,7 +212,7 @@ mcp = FastMCP(
         "不要直接把单股问题升级为全 CSI500 因子回测。"
         "用于研究结论或候选选择时，score_factor/run_backtest 默认走 OOS selection："
         "train 定方向，valid 选候选。新的共享研究使用 list_research_projects/evaluate_factors，"
-        "strategy_spec/v2 通过 run_research_strategy 运行；最终窗口在项目服务端预注册并锁定。"
+        "多代理使用 create_research_round 冻结研究口径，各方向并发提交，协调者汇总选择后冻结组合并运行最终窗口。"
     ),
     streamable_http_path="/",
     stateless_http=True,
@@ -218,6 +220,9 @@ mcp = FastMCP(
         allowed_hosts=["localhost", "localhost:8003", "127.0.0.1", "127.0.0.1:8003"],
     ),
 )
+
+register_preparation_tools(mcp)
+register_round_tools(mcp)
 
 
 def _enrich_with_fundamentals(

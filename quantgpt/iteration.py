@@ -595,6 +595,7 @@ def generate_iteration_candidates(
                     )
                 last_attempt.update({
                     "status": "success",
+                    "performance_observed": True,
                     "failed": False,
                     "failure_stage": None,
                     "failure_reason": None,

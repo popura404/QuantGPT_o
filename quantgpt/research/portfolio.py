@@ -19,7 +19,7 @@ from scipy.optimize import linprog, minimize
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from quantgpt.models import ExperimentArtifact
+from quantgpt.models import ExperimentArtifact, ResearchRound
 from quantgpt.research.contracts import content_hash
 from quantgpt.research.evaluations import (
     get_evaluation,
@@ -322,6 +322,7 @@ async def optimize_signal_reference(session: AsyncSession, actor_id: uuid.UUID, 
                                       signal_ref: dict, config: PortfolioOptimizationConfig, *,
                                       snapshot_root: str | Path) -> dict:
     from quantgpt.research.evaluations import authorize_data_inputs
+    from quantgpt.research.hypotheses import lock_research_registration
 
     await require_project_member(session, actor_id, project_id, write=True)
     reference = signal_ref.get("artifact_ref", signal_ref)
@@ -341,22 +342,47 @@ async def optimize_signal_reference(session: AsyncSession, actor_id: uuid.UUID, 
     await authorize_data_inputs(session, project_id, frozen)
     identity = content_hash("quantgpt.portfolio/v1", {"signal": reference, "config": config.model_dump(mode="json"),
                                                       "evaluation_hash": evaluation.evaluation_hash})
-    cached = (await session.scalars(select(ExperimentArtifact).where(
+    query = select(ExperimentArtifact).where(
         ExperimentArtifact.experiment_id == evaluation.experiment_id,
         ExperimentArtifact.artifact_type == "portfolio_optimization",
         ExperimentArtifact.payload["portfolio_hash"].as_string() == identity,
-    ))).first()
-    if cached is not None:
+    )
+
+    async def read_cached(cached):
         saved = await read_artifact(session, actor_id, project_id, cast(uuid.UUID, cached.id))
         return {**saved["payload"], "artifact_ref": {"artifact_id": str(cached.id), "kind": saved["kind"],
                 "project_id": str(project_id), "evaluation_id": evaluation_id, "content_sha256": saved["content_sha256"]}}
-    panel = load_evaluation_panel(frozen, snapshot_root)
-    result = await asyncio.to_thread(optimize_portfolio, pd.DataFrame(artifact["payload"]), panel, config)
+
+    cached = (await session.scalars(query)).first()
+    if cached is not None:
+        return await read_cached(cached)
+
+    async def require_open_parameter_selection() -> None:
+        if config.risk_aversion_candidates:
+            status = await session.scalar(select(ResearchRound.status).where(ResearchRound.project_id == project_id))
+            if status not in {None, "open"}:
+                raise ValueError("ROUND_PARAMETER_SELECTION_FROZEN")
+
+    await require_open_parameter_selection()
+
+    def compute():
+        panel = load_evaluation_panel(frozen, snapshot_root)
+        return optimize_portfolio(pd.DataFrame(artifact["payload"]), panel, config)
+
+    result = await asyncio.to_thread(compute)
     payload = {**result, "portfolio_hash": identity, "signal_ref": reference,
                "config": config.model_dump(mode="json"), "evaluation_id": evaluation_id,
                "split_hash": frozen.window.split_hash, "scope": frozen.window.phase,
                "evidence_status": "research_only", "local_strategy_eligible": False}
-    await require_project_member(session, actor_id, project_id, write=True)
+    await lock_research_registration(session, actor_id, project_id)
+    concurrent = (await session.scalars(query)).first()
+    if concurrent is not None:
+        published = await read_cached(concurrent)
+        await session.commit()
+        return published
+    # The coordinator seals the trial manifest under this same project lock.
+    # A computation finishing afterwards must not publish new observed returns.
+    await require_open_parameter_selection()
     output_ref = await write_artifact(session, evaluation, "portfolio_optimization", cast(dict[str, Any], payload))
     await session.commit()
     return {**payload, "artifact_ref": output_ref}

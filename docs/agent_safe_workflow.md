@@ -1,26 +1,26 @@
 # Agent Safe Workflow
 
-## Shared research workflow
+## 主代理准备项目与轮次
 
-先解析认证项目和 capabilities，在首次评价前注册经济假设、冻结基线及项目holdout；固定数据manifest、字段契约、方向、模拟配置和split。使用 `evaluate_factors` 批量提交并按task_id读取状态，再按需读取artifact。网页共同池保存服务端evaluation引用；v2策略保存完整血缘，优化只接受实际signal_ref，导出只接受server strategy_run_id。selection 不运行 final；首次 final 暴露后不能靠修改费用、快照或候选ID重用窗口。WQ仅平台scope，unknown结果必须对账，停止本地等待不等于远端取消。完整接口和限制见 [RESEARCH_API](RESEARCH_API.md)、[执行状态](US_RESEARCH_EXECUTION_STATUS.md)。
+使用 `create_research_project` 或 `list_research_projects` 确认项目。真实数据来自 `list_research_snapshot_imports` 列出的共享清单，按 ID 用 `register_research_snapshot` 导入。用 `get_research_preparation` 检查字段、股票数量和日期，将返回的 `data_input` 写入选择期配置。合成演练可通过 `prepare_research_demo` 取得面板、示例定义和策略模板。
 
-Purpose: give Agents a reproducible path from expression to candidate export.
+在第一次评价前用 `register_research_holdout` 固定最终窗口。若需量化增量，在选择期用 `evaluate_factors` 与 `run_research_strategy` 保存基线，再向 `create_research_round` 传入 `baseline_run_id`。为每个子代理登记不同的 `name` 和 `hypothesis`，保存主代理的 `coordinator_key`，向各子代理分别提供 `project_id`、`round_id`、对应的 `direction_id` 和 `direction_key`。
 
-Recommended MCP flow:
+## 子代理同时探索各自方向
 
-```text
-validate_expression(expression)
-run_backtest(expression, oos_enabled=true, validation_stage="selection", submit_only=true)
-get_mcp_task_status(task_id)
-run_backtest(expression, oos_enabled=true, validation_stage="final", submit_only=true)
-get_mcp_task_status(task_id)
-run_multiple_testing_check(..., experiment_id=experiment_id)
-find_similar_factors(...)
-promote_experiment(experiment_id, provenance)
-export_strategy_candidate(result)
-```
+1. 从快照可用字段构造候选表达式，提交 `submit_research_direction`。同一批定义共用方向与冻结配置。每批返回 `task_id`，多个方向可在同一连接上并发提交。
+2. 通过 `get_mcp_task_status(task_id, include_result=true)` 获取状态与结果。从成功评价取得 `evaluation_id`、`evaluation_hash`、`definition_hash`、`project_id` 和 `backend`，用冻结配置的 `window.phase` 填写组件引用的 `scope`。后续改进可带 `parent_evaluation_id`。可用 `import_research_iteration` 将已有迭代中实际观察过的试验登记到方向历史。
+3. 调用 `finish_research_direction` 表明已结束该方向的提交。遇到失败或取消时记录任务状态和原因，已观察的成功、失败筛选结果均应计入选择过程。
 
-Long-running tools that support this async pattern:
+## 主代理合并并终验
+
+主代理用 `get_research_round` 检查各方向任务，用 `submit_round_strategy` 提交带组件引用的 v2 组合。`compare_research_strategies_to_baseline` 对比预登记基线与增强组合的配对净收益、换手和信号相关性。若要探索组合风险参数，在冻结入选组合前运行 `optimize_research_portfolio`。最终任务冻结时一并封存已观察的参数试验。
+
+当各方向结束且相关任务终止后，用 `finalize_research_round` 提交唯一 `selection_run_id`。任务结果包含冻结的 `trial_manifest`、`validation` 和 `validation_artifact`。按 `get_research_artifact` 读取报告，按 `export_research_strategy` 的实际决策处理候选信号导出。保留 `external_data_acceptance` 状态，复核真实市场数据覆盖。[完整接口](RESEARCH_API.md) · [研究执行状态](US_RESEARCH_EXECUTION_STATUS.md)
+
+## Historical diagnostic tools
+
+The following single-expression tools also support asynchronous requests:
 
 - `run_backtest`
 - `score_factor`

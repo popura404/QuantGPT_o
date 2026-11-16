@@ -43,7 +43,7 @@ The core architecture:
 ```
 LLM Agent (Claude Code / Claude Desktop)
     │
-    ├── MCP Tools (49 个)         ← Agent 的工具箱
+    ├── MCP Tools                 ← 主代理协调多个因子研究方向
     │   ├── Factor research        ← 回测、评分、诊断、OOS、因子截面值
     │   ├── StrategySpec workflow  ← 模板、校验、策略回测、报告、导出、优化
     │   └── WQ BRAIN workflow      ← 模拟、查询、检查、preflight-gated 正式提交
@@ -336,7 +336,9 @@ TrajectoryAnalyzer → MetaEvolutionSelector → Strategy Execution
 | **Web UI** | Browser workbench | 单因子、组合、StrategySpec、WQ BRAIN、任务中心、报告查看、因子库管理 |
 
 <details>
-<summary><b>MCP Tools (49 个)</b></summary>
+<summary><b>MCP Tools</b></summary>
+
+主代理通过 `create_research_round` 分发方向，子代理并发提交候选，再由主代理组合、回测并冻结终验。客户端可用 `tools/list` 查询完整目录。[协作研究流程](docs/agent_safe_workflow.md)
 
 | Category | Tool | Description |
 |:---------|:-----|:------------|
@@ -378,7 +380,7 @@ TrajectoryAnalyzer → MetaEvolutionSelector → Strategy Execution
 | StrategySpec | `run_strategy_backtest` | 运行 StrategySpec 策略回测 |
 | StrategySpec | `score_strategy` | 策略级评分 |
 | StrategySpec | `generate_strategy_report` | 策略 HTML 报告和 summary JSON |
-| StrategySpec | `export_strategy_candidate` | 导出研究候选信号，不包含下单字段 |
+| StrategySpec | `export_research_strategy` | 按项目策略运行引用和服务端验证结果导出研究候选信号 |
 | StrategySpec | `diagnose_strategy` | 策略诊断和 spec 调整建议 |
 | StrategySpec | `run_strategy_anti_overfit` | 策略级反过拟合摘要 |
 | StrategySpec | `run_strategy_rolling_validation` | 策略级 rolling validation |
@@ -404,7 +406,7 @@ TrajectoryAnalyzer → MetaEvolutionSelector → Strategy Execution
 | Knowledge accumulation | Personal notes | None | Lost between sessions | **Structured KB across sessions** |
 | WQ BRAIN integration | -- | -- | -- | **Operator-aligned + preflight-gated submission** |
 | Anti-overfit | -- | -- | -- | **4 statistical tests + walk-forward** |
-| MCP / AI Agent | -- | -- | -- | **49 tools, skill-loop orchestration** |
+| MCP / AI Agent | -- | -- | -- | **Parallel research directions and coordinated strategy validation** |
 | Live trading | Yes | Limited | -- | -- |
 | Intraday data | Yes | Yes | -- | Daily only |
 
@@ -575,7 +577,7 @@ quantgpt/
 │   ├── backtest.py              # Rank-based group backtest engine
 │   ├── market_data.py           # baostock/akshare → Parquet cache
 │   ├── api_server.py            # FastAPI REST API + SSE
-│   ├── mcp_server.py            # FastMCP server (49 tools — Agent's toolkit)
+│   ├── mcp_server.py            # FastMCP server and research tools
 │   ├── iteration.py             # 3-phase evolutionary iteration
 │   ├── mutation_engine.py       # 8 directed mutation strategies
 │   ├── crossover_engine.py      # High-score factor crossover

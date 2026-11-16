@@ -92,3 +92,32 @@ async def test_selection_after_holdout_cannot_read_it_as_warmup(db_session, test
     row, _ = await register_evaluation(db_session, test_user.id, project.id, definition(), selection)
     with pytest.raises(ValueError, match="WITHHELD"):
         await guard_evaluation_window(db_session, test_user.id, row, selection)
+
+
+@pytest.mark.asyncio
+async def test_alternative_iso_dates_cannot_disclose_holdout(db_session, test_user):
+    project = await create_project(db_session, test_user.id, name="Normalized holdout")
+    registered = await register_holdout(db_session, test_user.id, project.id, start="20240301", end="2024-W13-5")
+    assert registered == project.config["holdout"] == {"start": "2024-03-01", "end": "2024-03-29"}
+    selection = config(end="2024-03-15")
+    row, _ = await register_evaluation(db_session, test_user.id, project.id, definition(), selection)
+    with pytest.raises(ValueError, match="WITHHELD"):
+        await guard_evaluation_window(db_session, test_user.id, row, selection)
+
+
+@pytest.mark.asyncio
+async def test_legacy_alternate_holdout_preserves_identity_and_checks_earlier_selection(db_session, test_user):
+    written = {"start": "20240301", "end": "20240329"}
+    project = await create_project(db_session, test_user.id, name="Legacy dates", config={"holdout": written})
+    await register_holdout(db_session, test_user.id, project.id, start="2024-03-01", end="2024-03-29")
+    assert project.config["holdout"] == written
+    final = config("final", "2024-03-01", "2024-03-29")
+    row, _ = await register_evaluation(db_session, test_user.id, project.id, definition(), final)
+    await guard_evaluation_window(db_session, test_user.id, row, final)
+
+    leaked = await create_project(db_session, test_user.id, name="Historical disclosure", config={"holdout": written})
+    selection = config(end="2024-03-18")
+    await register_evaluation(db_session, test_user.id, leaked.id, definition(), selection)
+    final_row, _ = await register_evaluation(db_session, test_user.id, leaked.id, definition(), final)
+    with pytest.raises(ValueError, match="ALREADY_EXPOSED"):
+        await guard_evaluation_window(db_session, test_user.id, final_row, final)

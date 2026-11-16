@@ -7,6 +7,7 @@ accept caller-supplied success booleans as validation or export authorization.
 from __future__ import annotations
 
 import uuid
+from datetime import date
 from pathlib import Path
 from typing import cast
 
@@ -33,6 +34,7 @@ from quantgpt.research.contracts import (
     definition_hash,
     evaluation_hash,
 )
+from quantgpt.research.evaluation_leases import evaluation_execution, fence_evaluation_execution
 from quantgpt.research.projects import ProjectAccessError, require_project_member
 
 
@@ -48,10 +50,19 @@ async def get_evaluation(session: AsyncSession, actor_id: uuid.UUID, project_id:
 
 async def authorize_data_inputs(session: AsyncSession, project_id: uuid.UUID, config: EvaluationConfigV1) -> None:
     """A manifest hash is an identity, never authorization to another project's data."""
-    available = set((await session.scalars(select(ResearchAuditEvent.payload["snapshot_id"].as_string()).where(
-        ResearchAuditEvent.project_id == project_id, ResearchAuditEvent.action == "snapshot_registered"))).all())
-    if any(item.manifest_id not in available for item in config.data_inputs):
-        raise ProjectAccessError("Snapshot not registered in this project")
+    grants = (await session.scalars(select(ResearchAuditEvent.payload).where(
+        ResearchAuditEvent.project_id == project_id, ResearchAuditEvent.action == "snapshot_registered",
+        ResearchAuditEvent.payload["snapshot_id"].as_string().in_([ref.manifest_id for ref in config.data_inputs]),
+    ))).all()
+    for ref in config.data_inputs:
+        matching = [grant for grant in grants if grant.get("snapshot_id") == ref.manifest_id]
+        if not matching:
+            raise ProjectAccessError("Snapshot not registered in this project")
+        # Older grants predate the frozen input contract. Their content digest
+        # is still verified when loading the panel.
+        frozen = [grant["data_input"] for grant in matching if grant.get("data_input") is not None]
+        if frozen and ref.model_dump(mode="json") not in frozen:
+            raise ValueError("REGISTERED_DATA_INPUT_MISMATCH")
 
 
 async def assert_publication_attempt(session: AsyncSession, task_context: dict | None) -> None:
@@ -76,12 +87,13 @@ async def register_evaluation(session: AsyncSession, actor_id: uuid.UUID, projec
     await require_project_member(session, actor_id, project_id, write=True)
     identity = evaluation_hash(definition, config)
     evaluation_id = "ev_" + uuid.uuid5(project_id, identity).hex
-    existing = (await session.scalars(select(Experiment).where(Experiment.experiment_id == evaluation_id))).one_or_none()
-    if existing is not None:
-        return existing, False
     from quantgpt.research.hypotheses import lock_research_registration
 
     await lock_research_registration(session, actor_id, project_id)
+    existing = (await session.scalars(select(Experiment).where(Experiment.experiment_id == evaluation_id)
+                                      .execution_options(populate_existing=True))).one_or_none()
+    if existing is not None:
+        return existing, False
     row = await record_experiment(session, expression=definition.expression, user_id=actor_id,
                                   experiment_id=evaluation_id, params={"market": config.scope.market,
                                   "universe": config.scope.universe_id, "validation_stage": config.window.phase,
@@ -126,21 +138,21 @@ async def read_artifact(session: AsyncSession, actor_id: uuid.UUID, project_id: 
 
 async def register_holdout(session: AsyncSession, actor_id: uuid.UUID, project_id: uuid.UUID,
                             *, start: str, end: str) -> dict:
-    from datetime import date
-
     await require_project_member(session, actor_id, project_id, write=True)
-    if date.fromisoformat(start) >= date.fromisoformat(end):
+    start_date, end_date = date.fromisoformat(start), date.fromisoformat(end)
+    if start_date >= end_date:
         raise ValueError("Holdout start must precede end")
     from quantgpt.research.hypotheses import lock_research_registration
 
     await lock_research_registration(session, actor_id, project_id)
-    project = await session.get(ResearchProject, project_id, with_for_update=True)
+    project = await session.get(ResearchProject, project_id, with_for_update=True, populate_existing=True)
     if project is None:
         raise ProjectAccessError("Project not found")
-    requested = {"start": start, "end": end}
+    requested = {"start": start_date.isoformat(), "end": end_date.isoformat()}
     previous = project.config.get("holdout")
-    if isinstance(previous, dict) and previous == requested:
-        return previous
+    if isinstance(previous, dict) and (date.fromisoformat(previous["start"]), date.fromisoformat(previous["end"])) == (
+            start_date, end_date):
+        return requested
     trials = await session.scalar(select(func.count()).select_from(Experiment).where(Experiment.project_id == project_id))
     if previous or trials:
         raise ValueError("Holdout must be registered before research starts and cannot be overwritten")
@@ -152,24 +164,37 @@ async def register_holdout(session: AsyncSession, actor_id: uuid.UUID, project_i
 async def guard_evaluation_window(session: AsyncSession, actor_id: uuid.UUID, evaluation: Experiment,
                                    config: EvaluationConfigV1) -> None:
     """Freeze/expose at project level; changing ID, lineage or snapshot cannot reset it."""
+    from quantgpt.research.rounds import guard_round_execution
+
     if evaluation.project_id is None:
         raise ProjectAccessError("Legacy evaluations cannot expose a research project holdout")
     await require_project_member(session, actor_id, evaluation.project_id, write=True)
-    project = await session.get(ResearchProject, evaluation.project_id)
+    if config.window.phase in {"selection", "final"}:
+        await guard_round_execution(session, evaluation.project_id, config, str(evaluation.experiment_id))
+    project = await session.get(ResearchProject, evaluation.project_id, populate_existing=True)
     if project is None:
         raise ProjectAccessError("Project not found")
     holdout = project.config.get("holdout")
-    start, end = config.window.start_session.isoformat(), config.window.end_session.isoformat()
+    start, end = config.window.start_session, config.window.end_session
     if config.window.phase == "selection":
         # A later selection window would still read the holdout as lookback
         # history, so checking only score-window overlap is insufficient.
-        if holdout and end >= holdout["start"]:
+        if holdout and end >= date.fromisoformat(holdout["start"]):
             raise ValueError("FINAL_WINDOW_WITHHELD: selection and its feature history must precede the holdout")
         return
     if config.window.phase == "platform":
         return
-    if not holdout or start != holdout["start"] or end != holdout["end"]:
+    if not holdout or start != date.fromisoformat(holdout["start"]) or end != date.fromisoformat(holdout["end"]):
         raise ValueError("FINAL_WINDOW_NOT_PREREGISTERED")
+    if holdout["start"] != start.isoformat():
+        # An older worker compared dates lexically and could have read a
+        # noncanonical holdout as selection data. Repairing the spelling must
+        # never turn such an exposure into an independent final window.
+        window = Experiment.evaluation_config["config"]["window"]
+        exposed = await session.scalar(select(Experiment.id).where(Experiment.project_id == project.id,
+            window["phase"].as_string() == "selection", window["end_session"].as_string() >= start.isoformat()).limit(1))
+        if exposed:
+            raise ValueError("FINAL_WINDOW_ALREADY_EXPOSED: historical selection overlaps the registered holdout")
     # Compare-and-swap serializes competing reservations on SQLite as well as PG.
     revision = project.revision
     result = await session.execute(update(ResearchProject).where(ResearchProject.id == project.id,
@@ -177,7 +202,7 @@ async def guard_evaluation_window(session: AsyncSession, actor_id: uuid.UUID, ev
                                    .values(revision=revision + 1))
     if cast(CursorResult, result).rowcount != 1:
         raise ValueError("FINAL_RESERVATION_CONFLICT: retry reading current project state")
-    key = content_hash("quantgpt.holdout/v1", holdout)
+    key = content_hash("quantgpt.holdout/v1", holdout)  # Preserve the stored identity of older reservations.
     exposure = await session.get(FinalWindowExposure, (project.id, "project", key))
     if exposure is not None:
         if exposure.evaluation_hash != evaluation.evaluation_hash:
@@ -283,75 +308,81 @@ async def evaluate_factor_batch(session: AsyncSession, actor_id: uuid.UUID, proj
     panel_builds = 0
     engine_calls = 0
     for definition, row in records:
-        if cancel_check:
-            cancel_check()
-        await require_project_member(session, actor_id, project_id, write=True)
-        if row.result_summary is not None:
-            continue
-        try:
-            if panel is None:
-                panel = await asyncio.to_thread(load_evaluation_panel, config, snapshot_root)
-                dates = pd.to_datetime(panel["trade_date"])
-                # Never pass the held-out future to parsing, grouping or scoring.
-                panel = cast(pd.DataFrame, panel[dates <= pd.Timestamp(config.window.end_session)].copy())
-                panel_builds += 1
-            missing_fields = sorted({field.name for field in definition.fields} - set(panel.columns))
-            if missing_fields:
-                raise ValueError(f"CAPABILITY_FIELD_UNAVAILABLE: {missing_fields}")
-            simulation = config.simulation_config
-            assert simulation is not None
-            prepared_panel = cast(pd.DataFrame, panel)
+        evaluation_id = str(row.experiment_id)
+        async with evaluation_execution(session, evaluation_id, cancel_check=cancel_check, task_context=task_context) as token:
+            if token is None:
+                await require_project_member(session, actor_id, project_id)
+                await session.refresh(row)
+                continue
+            try:
+                if panel is None:
+                    panel = await asyncio.to_thread(load_evaluation_panel, config, snapshot_root)
+                    dates = pd.to_datetime(panel["trade_date"])
+                    # Never pass the held-out future to parsing, grouping or scoring.
+                    panel = cast(pd.DataFrame, panel[dates <= pd.Timestamp(config.window.end_session)].copy())
+                    panel_builds += 1
+                missing_fields = sorted({field.name for field in definition.fields} - set(panel.columns))
+                if missing_fields:
+                    raise ValueError(f"CAPABILITY_FIELD_UNAVAILABLE: {missing_fields}")
+                simulation = config.simulation_config
+                assert simulation is not None
+                prepared_panel = cast(pd.DataFrame, panel)
 
-            def calculate(simulation: SimulationConfigV1 = simulation):
-                with api_context():
-                    return run_factor_backtest(prepared_panel, expression=definition.expression,
-                        holding_period=simulation.rebalance_every_sessions,
-                        cost_rate=(simulation.fees_bps + simulation.slippage_bps) / 10000,
-                        neutralize_industry="industry" in config.neutralization,
-                        neutralize_cap="market_cap" in config.neutralization,
-                        direction_mode="fixed", fixed_direction=1 if config.direction == "higher_is_better" else -1,
-                        rebalance_anchor=simulation.rebalance_anchor_session.isoformat(), simulation_config=simulation,
-                        evaluation_start=config.window.start_session.isoformat(),
-                        evaluation_end=config.window.end_session.isoformat())
+                def calculate(simulation: SimulationConfigV1 = simulation):
+                    with api_context():
+                        return run_factor_backtest(prepared_panel, expression=definition.expression,
+                            holding_period=simulation.rebalance_every_sessions,
+                            cost_rate=(simulation.fees_bps + simulation.slippage_bps) / 10000,
+                            neutralize_industry="industry" in config.neutralization,
+                            neutralize_cap="market_cap" in config.neutralization,
+                            direction_mode="fixed", fixed_direction=1 if config.direction == "higher_is_better" else -1,
+                            rebalance_anchor=simulation.rebalance_anchor_session.isoformat(), simulation_config=simulation,
+                            evaluation_start=config.window.start_session.isoformat(),
+                            evaluation_end=config.window.end_session.isoformat())
 
-            engine_calls += 1
-            output = await asyncio.to_thread(calculate)
-            if cancel_check:
-                cancel_check()
-            await assert_publication_attempt(session, task_context)
-            await require_project_member(session, actor_id, project_id, write=True)
-            metrics = {key: value for key, value in output.items()
-                       if not key.startswith("_") and isinstance(value, (int, float, str, bool))
-                       and (not isinstance(value, float) or math.isfinite(value))}
-            from quantgpt.research.cards import build_factor_research_card
-            from quantgpt.research.hypotheses import get_hypothesis
-            from quantgpt.research.validation import observed_trial_count
+                engine_calls += 1
+                output = await asyncio.to_thread(calculate)
+            except CancelledException:
+                raise
+            except (ValueError, KeyError, ArithmeticError) as exc:
+                await fence_evaluation_execution(session, evaluation_id, token)
+                await assert_publication_attempt(session, task_context)
+                await require_project_member(session, actor_id, project_id, write=True)
+                row.failure_reason = str(exc)
+                row.status = "rejected"
+                # Execution failures are distinct from observed rejected research trials.
+                row.result_summary = {"performance_observed": False, "research_decision": "insufficient_data",
+                                      "error_code": "EVALUATION_FAILED", "retryable": False,
+                                      "next_action": "resolve_reported_data_or_contract_blocker"}
+            else:
+                if cancel_check:
+                    cancel_check()
+                await fence_evaluation_execution(session, evaluation_id, token)
+                await assert_publication_attempt(session, task_context)
+                await require_project_member(session, actor_id, project_id, write=True)
+                metrics = {key: value for key, value in output.items()
+                           if not key.startswith("_") and isinstance(value, (int, float, str, bool))
+                           and (not isinstance(value, float) or math.isfinite(value))}
+                from quantgpt.research.cards import build_factor_research_card
+                from quantgpt.research.hypotheses import get_hypothesis
+                from quantgpt.research.validation import observed_trial_count
 
-            hypothesis = await get_hypothesis(session, actor_id, project_id, definition_hash(definition))
-            card = build_factor_research_card(evaluation_id=str(row.experiment_id), definition=definition,
-                config=config, output=output, hypothesis_registration=hypothesis,
-                trial_count=await observed_trial_count(session, project_id) + 1)
-            returns = output["strategy_returns"].rename("return").rename_axis("session").reset_index()
-            artifacts = [await write_artifact(session, row, "returns", serialize_frame(returns))]
-            if "_factor_df" in output:
-                artifacts.append(await write_artifact(session, row, "factor_values", serialize_frame(output["_factor_df"])))
-            artifacts.append(await write_artifact(session, row, "research_card", card))
-            row.result_summary = {"metrics": metrics, "artifacts": artifacts, "performance_observed": True,
-                                  "phase": config.window.phase, "research_decision": "not_evaluated",
-                                  "blockers": ["VALIDATION_PROFILE_INCOMPLETE"],
-                                  "engine_used": "python", "semantics_version": config.engine.semantics_version}
-            row.status = "backtested_train" if config.window.phase == "selection" else "validated_oos"
-            row.evidence_status = "research_only"
-        except CancelledException:
-            raise
-        except Exception as exc:
-            row.failure_reason = str(exc)
-            row.status = "rejected"
-            # Execution failures are distinct from observed rejected research trials.
-            row.result_summary = {"performance_observed": False, "research_decision": "insufficient_data",
-                                  "error_code": "EVALUATION_FAILED", "retryable": False,
-                                  "next_action": "resolve_reported_data_or_contract_blocker"}
-        await session.commit()
+                hypothesis = await get_hypothesis(session, actor_id, project_id, definition_hash(definition))
+                card = build_factor_research_card(evaluation_id=str(row.experiment_id), definition=definition,
+                    config=config, output=output, hypothesis_registration=hypothesis,
+                    trial_count=await observed_trial_count(session, project_id) + 1)
+                returns = output["strategy_returns"].rename("return").rename_axis("session").reset_index()
+                artifacts = [await write_artifact(session, row, "returns", serialize_frame(returns))]
+                if "_factor_df" in output:
+                    artifacts.append(await write_artifact(session, row, "factor_values", serialize_frame(output["_factor_df"])))
+                artifacts.append(await write_artifact(session, row, "research_card", card))
+                row.result_summary = {"metrics": metrics, "artifacts": artifacts, "performance_observed": True,
+                                      "phase": config.window.phase, "research_decision": "not_evaluated",
+                                      "blockers": ["VALIDATION_PROFILE_INCOMPLETE"],
+                                      "engine_used": "python", "semantics_version": config.engine.semantics_version}
+                row.status = "backtested_train" if config.window.phase == "selection" else "validated_oos"
+                row.evidence_status = "research_only"
+            await session.commit()
         if cancel_check:
             cancel_check()
     return {"evaluations": [evaluation_summary(row) for _, row in records],

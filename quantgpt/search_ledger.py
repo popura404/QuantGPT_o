@@ -83,6 +83,67 @@ def summarize_attempts(attempts: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
+async def load_observed_iteration_trials(session, actor_id: uuid.UUID, task_id: str, *, project_id=None) -> list[dict]:
+    """Import every observed candidate of an owned, completed legacy iteration."""
+    from .models import Task
+    from .research.contracts import content_hash
+
+    task = await session.get(Task, task_id)
+    if task is None or str(task.user_id) != str(actor_id):
+        raise ValueError("ITERATION_TASK_NOT_FOUND")
+    if task.project_id is not None:
+        from .research.projects import require_project_member
+
+        if project_id != task.project_id:
+            raise ValueError("ITERATION_TASK_NOT_FOUND")
+        await require_project_member(session, actor_id, task.project_id)
+    # The terminal status also identifies historical iteration tasks whose
+    # task_type predates the explicit iteration discriminator.
+    if task.status != "iteration_completed":
+        raise ValueError("COMPLETED_ITERATION_REQUIRED")
+    saved = task.result or {}
+    # The published task result survives best-effort writes of individual attempts.
+    # Older workers sometimes kept the attempt only in the search ledger.
+    attempts = {str(a["id"]): a for a in saved.get("search_attempts", []) if a.get("id")}
+    rows = await session.scalars(select(FactorSearchAttempt).where(
+        FactorSearchAttempt.task_id == task_id, FactorSearchAttempt.user_id == task.user_id))
+    for row in rows:
+        if row.status == "success" and not row.failed:
+            attempts.setdefault(str(row.id), {"id": str(row.id), "status": row.status,
+                "expression": row.expression, "raw_score": row.raw_score})
+    observations = {}
+    missing_evidence = set()
+    for attempt in attempts.values():
+        score = attempt.get("raw_score")
+        if attempt.get("performance_observed", attempt.get("status") == "success" and not attempt.get("failed")):
+            if type(score) in (float, int) and math.isfinite(score):
+                observations[str(attempt["id"])] = attempt["expression"]
+            else:
+                missing_evidence.add(attempt["expression"])
+    candidates = saved.get("candidates", [])
+    if not attempts and not candidates:
+        raise ValueError("ITERATION_HISTORY_UNAVAILABLE")
+    for candidate in candidates:
+        score = candidate.get("raw_score", candidate.get("score"))
+        if candidate.get("status") != "success":
+            continue
+        expr = candidate["expression"]
+        if type(score) not in (float, int) or not math.isfinite(score):
+            missing_evidence.add(expr)
+            continue
+        attempt_id = (candidate.get("search_attempt") or {}).get("id")
+        if not attempt_id:
+            # Pre-ledger published results identify each evaluated expression in this task.
+            if expr in observations.values():
+                continue
+            attempt_id = content_hash("quantgpt.legacy_candidate/v1", [task_id, expression_key(expr)])
+        observations[str(attempt_id)] = expr
+    if missing_evidence.difference(observations.values()):
+        raise ValueError("ITERATION_OBSERVED_EVIDENCE_INCOMPLETE")
+    return [{"trial_key": f"legacy:{task_id}:{attempt_id}", "task_id": task_id, "attempt_id": attempt_id,
+             "expression_key": expression_key(expr)} for attempt_id, expr in sorted(observations.items())]
+
+
 def attempt_payload(
     *,
     user_id: str,

@@ -40,3 +40,39 @@ MCP 新工具：`list_research_projects`、`evaluate_factors`、`run_research_st
 检查包括收益重放、OHLCV、标签边界、成本配置、策略目标权重约束与组件血缘。至少60会话的已预留 final、fresh_cash 情形会分三段重新运行固定候选，报告明确不是滚动重新训练。净收益块符号随机化只作零假设诊断，Bonferroni 使用服务端完整观察试验数；它不代替截面因子 placebo 或基准超额收益验证。没有预登记比较库的 similarity、短样本 walk-forward 等保留 `insufficient_data`，不补造 passed。
 
 报告中的 `offline_data_acceptance/v1` 契约列出冻结输入、raw 口径、日历，以及真实价格覆盖、完整公司行动/退市终值、历史成分和 total-return 基准所需证据。快照完整性通过不代表供应商数据覆盖通过。按本轮范围，`external_acceptance=not_run`、`allowed=false`，真实数据验收仍明确阻断。
+
+## 项目准备与组合基线
+
+| MCP 工具 | HTTP 路径（相对 `/api/v1/research`） | 用途 |
+|---|---|---|
+| `create_research_project` | POST `/projects` | 创建当前身份拥有的研究项目 |
+| `get_research_preparation` | GET `/projects/{id}/preparation` | 查看已登记假设、最终窗口和本项目快照的实际字段、日期及覆盖 |
+| `list_research_snapshot_imports` | GET `/projects/{id}/snapshot-imports` | 分页发现管理员共享的面板清单与字段，`next_cursor` 作为下一页的 `after` |
+| `register_research_snapshot` | POST `/projects/{id}/snapshots/{manifest_id}` | 导入服务器共享目录内的冻结面板，返回可用于 evaluation 配置的 `data_input` |
+| `prepare_research_demo` | POST `/projects/{id}/offline-demo` | 生成合成面板与示例配置以验证工程流程 |
+| `register_research_holdout` | POST `/projects/{id}/holdout` | 在项目第一次评价前登记终验区间 |
+| `register_research_hypothesis` | POST `/projects/{id}/hypotheses` | 在该因子第一次评价前冻结经济假设 |
+| `compare_research_strategies_to_baseline` | POST `/projects/{id}/rounds/{round_id}/comparisons/{augmented_run_id}` | 比较已保存的增强策略和该轮预登记基线，返回证据与 artifact 引用 |
+
+管理员用 `QUANTGPT_RESEARCH_IMPORT_ROOT` 指定可向项目公开的冻结面板目录。该目录与 `QUANTGPT_RESEARCH_SNAPSHOT_ROOT` 各自独立。共享目录包含 `freeze_market_frame` 生成的 `ds_…/manifest.json` 与 `market.parquet`。项目写成员可以按清单 ID 导入，共用目录的内容应已获准向所有项目研究成员共享。服务端校验文件字节和逻辑内容哈希后，保存一份可重放的私有副本。已有授权可随时重新核验。返回的 `asof_basis=server_snapshot_registration` 指服务器登记版本的时刻。价格基准、历史股票池、公司行动和总回报基准的外部证据仍需单独验收。
+
+准备基线时，先登记项目最终窗口，在 selection 窗口运行基线策略，然后在创建研究轮次时绑定该 `baseline_run_id`。由研究方向提出新增组件，在相同冻结快照、selection 窗口、费用和调仓规则上运行增强组合。比较要求保留基线全部组件及它们之间的相对权重。结果包含两组复合净收益、配对日收益差、移动块重抽样区间、按证券交集计算的日截面秩相关及覆盖量。区间需要足够的交易日。每日换手取买卖成交额之和的一半，再除以该日的期初净值，最后按交易日取平均。这些度量描述选择期的增量表现，独立终验在轮次冻结后单独运行。
+
+## 多方向协作轮次
+
+使用 Alembic 管理的数据库先执行 `alembic -c alembic.deploy.ini upgrade head` 升级到 018，再启动 MCP 服务。
+
+一轮研究共享项目、选择期、快照、模拟配置和一次最终留出窗口。项目所有者或管理员创建轮次，保存 `coordinator_key`，将每个方向的 `direction_id` 和对应的 `direction_key` 交给负责该方向的子代理。共用一个 MCP 身份时可省略方向的 `actor_id`。使用不同登录身份时，创建轮次时指定相应项目成员的 `actor_id`。同一项目有一个受管轮次，项目成员可以查询进度。若需要恢复创建请求，首次创建时传入自行生成并保存的随机 `coordinator_key`，长度至少 32 个字符。
+
+| MCP 工具 | 调用者与输入 | 结果 |
+|---|---|---|
+| `create_research_round` | 协调者传入项目、`config`、`holdout_start`、`holdout_end`、各方向的 `name` 和 `hypothesis`，可指定已回测的 `baseline_run_id` | `round_id`、协调者凭据和各方向凭据 |
+| `submit_research_direction` | 各子代理并发传入轮次、自己的方向凭据和 `definitions`，可指定 `idempotency_key`、高低方向 `direction` 及上游 `parent_evaluation_id` | 返回任务 ID，相同定义和计算配置的数值结果按评价身份复用 |
+| `import_research_iteration` | 子代理传入方向凭据和已有迭代任务的 `task_id` | 将整批已观察候选登记为该方向的研究历史 |
+| `cancel_research_round_task` | 子代理用方向凭据取消自己的任务，协调者用轮次凭据处理指定任务 | 取消结果或当前终态；协调者可用原 `selection_run_id` 再次调用终验，恢复同一冻结任务 |
+| `finish_research_direction` | 子代理使用自己的凭据结束提交，协调者也可接手关闭离线成员的方向 | 关闭该方向的新提案，记录关闭人；终验仍需等待在途任务结束 |
+| `get_research_round` | 项目成员传入 `project_id` 和 `round_id` | 方向假设、各提案表达式与结果引用、指标、失败原因和当前试验数；冻结后返回固定清单和报告引用 |
+| `submit_round_strategy` | 协调者提交组合的 v2 `spec`、组件引用和协调者凭据 | 选择期策略回测任务，完成后取得 `strategy_run_id` |
+| `finalize_research_round` | 协调者传入 `selection_run_id` 和协调者凭据 | 冻结入选策略及试验集合，提交单次 final 任务 |
+
+对每个后台任务使用 `get_mcp_task_status(task_id, include_result=true)` 取回结果。选择阶段可以运行多个候选组合。存在预登记基线时，在终验前用 `compare_research_strategies_to_baseline` 查看新增因子的配对净收益差、区间与换手，再决定冻结哪一份选择期结果。最终任务的 `validation` 包含 OOS、滚动窗口、试验校正和数据验收状态。用 `get_research_artifact` 及 `validation_artifact.artifact_id` 可再次读取同一份报告。
