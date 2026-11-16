@@ -376,7 +376,7 @@ def run_factor_backtest(
     if evaluation_end is not None:
         work_ic = cast(pd.DataFrame, work_ic.loc[work_ic["trade_date"] <= pd.Timestamp(evaluation_end)])
     work_ic["factor_value"] = raw_factor_for_ic.reindex(work_ic.index)
-    pearson_ic_series, rank_ic_series = _calc_ic_series(work_ic, holding_period)
+    pearson_ic_series, rank_ic_series = _calc_ic_series(work_ic, holding_period, evaluation_end=evaluation_end)
     # Warmup observations are inputs to the factor, not scored observations.
     # Build complete labels first (already capped at end above), then retain
     # only signal dates inside the registered evaluation window.
@@ -536,7 +536,7 @@ def _calc_max_drawdown(returns: pd.Series) -> float:
 
 
 def _calc_ic_series(
-    work: pd.DataFrame, holding_period: int
+    work: pd.DataFrame, holding_period: int, *, evaluation_end=None
 ) -> tuple:
     """Calculate per-period IC and Rank IC series.
 
@@ -549,7 +549,7 @@ def _calc_ic_series(
     work = work.sort_values(["stock_code", "trade_date"]).reset_index(drop=True)
     work["trade_date"] = pd.to_datetime(work["trade_date"])
 
-    work["fwd_ret"] = forward_total_returns(work, holding_period)
+    work["fwd_ret"] = forward_total_returns(work, holding_period, evaluation_end=evaluation_end)
 
     valid = work.dropna(subset=["factor_value", "fwd_ret"])
     if valid.empty:

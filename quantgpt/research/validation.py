@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 
 from sqlalchemy import case, func, select
@@ -9,8 +10,9 @@ from sqlalchemy import case, func, select
 from quantgpt.models import Experiment, ExperimentArtifact, ResearchDirection, ResearchRound
 from quantgpt.research.contracts import content_hash
 from quantgpt.research.evaluations import get_evaluation, read_artifact, verify_frozen_config
+from quantgpt.research.evidence_catalog import read_published_evidence
 
-POLICY_VERSION = "offline_validation/v3"
+POLICY_VERSION = "offline_validation/v4"
 
 
 def archived_validation_notice(report: dict) -> dict | None:
@@ -136,6 +138,8 @@ async def evaluate_profile(session, actor_id, project_id, evaluation_id: str, *,
     summary = row.result_summary or {}
     checks = summary.get("validation_checks") or {}
     offline = None
+    external = None
+    validated = False
     if profile != "wq_remote":
         round_context = None
         if row.evaluation_config is not None and row.evaluation_config["config"]["window"]["phase"] == "final":
@@ -149,6 +153,9 @@ async def evaluate_profile(session, actor_id, project_id, evaluation_id: str, *,
         )
         payload = ExperimentArtifact.payload
         query = query.where(payload["policy"].as_string() == POLICY_VERSION)
+        if row.evaluation_config is not None:
+            release = await asyncio.to_thread(read_published_evidence, row.evaluation_config["config"]["data_inputs"][0]["manifest_id"])
+            query = query.where(payload["external_evidence_revision"].as_string() == release.revision)
         if round_context is not None:
             manifest = round_context["trial_manifest"]
             n_trials = manifest["observed_trials"]
@@ -177,19 +184,27 @@ async def evaluate_profile(session, actor_id, project_id, evaluation_id: str, *,
                 blockers.append("OFFLINE_VALIDATION_STALE_TRIAL_COUNT")
             else:
                 checks = report["checks"]
-            blockers.extend(report["external_acceptance"]["blockers"])
+                validated = report["allowed"] is True
+            external = report["external_acceptance"]
+            blockers.extend(external["blockers"])
+            if external["status"] != "passed" and "EXTERNAL_DATA_ACCEPTANCE_REQUIRED" not in blockers:
+                blockers.append("EXTERNAL_DATA_ACCEPTANCE_REQUIRED")
+            if external["status"] == "passed" and verify_frozen_config(row).engine.conformance != "verified":
+                blockers.append("ENGINE_CONFORMANCE_UNVERIFIED")
         elif await session.scalar(select(ExperimentArtifact.id).where(
                 ExperimentArtifact.experiment_id == evaluation_id, ExperimentArtifact.artifact_type == "offline_validation",
                 payload["profile"].as_string() == profile).limit(1)):
             blockers.append("OFFLINE_VALIDATION_REPLAY_REQUIRED")
+        if external is None:
+            blockers.append("EXTERNAL_DATA_ACCEPTANCE_REQUIRED")
     for name in rules["required"]:
         check = checks.get(name)
         if not isinstance(check, dict) or check.get("status") != "passed":
             blockers.append(f"REQUIRED_EVIDENCE:{name}")
-    if row.evidence_status in {None, "legacy_unverified", "research_only"}:
+    if row.evidence_status in {None, "legacy_unverified", "research_only"} and not validated:
         blockers.append("EVIDENCE_NOT_VERIFIED")
     return {"schema_version": "validation_profile/v1", "profile": profile, "evaluation_id": evaluation_id,
             "evaluation_hash": row.evaluation_hash, "allowed": not blockers, "blockers": blockers,
             "checks": checks, "requirements": rules,
-            "offline_validation": offline,
+            "offline_validation": offline, "external_acceptance": external,
             "research_decision": "accepted" if not blockers else summary.get("research_decision", "insufficient_data")}

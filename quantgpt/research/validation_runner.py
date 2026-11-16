@@ -28,20 +28,22 @@ from quantgpt.research.evaluations import (
     verify_frozen_config,
     write_artifact,
 )
+from quantgpt.research.evidence_catalog import read_published_evidence
+from quantgpt.research.external_evidence import validate_external_evidence
 from quantgpt.research.market_inputs import check_signal_availability
 from quantgpt.research.projects import require_project_member
 from quantgpt.research.returns import annualized_return
 from quantgpt.research.runtime import local_engine_identity
-from quantgpt.research.validation import POLICY_VERSION, observed_trial_count
+from quantgpt.research.validation import POLICY_VERSION, VALIDATION_PROFILES, observed_trial_count
 from quantgpt.statistics.multiple_testing import block_sign_test
 
 MIN_SESSIONS = 20
 
 
-def _data_contract(config: EvaluationConfigV1) -> dict:
-    """Describe verified bytes and the evidence still required from a real feed."""
-    return {"schema_version": "offline_data_acceptance/v1",
-        "snapshot_integrity": "verified", "external_acceptance": "not_run",
+def _data_contract(config: EvaluationConfigV1, external: dict) -> dict:
+    """Summarize the evidence checked for this exact scope and price history."""
+    contract: dict = {"schema_version": "offline_data_acceptance/v2",
+        "snapshot_integrity": "verified", "external_acceptance": external["status"],
         "inputs": [item.model_dump(mode="json") for item in config.data_inputs],
         "price_basis": "raw", "calendar": {"id": config.scope.calendar_id, "version": config.scope.calendar_version},
         "required_external_evidence": [
@@ -55,6 +57,9 @@ def _data_contract(config: EvaluationConfigV1) -> dict:
             {"kind": "benchmark", "status": "unverified",
              "required": ["total_return", "currency", "dividend_reinvestment_policy", "complete_scoring_sessions"]},
         ]}
+    for requirement in contract["required_external_evidence"]:
+        requirement["status"] = external["checks"][requirement["kind"]]["status"]
+    return contract
 
 
 def _check(passed: bool, **details: Any) -> dict:
@@ -276,19 +281,28 @@ async def run_local_validation(session: AsyncSession, actor_id: uuid.UUID, proje
                 raise ValueError("SELECTION_NOT_FROZEN_BEFORE_FINAL_EXPOSURE")
     trials = (round_context["trial_manifest"]["observed_trials"] if round_context is not None
               else await observed_trial_count(session, project_id))
+    published = await asyncio.to_thread(read_published_evidence, config.data_inputs[0].manifest_id, include_payload=True)
+    task_params = (task_context or {}).get("params") or {}
+    if "external_evidence_revision" in task_params and task_params["external_evidence_revision"] != published.revision:
+        raise ValueError("EXTERNAL_EVIDENCE_CHANGED: resubmit validation against the current release")
     identity = {"policy": POLICY_VERSION, "evaluation_hash": row.evaluation_hash,
+                "external_evidence_revision": published.revision,
                 "selection_hash": selected.evaluation_hash if selected else None, "observed_project_trials": trials,
                 "source_artifacts": source_refs}
     if round_context is not None:
         identity.update(round_id=str(round_context["round_id"]), selection_evaluation_id=selection_evaluation_id,
                         trial_manifest_hash=round_context["trial_manifest"]["manifest_hash"])
-    report_key = content_hash("quantgpt.offline_validation/v3", identity)
+    report_key = content_hash("quantgpt.offline_validation/v4", identity)
     existing = (await session.scalars(select(ExperimentArtifact.id).where(
         ExperimentArtifact.experiment_id == evaluation_id, ExperimentArtifact.artifact_type == "offline_validation",
         ExperimentArtifact.payload["report_key"].as_string() == report_key))).first()
     if existing:
         return (await read_artifact(session, actor_id, project_id, existing))["payload"]
     panel = await asyncio.to_thread(load_evaluation_panel, config, snapshot_root)
+    external = await asyncio.to_thread(validate_external_evidence, panel, config, published.payload)
+    if published.error:
+        external.update(status="failed", blockers=["EXTERNAL_DATA_ACCEPTANCE_REQUIRED", published.error])
+    external["evidence_revision"] = published.revision
     panel = cast(pd.DataFrame, panel[pd.to_datetime(panel.trade_date) <= pd.Timestamp(config.window.end_session)].copy())
     if "strategy" in frozen:
         from quantgpt.research.strategies import check_factor_lineage
@@ -297,6 +311,9 @@ async def run_local_validation(session: AsyncSession, actor_id: uuid.UUID, proje
         panel.attrs["factor_fields"] = await check_factor_lineage(session, actor_id, project_id,
             StrategySpecV2.model_validate(frozen["strategy"]), config)
     checks = await asyncio.to_thread(_numerical_checks, panel, frozen, config, saved, trials, cancel_check)
+    checks["data_quality"].update(historical_membership=external["checks"]["historical_universe"]["status"],
+                                  corporate_action_coverage=external["checks"]["corporate_actions"]["status"])
+    checks["signal_availability"]["external_acceptance"] = external["status"]
     count_scope = "frozen_round" if round_context is not None else "project"
     checks["trial_correction"].update(trial_count_scope=count_scope, observed_trials=trials)
     profile = "local_strategy" if "strategy" in frozen else "local_factor"
@@ -319,14 +336,14 @@ async def run_local_validation(session: AsyncSession, actor_id: uuid.UUID, proje
         checks["factor_lineage"] = _check(True)
     else:
         checks["similarity"] = {"status": "insufficient_data", "reason": "A preregistered comparison library of aligned signals is required"}
+    allowed = (config.window.phase == "final" and external["status"] == "passed" and not external["blockers"]
+               and config.evidence_eligibility == "eligible_for_validation"
+               and all(checks.get(name, {}).get("status") == "passed" for name in VALIDATION_PROFILES[profile]["required"]))
     report = {"schema_version": POLICY_VERSION, "report_key": report_key, **identity,
               "evaluation_id": evaluation_id, "profile": profile, "status": "completed",
               "trial_count_scope": count_scope,
-              "checks": checks, "scope": "offline_replay_and_diagnostics", "allowed": False,
-              "data_contract": _data_contract(config),
-              "external_acceptance": {"status": "not_run", "blockers": ["EXTERNAL_DATA_ACCEPTANCE_REQUIRED",
-                  "HISTORICAL_UNIVERSE_UNVERIFIED", "CORPORATE_ACTION_COVERAGE_UNVERIFIED",
-                  "TOTAL_RETURN_BENCHMARK_UNVERIFIED"]}}
+              "checks": checks, "scope": "offline_replay_and_diagnostics", "allowed": allowed,
+              "data_contract": _data_contract(config, external), "external_acceptance": external}
     for attempt in range(3):
         if cancel_check:
             cancel_check()

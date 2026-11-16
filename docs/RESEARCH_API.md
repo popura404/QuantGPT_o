@@ -39,7 +39,20 @@ MCP 新工具：`list_research_projects`、`evaluate_factors`、`run_research_st
 
 检查包括收益重放、OHLCV、标签边界、成本配置、策略目标权重约束与组件血缘。至少60会话的已预留 final、fresh_cash 情形会分三段重新运行固定候选，报告明确不是滚动重新训练。净收益块符号随机化只作零假设诊断，Bonferroni 使用服务端完整观察试验数；它不代替截面因子 placebo 或基准超额收益验证。没有预登记比较库的 similarity、短样本 walk-forward 等保留 `insufficient_data`，不补造 passed。
 
-报告中的 `offline_data_acceptance/v1` 契约列出冻结输入、raw 口径、日历，以及真实价格覆盖、完整公司行动/退市终值、历史成分和 total-return 基准所需证据。快照完整性通过不代表供应商数据覆盖通过。按本轮范围，`external_acceptance=not_run`、`allowed=false`，真实数据验收仍明确阻断。
+### 外部行情证据
+
+先用 `register_research_snapshot` 授权项目使用行情快照。部署方将核过来源的 `external_market_evidence/v1` JSON 发布至 `QUANTGPT_RESEARCH_EVIDENCE_ROOT/<manifest_id>/evidence.json`。此目录由部署方管理并向服务提供只读访问。MCP 和 HTTP 调用只需评价 ID。侧车中的 `manifest_id`、`content_sha256`、完整 `scope`、`coverage_start` 与 `coverage_end` 绑定原快照及被评价的输入历史。每项证据的 `provenance` 保存 `provider`、`dataset`、`release`、`source_ref` 和部署方审阅过的 `license_ref`。实际行情样本的生成器示范了缺证时如何保留可核对的部分。
+
+| 节点 | 终验核对内容 |
+|---|---|
+| `prices` | 对照原始 OHLCV、币种和复权口径，逐证券逐日比对交易所日历、记录和可见时间 |
+| `historical_universe` | 对照稳定证券 ID、ticker、成员生效区间及当时可知的时间。固定池还需有首次使用前登记的选择时间 |
+| `corporate_actions` | 逐证券核对分拆、现金分红、支付日、退市终值及整个窗口的事件覆盖 |
+| `benchmark` | 核对预登记总回报基准、币种和股息再投资口径，逐日重算收益并核对连续指数点位 |
+
+对已登记的评价运行 `validate_research_evaluation`，或完成 `finalize_research_round`。查看 `validation.external_acceptance.checks` 中的分项状态、原因、记录数和来源。`not_run` 表示缺少该项证据，`insufficient_data` 表示提供了证据但覆盖或授权不足，`failed` 标识矛盾或无效输入。全部核对通过及来源可用时，外部状态才为 `passed`。策略导出还会核对独立策略验证与引擎状态。
+
+部署方原子替换证据文件后可对原评价重新运行验证。报告、验证任务及导出判断均绑定文件字节的 SHA-256。过期报告保留原内容与摘要，新证据可以复用原始收益和冻结试验分母。研究期与留出期的原始收益和行情不会写入外部证据摘要。
 
 ## 项目准备与组合基线
 
@@ -62,7 +75,7 @@ MCP 新工具：`list_research_projects`、`evaluate_factors`、`run_research_st
 
 本地因子、组合和验证重放使用项目登记的面板。固定池使用面板内的证券，支持自建 `universe_id`。美股市场支持 `us_equity` 和 `us`。动态池须提供稳定的 `security_id` 和冻结的 `universe_membership` 记录，每条包含 `security_id`、`valid_from`、`valid_to`、带时区的 `available_at`。成员区间左闭右开。本地执行器校验每个决策日面板内的证券与当时已知的成员集合完全一致。只有固定证券样本时，填写 `universe_mode=fixed_cohort`。
 
-日频信号默认在登记交易所当日实际收盘时刻计算，包括提前收盘日。自定义时点可在面板中提供带时区、同一会话收盘后或收盘时的 `decision_at`。面板的 `available_at` 和所用字段各自的 `<field>_available_at` 必须不晚于决策时刻。使用财报或其他声明 `requires_vintage` 的字段时，每个非空观测还需提供 `<field>_revision_id` 和字段级可用时点。明确迟发的输入会使该次计算失败。无法核验一般字段发布时间时，报告通过 `signal_availability.unverified_fields` 列出字段，外部数据验收状态仍为 `not_run`。
+日频信号默认在登记交易所当日实际收盘时刻计算，包括提前收盘日。自定义时点可在面板中提供带时区、同一会话收盘后或收盘时的 `decision_at`。面板的 `available_at` 和所用字段各自的 `<field>_available_at` 必须不晚于决策时刻。使用财报或其他声明 `requires_vintage` 的字段时，每个非空观测还需提供 `<field>_revision_id` 和字段级可用时点。明确迟发的输入会使该次计算失败。无法核验一般字段发布时间时，报告通过 `signal_availability.unverified_fields` 列出字段，发布证据中的可见时间和授权会在 `external_acceptance.checks.prices` 中独立报告。
 
 快照准备从供应商声明、冻结元数据及行内 `adjustment` 核对价格口径。确认未复权时，优化器可以用普通 `open`、`close` 读取原始价格，并结合 `volume` 估计流动性。分红在除息日进入应收及净值，在支付日进入可用现金；持仓按已结算资金和可售资产执行。
 

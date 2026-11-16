@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
+
+from .ledger import cash_entitlement, event_session
+from .market_inputs import price_basis
 
 
 def annualized_return(returns: pd.Series, periods_per_year: int = 252) -> float:
@@ -27,30 +30,31 @@ def annualized_return(returns: pd.Series, periods_per_year: int = 252) -> float:
     return result
 
 
-def _event_records(frame: pd.DataFrame, sessions: pd.DatetimeIndex) -> list[dict[str, Any]]:
+def _event_records(frame: pd.DataFrame, sessions: pd.DatetimeIndex, end: pd.Timestamp) -> list[dict[str, Any]]:
     """Validate only events within the consumed price window, preserving same-day order."""
     events = frame.attrs.get("corporate_actions", [])
     if not isinstance(events, (list, tuple)):
         raise ValueError("INVALID_CORPORATE_ACTION: corporate_actions must be an event sequence")
     securities = set(frame["stock_code"])
-    first, last = frame["trade_date"].min(), frame["trade_date"].max()
+    first = frame["trade_date"].min()
     seen: set[str] = set()
+    retired: set[str] = set()
     records = []
     for source in events:
         if not isinstance(source, Mapping):
             raise ValueError("INVALID_CORPORATE_ACTION: expected an event record")
         try:
-            session = pd.Timestamp(source["session"])
+            session = event_session(source)
             security = source["security_id"]
-            if pd.isna(session):
-                raise ValueError("missing event session")
-            if session <= first or session > last or security not in securities:
+            if session > end or security not in securities:
+                continue
+            if session <= first and source.get("type") != "delisting":
                 continue
             event_id = source["event_id"]
             kind = source["type"]
             if not isinstance(event_id, str) or not event_id.strip():
                 raise ValueError("event_id must be a nonempty string")
-            if session not in sessions:
+            if session >= first and session not in sessions:
                 raise ValueError("event session is absent from the shared calendar")
             if event_id in seen:
                 raise ValueError(f"DUPLICATE_CORPORATE_ACTION: {event_id}")
@@ -61,39 +65,37 @@ def _event_records(frame: pd.DataFrame, sessions: pd.DatetimeIndex) -> list[dict
                 if not np.isfinite(ratio) or ratio <= 0:
                     raise ValueError("split ratio must be positive and finite")
                 record["ratio"] = ratio
-            elif kind == "cash_dividend":
-                amount = float(source["per_share"])
-                pay_session = pd.Timestamp(source["pay_session"])
-                if not np.isfinite(amount) or amount < 0 or pd.isna(pay_session) or pay_session < session:
-                    raise ValueError("dividend must be nonnegative with a payment date on/after its ex-date")
+            elif kind in {"cash_dividend", "delisting"}:
+                amount, _ = cash_entitlement(source, session)
                 record["per_share"] = amount
+                if kind == "delisting":
+                    if security in retired:
+                        raise ValueError(f"DUPLICATE_CORPORATE_ACTION: {security} has multiple terminal events")
+                    retired.add(security)
             else:
                 raise ValueError(f"UNSUPPORTED_CORPORATE_ACTION: {kind}")
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"INVALID_CORPORATE_ACTION: {exc}") from exc
         records.append(record)
-    return sorted(records, key=lambda event: event["session"])
+    return sorted(records, key=lambda event: (event["session"], event["type"] == "delisting"))
 
 
-def forward_total_returns(frame: pd.DataFrame, horizon_sessions: int) -> pd.Series:
+def forward_total_returns(frame: pd.DataFrame, horizon_sessions: int, *, evaluation_end: Any = None) -> pd.Series:
     """Return close-T to close-(T+N) wealth for one raw share held without trading.
 
     Splits change share quantity; cash dividends add cash/receivables without
     reinvestment. An ex-date on T precedes the hypothetical close purchase and
     gives no entitlement. Only supplied actions are used: no adjustment factors
-    or price filling are inferred. Missing endpoints remain missing labels.
+    or price filling are inferred. A documented delisting converts the position
+    to a cash claim at its terminal value. Other missing endpoints remain missing.
     """
     if horizon_sessions < 1:
         raise ValueError("horizon_sessions must be positive")
     if frame.empty:
         return pd.Series(index=frame.index, dtype=float, name="fwd_ret")
-    snapshot = frame.attrs.get("data_snapshot") or {}
-    source = frame.attrs.get("source_metadata") or {}
-    adjustment = (frame.attrs.get("adjustment") or source.get("adjustment")
-                  or (snapshot.get("query_params") or {}).get("adjustment_type"))
-    if adjustment not in {None, "unknown", "raw", "none", "unadjusted"}:
+    if price_basis(frame) not in {"unknown", "raw"}:
         raise ValueError("INCOMPATIBLE_PRICE_BASIS: forward labels require raw close prices")
-    work = frame[["trade_date", "stock_code", "close"]].copy().reset_index(drop=True)
+    work = cast(pd.DataFrame, frame[["trade_date", "stock_code", "close"]]).copy().reset_index(drop=True)
     work.attrs = frame.attrs.copy()
     work["trade_date"] = pd.to_datetime(work["trade_date"])
     if work[["trade_date", "stock_code"]].isna().to_numpy().any():
@@ -104,20 +106,24 @@ def forward_total_returns(frame: pd.DataFrame, horizon_sessions: int) -> pd.Seri
     if calendar.hasnans or calendar.has_duplicates:
         raise ValueError("INVALID_SESSION_CALENDAR: sessions must be unique and non-missing")
     calendar = calendar.sort_values()
-    if not work["trade_date"].isin(calendar).all():
+    if not pd.DatetimeIndex(work["trade_date"]).isin(calendar).all():
         raise ValueError("CALENDAR_CONTEXT_REQUIRED: input sessions are absent from the shared calendar")
     positions = calendar.get_indexer(work["trade_date"]) + horizon_sessions
     future_dates = pd.Series(pd.NaT, index=work.index, dtype=work["trade_date"].dtype)
     in_calendar = positions < len(calendar)
     future_dates.loc[in_calendar] = calendar.take(positions[in_calendar]).to_numpy()
+    end = cast(pd.Timestamp, pd.Timestamp(evaluation_end) if evaluation_end is not None else work["trade_date"].max())
+    future_dates = future_dates.where(future_dates <= end)
     endpoints = pd.MultiIndex.from_arrays([future_dates, work["stock_code"]])
-    prices = pd.to_numeric(work["close"], errors="coerce").to_numpy(dtype=float)
-    lookup = pd.Series(prices, index=pd.MultiIndex.from_frame(work[["trade_date", "stock_code"]]))
+    prices = cast(pd.Series, pd.to_numeric(work["close"], errors="coerce")).to_numpy(dtype=float)
+    lookup = pd.Series(prices, index=pd.MultiIndex.from_frame(cast(pd.DataFrame, work[["trade_date", "stock_code"]])))
     future_prices = lookup.reindex(endpoints).to_numpy(dtype=float)
     quantities = np.ones(len(work))
     distributions = np.zeros(len(work))
+    terminated = np.zeros(len(work), dtype=bool)
+    eligible_start = np.ones(len(work), dtype=bool)
     rows_by_security = work.groupby("stock_code", sort=False).indices
-    for event in _event_records(work, calendar):
+    for event in _event_records(work, calendar, end):
         rows = rows_by_security[event["security_id"]]
         entitled = rows[((work["trade_date"].iloc[rows] < event["session"])
                          & (future_dates.iloc[rows] >= event["session"])).to_numpy()]
@@ -125,7 +131,12 @@ def forward_total_returns(frame: pd.DataFrame, horizon_sessions: int) -> pd.Seri
             quantities[entitled] *= event["ratio"]
         else:
             distributions[entitled] += quantities[entitled] * event["per_share"]
-    valid = np.isfinite(prices) & (prices > 0) & np.isfinite(future_prices) & (future_prices > 0)
+            if event["type"] == "delisting":
+                quantities[entitled] = 0
+                terminated[entitled] = True
+                eligible_start[rows] &= (work["trade_date"].iloc[rows] < event["session"]).to_numpy()
+    valid = eligible_start & np.isfinite(prices) & (prices > 0) & (terminated | (np.isfinite(future_prices) & (future_prices > 0)))
+    future_prices = np.where(terminated, 0.0, future_prices)
     values = np.full(len(work), np.nan)
     values[valid] = (quantities[valid] * future_prices[valid] + distributions[valid]) / prices[valid] - 1
     if not np.isfinite(values[valid]).all():

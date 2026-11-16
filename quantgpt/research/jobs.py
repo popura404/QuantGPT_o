@@ -9,9 +9,10 @@ from datetime import datetime, timezone
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.exc import TimeoutError as DatabaseTimeout
 
-from quantgpt.research.contracts import EvaluationConfigV1, FactorDefinitionV1, evaluation_hash
+from quantgpt.research.contracts import EvaluationConfigV1, FactorDefinitionV1, content_hash, evaluation_hash
 from quantgpt.research.evaluation_leases import retryable_local_conflict
 from quantgpt.research.evaluations import evaluate_factor_batch
+from quantgpt.research.evidence_catalog import read_published_evidence
 from quantgpt.research.projects import require_project_member
 from quantgpt.research.runtime import local_engine_identity, normalize_local_config, snapshot_root
 from quantgpt.research.strategies import run_strategy_evaluation
@@ -47,6 +48,8 @@ def _validate_request_keys(params: dict, *, durable: bool = False) -> None:
     if durable:
         kinds.add("round_final")
         allowed.update({"server_config_frozen", "config"})
+        if kind == "validation":
+            allowed.add("external_evidence_revision")
         if kind in {"factor", "strategy", "round_final"} and params.get("round_id"):
             allowed.update({"round_id", "direction_id", "parent_evaluation_id"})
     if kind not in kinds:
@@ -173,9 +176,12 @@ async def submit_research_request(session, actor_id: uuid.UUID, project_id: uuid
             await get_evaluation(session, actor_id, project_id, params["selection_evaluation_id"])
         from quantgpt.research.validation import POLICY_VERSION
 
+        release = await asyncio.to_thread(read_published_evidence, config.data_inputs[0].manifest_id)
+        key = content_hash("quantgpt.validation_task/v1", [POLICY_VERSION, release.revision, idempotency_key]) if idempotency_key else None
         payload, created = await submit_durable_task(session, actor_id=str(actor_id), project_id=str(project_id),
             task_type="research_evaluation", params={**params, "config": config.model_dump(mode="json"),
-                "server_config_frozen": True}, idempotency_key=f"{POLICY_VERSION}:{idempotency_key}" if idempotency_key else None)
+                "server_config_frozen": True, "external_evidence_revision": release.revision},
+            idempotency_key=key)
         return {"task_id": payload["task_id"], "status": payload["status"], "created": created,
                 "result": payload.get("result"), "poll_url": f"/api/v1/tasks/{payload['task_id']}"}
     config = EvaluationConfigV1.model_validate(params["config"])

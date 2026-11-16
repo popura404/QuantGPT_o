@@ -19,6 +19,7 @@ from quantgpt.data_snapshots import freeze_market_frame, load_frozen_market_fram
 from quantgpt.models import ResearchAuditEvent, ResearchProject
 from quantgpt.research.contracts import DataInputRef
 from quantgpt.research.demo import prepare_offline_demo
+from quantgpt.research.evidence_catalog import read_published_evidence
 from quantgpt.research.hypotheses import ACTION, get_hypothesis, lock_research_registration
 from quantgpt.research.market_inputs import RAW_PRICE_BASES, price_basis
 from quantgpt.research.projects import ProjectAccessError, require_project_member
@@ -49,6 +50,7 @@ def _snapshot_summary(root: Path, manifest_id: str) -> dict:
     metadata = manifest.get("source_metadata") or {}
     query = manifest.get("query_params") or {}
     declared_synthetic = metadata.get("synthetic") is True or manifest["vendor"] == "synthetic_offline_fixture"
+    evidence = read_published_evidence(manifest_id)
     return {
         "manifest_id": manifest_id, "content_sha256": manifest["content_hash"].removeprefix("sha256:"),
         "source": manifest["vendor"], "feed": query.get("feed") or metadata.get("feed") or manifest["vendor"],
@@ -58,7 +60,8 @@ def _snapshot_summary(root: Path, manifest_id: str) -> dict:
         "start_session": cast(pd.Timestamp, dates.min()).date().isoformat(),
         "end_session": cast(pd.Timestamp, dates.max()).date().isoformat(),
         "snapshot_integrity": "verified", "declared_synthetic": declared_synthetic,
-        "external_data_acceptance": "not_run",
+        "external_data_acceptance": "not_run" if evidence.revision == "not_supplied" else "awaiting_validation",
+        "external_evidence_revision": evidence.revision, "external_evidence_error": evidence.error,
         "unverified": ["historical_membership", "corporate_action_coverage", "total_return_benchmark"],
     }
 

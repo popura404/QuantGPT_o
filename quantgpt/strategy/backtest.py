@@ -276,7 +276,8 @@ def _run_strategy_single_pass(
     else:
         risk_result.target_weights = ledger_targets
     risk_result.cash_weights = cast(pd.DataFrame, ledger.states[["trade_date"]]).copy()
-    risk_result.cash_weights["cash_weight"] = ledger.states["cash"] / ledger.states["nav"]
+    positive_nav = ledger.states["nav"].where(ledger.states["nav"] > 0)
+    risk_result.cash_weights["cash_weight"] = (ledger.states["cash"] / positive_nav).fillna(0)
     risk_result.risk_logs = [row for row in risk_result.risk_logs if row["code"] != "TURNOVER_LIMIT_REBALANCE_SKIPPED"]
     skipped_dates = cast(pd.Series, ledger.states.loc[ledger.states["skipped"], "trade_date"])
     risk_result.risk_logs.extend({"trade_date": pd.Timestamp(value).strftime("%Y-%m-%d"), "code": "LEDGER_REBALANCE_SKIPPED"}
@@ -294,7 +295,7 @@ def _run_strategy_single_pass(
     ic_frame = factor_frame.copy()
     ic_frame["factor_value"] = raw_factor_for_ic.reindex(ic_frame.index)
     ic_frame = cast(pd.DataFrame, ic_frame.loc[ic_frame["trade_date"] <= end])
-    _, rank_ic_series = _calc_ic_series(ic_frame, req.spec.portfolio_rule.rebalance_period)
+    _, rank_ic_series = _calc_ic_series(ic_frame, req.spec.portfolio_rule.rebalance_period, evaluation_end=end)
     if not rank_ic_series.empty:
         rank_ic_series = rank_ic_series[(rank_ic_series.index >= start) & (rank_ic_series.index <= end)]
     metrics = _strategy_metrics(strategy_returns, risk_result.turnover_by_rebalance, rank_ic_series)
@@ -545,7 +546,7 @@ def _strategy_metrics_for_window(result: StrategyBacktestResult, window: dict) -
         ])
     rank_ic = pd.Series(dtype=float)
     if result.factor_frame is not None and not result.factor_frame.empty:
-        _, rank_ic = _calc_ic_series(result.factor_frame, result.spec.portfolio_rule.rebalance_period)
+        _, rank_ic = _calc_ic_series(result.factor_frame, result.spec.portfolio_rule.rebalance_period, evaluation_end=window["end"])
         rank_ic = _slice_series(rank_ic, window)
     metrics = _strategy_metrics(returns, turnover_frame, rank_ic)
     metrics["turnover_source"] = "turnover_by_rebalance_eval_window"

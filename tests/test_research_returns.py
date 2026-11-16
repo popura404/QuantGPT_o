@@ -10,6 +10,23 @@ from quantgpt.strategy.backtest import StrategyBacktestRequest, _strategy_metric
 from quantgpt.strategy.spec import example_strategy_spec_v1
 
 
+def test_terminal_labels_match_entitlements_with_missing_quotes_and_respect_window_end():
+    frame = pd.DataFrame({"stock_code": ["A"] * 3, "trade_date": pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-08"]),
+                          "close": [100, 100, 888]})
+    frame.attrs["calendar_sessions"] = pd.bdate_range("2024-01-02", "2024-01-09")
+    frame.attrs["corporate_actions"] = [
+        {"event_id": "exit", "security_id": "A", "type": "delisting", "ex_session": "2024-01-04", "terminal_value": 45},
+        {"event_id": "split", "security_id": "A", "type": "split", "session": "2024-01-04", "ratio": 2},
+        {"event_id": "div", "security_id": "A", "type": "cash_dividend", "session": "2024-01-04", "per_share": 1,
+         "pay_session": "2024-01-12"},
+    ]
+    prior = frame.iloc[:2].copy()
+    assert forward_total_returns(prior, 1, evaluation_end="2024-01-04").iloc[-1] == pytest.approx(-.08)
+    assert pd.isna(forward_total_returns(prior, 2, evaluation_end="2024-01-04").iloc[-1])
+    assert forward_total_returns(frame, 3).iloc[1] == pytest.approx(-.08)
+    assert pd.isna(forward_total_returns(frame, 1, evaluation_end="2024-01-09").iloc[-1])
+
+
 def _market():
     sessions = pd.bdate_range("2024-01-02", periods=5)
     frame = pd.DataFrame([

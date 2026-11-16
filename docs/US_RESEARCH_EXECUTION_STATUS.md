@@ -93,7 +93,7 @@ npm.cmd --prefix frontend run test:e2e
 
 合成性能对照（20只证券、180会话、3600行、5分组，cProfile）：总耗时9.522→4.105秒；五次账本调用累计5.536→0.180秒；市场上下文只准备一次。净值、收益、Rank IC、分组指标、状态和交易内容一致。这是同一合成工作负载的分析器计时，不代表完整真实数据的生产吞吐。
 
-离线报告固定保留 `allowed=false`、`external_acceptance=not_run`。冻结快照完整性不证明历史成分、公司行动覆盖或 total-return 基准已验收；独立截面 placebo、预登记比较库等缺失仍明确显示。Rust 子集通过不自动打开全局语义认证或 metrics 开关。远端 GitHub CI 和 PostgreSQL 未在本轮本机执行。
+2026-10-18 版离线报告固定返回 `allowed=false` 和 `external_acceptance=not_run`。外部证据现已接入，见文末实测记录。冻结快照完整性不证明历史成分、公司行动覆盖或 total-return 基准已验收；独立截面 placebo、预登记比较库等缺失仍明确显示。Rust 子集通过不自动打开全局语义认证或 metrics 开关。远端 GitHub CI 和 PostgreSQL 未在本轮本机执行。
 
 已执行的分项验证：Rust 单元15项；真实扩展桥接/差分92项通过、1项环境不适用跳过；前端 Node 行为17项、真实浏览器6项、最终离线入口补验1项通过；TypeScript/Vite构建通过。前端既有大包警告仍存在。分项测试包含重叠，不能相加为独立总数。
 
@@ -102,3 +102,25 @@ npm.cmd --prefix frontend run test:e2e
 全量运行期间仍有收尾改动，因此另外完成最终源码的针对性补验：离线报告并发发布1项、研究任务事件循环及相关工作流7项、旧任务与迭代路由14项，全部通过。上述分项有重叠，不与全量结果相加，也不把本轮描述为最终冻结源码的一次性全量验收。最终Ruff通过，当前Linux依赖环境的Pyright检查为0项诊断，`git diff --check`通过；未修改历史类型基线来容纳新增问题。
 
 本机 Linux 沙箱的异步线程唤醒通过测试启动器附加10ms事件循环定时回调，不修改生产事件循环；并发测试使用实际独立 SQLite 连接，数值验证实际重放冻结面板。日志保留在忽略的 `test-results/review-fixes-full-pytest.txt`。
+
+## 2026-11-17 真实多证券及外部证据验收
+
+在两个独立 SQLite 项目中，主代理先登记基线与 4 个方向。每个方向用独立 stdio MCP 连接查重并提交。75 个交易日的选择期为 2025-06-05 至 2025-09-22。按事先固定的最高分组扣费后净收益选择两个方向，保留基线，跳过 5 个交易日后在 2025-09-30 至 2025-12-31 的 65 个交易日终验。两个项目均观察到 4 个同时运行的方向，试验分母各冻结 7 项。
+
+| 固定股票池和冻结清单 | 行情覆盖 | 选择期组合 / 基线净收益 | 留出净收益 | 留出最大回撤 |
+|---|---|---|---:|---:|
+| Kibot，15 股，`ds_98ac585dc7b96ef10e971080870da4a1` | 752 日，11,280 行 | +3.57% / +5.91% | +2.21% | −11.09% |
+| EODHD，5 股，`ds_46885ee79583a73581df39f53945b5b2` | 752 日，3,760 行 | −3.72% / −9.58% | −6.80% | −11.77% |
+
+两组逐行核对了所属供应商的 OHLCV。5 只重叠股票的 36 笔分红匹配。两组留出期的 USD 总回报基准 NASDAQXNDX 均核对了 65 个连续交易日。缺少日线当时的发布时间、已审核的数据使用授权、历史成分与完整退市结算覆盖，故两组外部验收均为 `insufficient_data`，历史成分单项为 `not_run`。两组组合的滚动检验均未通过，多重检验校正后 p 值均为 1，导出均受阻。5 股样本低于计算截面 IC 的 10 股门槛。供应商原始响应、收据、快照和完整报告留在本地 `data/`。[Kibot 数据说明](https://www.kibot.com/api/history-request.html) · [EODHD 数据口径](https://eodhd.com/help/methodology) · [FRED 指数序列](https://fred.stlouisfed.org/series/NASDAQXNDX) · [Nasdaq 指数口径](https://indexes.nasdaq.com/docs/Index_Versions_NDX.pdf)
+
+主样本补入公司行动原始响应的版本摘要后，在原项目中重新验证同一冻结组合。新报告的证据版本为 `f870f034df82aeaa1a90f64a0eae4d4717e3490ae7e3215f02c9c5471944e0a2`。导出接口采信了新报告，原有两期收益工件、冻结分母及校正结果一致。两套实测的 `round-final-20261117/summary.json` 和主样本的 `updated-validation.json` 记录了对应的报告身份与分项结果。
+
+在仓库根目录逐条运行以下命令可重建本地材料。前三个采集命令的 `--fetch` 仅获取缺少的响应，本地已有收据时校验并复用原始字节。复测目录应是新目录。使用新下载的上游版本时，从脚本输出复制本次的 manifest ID，并使用相应的日历版本。
+
+```text
+python -m scripts.freeze_us_benchmark --root data/us_public_benchmark --start 2023-01-03 --end 2025-12-31 --fetch
+python -m scripts.freeze_us_public_sample --root data/us_public_eodhd_2025 --end 2025-12-31 --benchmark NASDAQXNDX --benchmark-source-root data/us_public_benchmark --fetch
+python -m scripts.freeze_kibot_us_sample --root data/us_public_kibot_2025 --action-root data/us_public_eodhd_2025 --benchmark NASDAQXNDX --benchmark-source-root data/us_public_benchmark --fetch
+python -m scripts.verify_multisecurity_round --manifest-id ds_98ac585dc7b96ef10e971080870da4a1 --import-root data/us_public_kibot_2025/imports --evidence-root data/us_public_kibot_2025/evidence --universe kibot_guest_us_equities --universe-version kibot-guest-fixed/v1 --calendar-version exchange-calendars/4.13.2:XNYS --benchmark NASDAQXNDX --work-dir data/us_public_kibot_2025/round-replay
+```

@@ -1,6 +1,7 @@
 """Actual frozen-panel replay, immutable evidence, and conservative acceptance."""
 
 import copy
+import hashlib
 import uuid
 
 import pandas as pd
@@ -31,6 +32,44 @@ async def _evaluate(client, headers, base, demo):
     row = response.json()["evaluations"][0]
     assert row["summary"]["performance_observed"], row
     return row
+
+
+@pytest.mark.asyncio
+async def test_only_current_operator_evidence_is_usable_for_validation_and_export(
+    client, auth_headers, db_session, test_user, tmp_path, monkeypatch,
+):
+    catalog = tmp_path / "operator-evidence"
+    monkeypatch.setenv("QUANTGPT_RESEARCH_EVIDENCE_ROOT", str(catalog))
+    root, project, base, demo = await _demo(client, auth_headers, tmp_path, monkeypatch)
+    snapshot = demo["config"]["data_inputs"][0]["manifest_id"]
+    eid = (await _evaluate(client, auth_headers, base, demo))["evaluation_id"]
+    path = catalog / snapshot / "evidence.json"
+    path.parent.mkdir(parents=True)
+    api = base + f"/evaluations/{eid}"
+    first = await run_local_validation(db_session, test_user.id, project, eid, snapshot_root=root)
+    assert first["external_acceptance"]["status"] == "not_run"
+    key = {"idempotency_key": "v" * 160}
+    before = await client.post(api + "/validation-runs", headers=auth_headers, json=key)
+    assert before.status_code == 202, before.text
+    path.write_bytes(b"{incomplete")
+    stale = (await client.get(api + "/validation", headers=auth_headers)).json()
+    assert stale["offline_validation"] is None and "OFFLINE_VALIDATION_REPLAY_REQUIRED" in stale["blockers"]
+    with pytest.raises(ValueError, match="EXTERNAL_EVIDENCE_CHANGED"):
+        await run_local_validation(db_session, test_user.id, project, eid, snapshot_root=root,
+            task_context={"params": {"external_evidence_revision": "not_supplied"}})
+    after = await client.post(api + "/validation-runs", headers=auth_headers, json=key)
+    assert after.status_code == 202 and after.json()["task_id"] != before.json()["task_id"]
+    task = await db_session.get(Task, after.json()["task_id"])
+    assert task.params["external_evidence_revision"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    second = await run_local_validation(db_session, test_user.id, project, eid, snapshot_root=root)
+    assert second["external_acceptance"]["status"] == "failed"
+    assert "EXTERNAL_EVIDENCE_INVALID_JSON" in second["external_acceptance"]["blockers"]
+    assert second["report_key"] != first["report_key"]
+    current = (await client.get(api + "/validation", headers=auth_headers)).json()
+    assert not current["allowed"] and current["external_acceptance"] == second["external_acceptance"]
+    path.unlink()
+    restored = (await client.get(api + "/validation", headers=auth_headers)).json()
+    assert restored["offline_validation"]["report_key"] == first["report_key"] and not restored["allowed"]
 
 
 @pytest.mark.asyncio

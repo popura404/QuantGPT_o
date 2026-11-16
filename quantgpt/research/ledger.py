@@ -53,6 +53,31 @@ def _freeze_value(value: Any) -> Any:
     return deepcopy(value)
 
 
+def event_session(event: Mapping[str, Any]) -> pd.Timestamp:
+    try:
+        day = pd.Timestamp(event["ex_session"] if "ex_session" in event else event["session"])
+        if pd.isna(day) or ("session" in event and pd.Timestamp(event["session"]) != day):
+            raise ValueError("missing or conflicting ex-session")
+        return cast(pd.Timestamp, day)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise LedgerError("INVALID_CORPORATE_ACTION", "Expected one valid ex-session") from exc
+
+
+def cash_entitlement(event: Mapping[str, Any], session: pd.Timestamp) -> tuple[float, pd.Timestamp]:
+    delisting = event["type"] == "delisting"
+    try:
+        value = float(event["terminal_value" if delisting else "per_share"])
+        payment = event.get("pay_session")
+        if payment is None and not delisting:
+            raise ValueError("dividend requires a payment session")
+        day = pd.Timestamp(payment) if payment is not None else session
+        if not np.isfinite(value) or value < 0 or pd.isna(day) or day < session:
+            raise ValueError("invalid value or payment date")
+        return value, cast(pd.Timestamp, day)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise LedgerError("INVALID_CORPORATE_ACTION", "Expected a nonnegative per-share value and payment on/after ex-session") from exc
+
+
 def prepare_market_context(market_frame: pd.DataFrame) -> PreparedMarketContext:
     """Validate once and detach only the columns/actions consumed by the ledger.
 
@@ -90,13 +115,8 @@ def prepare_market_context(market_frame: pd.DataFrame) -> PreparedMarketContext:
         prices.setdefault(day, {})[stock] = MappingProxyType({"open": open_price, "close": close_price, "suspended": halted})
     actions: dict[pd.Timestamp, list[Mapping[str, Any]]] = {}
     for event in attrs.get("corporate_actions", []):
-        try:
-            day = pd.Timestamp(event["session"])
-            if pd.isna(day):
-                raise ValueError("missing action session")
-        except (KeyError, TypeError, ValueError) as exc:
-            raise LedgerError("INVALID_CORPORATE_ACTION", "Each event requires a valid session") from exc
-        fields = {key: event[key] for key in ("event_id", "security_id", "type", "ratio", "per_share", "pay_session") if key in event}
+        day = event_session(event)
+        fields = {key: event[key] for key in ("event_id", "security_id", "type", "ratio", "per_share", "terminal_value", "pay_session") if key in event}
         actions.setdefault(day, []).append(_freeze_value(fields))
     return PreparedMarketContext(
         shared_sessions=tuple(shared), sessions=tuple(sessions),
@@ -123,6 +143,7 @@ class ResearchLedger:
         self.initial_nav = self.nav
         self.trades: list[dict] = []
         self.seen_events: set[str] = set(self.receivables)
+        self.delisted: set[str] = set()
 
     @staticmethod
     def _price(prices: Mapping[str, Mapping[str, Any]], security_id: str, name: str) -> float:
@@ -136,30 +157,33 @@ class ResearchLedger:
             if pd.Timestamp(item["pay_session"]) <= session:
                 self.cash += item["amount"]
                 del self.receivables[event_id]
-        for event in actions:
+        # Preserve the supplied split/dividend order. Terminal value is per
+        # share remaining after all same-session entitlements.
+        for event in sorted(actions, key=lambda item: item["type"] == "delisting"):
             security_id = str(event["security_id"])
+            kind = event["type"]
             quantity = self.positions.get(security_id, 0.0)
-            if quantity == 0:
+            if quantity == 0 and kind != "delisting":
                 continue  # Opening purchases do not obtain earlier entitlements.
             event_id = str(event["event_id"])
-            if event_id in self.seen_events:
+            if event_id in self.seen_events or security_id in self.delisted:
                 raise LedgerError("DUPLICATE_CORPORATE_ACTION", event_id)
-            kind = event["type"]
             if kind == "split":
                 ratio = float(event["ratio"])
                 if not np.isfinite(ratio) or ratio <= 0:
                     raise LedgerError("INVALID_CORPORATE_ACTION", "Split ratio must be positive and finite")
                 self.positions[security_id] *= ratio
                 self.previous_prices[security_id] /= ratio
-            elif kind == "cash_dividend":
-                per_share = float(event["per_share"])
-                if not np.isfinite(per_share) or per_share < 0:
-                    raise LedgerError("INVALID_CORPORATE_ACTION", "Dividend must be finite and nonnegative")
+            elif kind in {"cash_dividend", "delisting"}:
+                per_share, pay_session = cash_entitlement(event, session)
                 amount = quantity * per_share
-                pay_session = pd.Timestamp(event["pay_session"])
+                if kind == "delisting":
+                    self.delisted.add(security_id)
+                    self.positions.pop(security_id, None)
+                    self.previous_prices.pop(security_id, None)
                 if pay_session <= session:
                     self.cash += amount
-                else:
+                elif amount > 0:
                     self.receivables[event_id] = {"security_id": security_id, "amount": amount, "pay_session": pay_session}
             else:
                 raise LedgerError("UNSUPPORTED_CORPORATE_ACTION", f"{kind}: {security_id}")
@@ -196,6 +220,11 @@ class ResearchLedger:
         if targets is not None:
             if any(not np.isfinite(weight) or weight < 0 for weight in targets.values()) or sum(targets.values()) > 1 + 1e-10:
                 raise LedgerError("INFEASIBLE_TARGET_WEIGHTS", "Weights must be finite, nonnegative and sum to at most one")
+            # A previously generated target cannot buy a terminated security,
+            # even when stale prices are present. Its allocation stays in cash.
+            targets = {asset: weight for asset, weight in targets.items() if asset not in self.delisted}
+            if not self.positions and self.cash == 0:
+                targets = {}
             assets = sorted(set(self.positions) | set(targets))
             try:
                 opening = {s: self._price(prices, s, "open") for s in assets}
@@ -215,7 +244,8 @@ class ResearchLedger:
                 # when dividends have entered NAV but cannot yet fund orders.
                 target_nav = min(opening_nav, available / invested_fraction) if invested_fraction else opening_nav
                 fee_rate = (self.config.fees_bps + self.config.slippage_bps) / 10000.0
-                requested_turnover = sum(abs(targets.get(s, 0) * target_nav - current[s]) for s in assets) / opening_nav / 2
+                requested_notional = sum(abs(targets.get(s, 0) * target_nav - current[s]) for s in assets)
+                requested_turnover = requested_notional / opening_nav / 2 if opening_nav else 0.0
                 if max_turnover is not None and requested_turnover > max_turnover + 1e-12:
                     skipped = True
                 else:
@@ -239,6 +269,8 @@ class ResearchLedger:
             try:
                 for fill in fills:
                     security_id = str(fill["security_id"])
+                    if security_id in self.delisted:
+                        raise LedgerError("ASSET_NOT_TRADABLE", f"{security_id} has delisted")
                     self._price(prices, security_id, "open")
                     if bool(prices.get(security_id, {}).get("suspended", False)):
                         raise LedgerError("ASSET_NOT_TRADABLE", security_id)
@@ -264,8 +296,10 @@ class ResearchLedger:
         return {
             "trade_date": session, "cash": self.cash, "nav": self.nav,
             "positions": dict(self.positions), "receivables": {k: item["amount"] for k, item in self.receivables.items()},
-            "fees": fee, "cost": fee / prior_nav, "turnover": traded_notional / prior_nav / 2,
-            "net_return": self.nav / prior_nav - 1, "gross_return": (self.nav + fee) / prior_nav - 1,
+            "fees": fee, "cost": fee / prior_nav if prior_nav else 0.0,
+            "turnover": traded_notional / prior_nav / 2 if prior_nav else 0.0,
+            "net_return": self.nav / prior_nav - 1 if prior_nav else 0.0,
+            "gross_return": (self.nav + fee) / prior_nav - 1 if prior_nav else 0.0,
             "skipped": skipped,
         }
 
@@ -279,6 +313,12 @@ def simulate_target_weights(market_frame: pd.DataFrame | PreparedMarketContext, 
     sessions = pd.DatetimeIndex(context.sessions)
     start = pd.Timestamp(evaluation_start) if evaluation_start is not None else pd.Timestamp(cast(Any, sessions[0]))
     end = pd.Timestamp(evaluation_end) if evaluation_end is not None else pd.Timestamp(cast(Any, sessions[-1]))
+    if evaluation_end is None and any(day >= end and day in shared_sessions and any(e["type"] == "delisting" for e in events)
+                                     for day, events in context.actions_by_session.items()):
+        # The last constituent can disappear before its terminal entitlement
+        # pays. The published calendar still carries the cash-only portfolio.
+        end = pd.Timestamp(cast(Any, shared_sessions[-1]))
+    sessions = shared_sessions[(shared_sessions >= sessions[0]) & (shared_sessions <= end)]
     if config.starting_state_session is not None and pd.Timestamp(config.starting_state_session) >= start:
         raise LedgerError("INVALID_STARTING_STATE", "Carry-forward source must precede evaluation start")
     evaluation_sessions = sessions[(sessions >= start) & (sessions <= end)]
@@ -305,6 +345,10 @@ def simulate_target_weights(market_frame: pd.DataFrame | PreparedMarketContext, 
     # hold existing quantities; they never forward-fill stale targets into trades.
     fill_targets = {sessions[i + 1]: by_signal[day] for i, day in enumerate(sessions[:-1]) if day in by_signal}
     book = ResearchLedger(config)
+    book.delisted = {str(event["security_id"]) for day, events in context.actions_by_session.items() if day < start
+                     for event in events if event["type"] == "delisting"}
+    if book.delisted.intersection(book.positions):
+        raise LedgerError("INVALID_STARTING_STATE", "Opening positions contain a previously delisted security")
     rows = []
     for session in sessions[(sessions >= start) & (sessions <= end)]:
         row = book.step(session, context.prices_by_session.get(session, {}), targets=fill_targets.get(session),
