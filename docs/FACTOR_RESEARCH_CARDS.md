@@ -15,9 +15,21 @@ is not converted into passing evidence. Empty observations and insufficient
 independent blocks have explicit conclusions; an interval crossing zero is
 reported as not significant at the pointwise 95% level. No composite score or
 automatic acceptance is produced. Intervals remain unadjusted for selection.
-The trial count is captured when the immutable card is created; a later
-validation decision must query the current project ledger rather than assume
-that historical count includes subsequently observed trials.
+
+Project evaluations store a `factor_research_card/v2` payload with a fixed
+`card_hash`. It includes the definition's pre-registered economic hypothesis
+when one exists. Its `statistics.observed_project_trials` is null and
+`trial_count_source` points to `artifact_research_context`. Archived cards
+retain their original payload, hash and any count recorded at creation.
+
+When reading a card with `get_research_artifact`, use the top-level
+`research_context`. Its `direction_hypotheses` lists each direction that
+proposed this evaluation, including its hypothesis, actor and proposal task
+IDs. Two directions can share one evaluation and both receive credit.
+`observed_project_trials` gives the trial denominator. A `trial_count_scope`
+of `live_project` uses the project count at read time. For a card included in
+a frozen round manifest, `frozen_round` uses the sealed count and returns the
+corresponding `trial_manifest_hash`.
 
 `EvaluationEvidence` binds a definition/configuration to its runner output.
 `compare_evaluation_evidence` requires identical data, scope, universe, engine,

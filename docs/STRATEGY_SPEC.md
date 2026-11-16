@@ -4,6 +4,10 @@
 
 `strategy_spec/v2` 由新 `/api/v1/research/projects/{id}/strategy-runs` 入口接收。保留 v1 数值规则，新增按组件顺序的 `factor_evaluations`、`semantics_version`、必填 `simulation_config`；完整模型参与 strategy_hash。服务器核对每个引用的项目、定义、evaluation_hash、市场/股票池、方向、数据、引擎、模拟和窗口。selection 引用可进入同 split 的后续 final，final 结果不能回流候选选择。v0/v1 原始报告仍可读；旧解析器不会静默接受 v2。详见 [研究契约](RESEARCH_CONTRACTS.md) 和 [接口](RESEARCH_API.md)。
 
+冻结策略按登记窗口的完整交易日历计分。选择期和终验均保留首次可成交信号前的会话，从现金起步时这些日期可以贡献零收益。轮次准备会核对两个窗口的应有交易日、快照覆盖和预热会话。每只证券截至决策日满 `validation.min_history_days` 个有效收盘价观测并满足因子表达式的回看要求，才参与信号排名。有效收盘价须为有限正数。
+
+终验的 `checks.risk` 核验窗口内的目标权重，并报告 `window_target_rows` 和实际持仓的 `invested_sessions`。检查要求日期属于评分日历、权重有限且介于零与单证券上限之间、每日总权重介于零与一之间。窗口缺少目标权重或实际持仓时，状态为 `insufficient_data`，原因为 `NO_IN_WINDOW_POSITION_EVIDENCE`。目标权重归档仅含窗口内作出的决策。窗口前的信号仍可在首日成交。
+
 `StrategySpecV0` is the MVP executable strategy contract. It describes a
 candidate strategy for validation and backtesting; it is not Python strategy
 code and it is not an order or brokerage instruction.

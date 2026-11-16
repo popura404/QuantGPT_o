@@ -603,9 +603,9 @@ def generate_iteration_candidates(
                     "raw_score": result.get("score", 0),
                     "selection_score": apply_selection_penalty(result.get("score", 0), last_attempt.get("search_penalty", 0.0)),
                 })
+                persist_attempt(last_attempt)
                 if on_attempt:
                     on_attempt(last_attempt)
-                persist_attempt(last_attempt)
                 result = _with_attempt_metadata(result, last_attempt, failed=False)
             except Exception as e:
                 if last_attempt is None or last_attempt.get("expression") != raw_expression or last_attempt.get("failed"):

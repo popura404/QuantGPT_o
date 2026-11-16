@@ -24,10 +24,10 @@ class DataCapabilityError(ValueError):
 
 
 def _utc(values: pd.Series, name: str) -> pd.Series:
-    for value in values.dropna():
+    for value in values.dropna().unique():
         if pd.Timestamp(value).tzinfo is None:
             raise ValueError(f"{name} requires explicit timezone")
-    result = pd.to_datetime(values, utc=True, errors="raise")
+    result = pd.to_datetime(values, utc=True, format="mixed", errors="raise")
     if result.isna().any():
         raise ValueError(f"{name} must not be missing")
     return result

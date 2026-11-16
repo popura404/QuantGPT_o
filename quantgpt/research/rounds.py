@@ -23,14 +23,14 @@ from quantgpt.research.contracts import (
     definition_hash,
     evaluation_hash,
 )
-from quantgpt.research.evaluations import authorize_data_inputs, register_holdout
+from quantgpt.research.evaluations import authorize_data_inputs, check_factor_simulation_config, register_holdout
 from quantgpt.research.hypotheses import lock_research_registration
 from quantgpt.research.projects import ProjectAccessError, require_project_member
-from quantgpt.research.round_final import check_final_session_coverage
+from quantgpt.research.round_final import check_final_session_coverage, check_preround_work
 from quantgpt.research.runtime import normalize_local_config, snapshot_root
 from quantgpt.research.strategies import check_factor_lineage, get_strategy_run
 from quantgpt.strategy.spec import StrategySpecV2
-from quantgpt.task_store import submit_durable_task
+from quantgpt.task_store import ExistingTaskRequired, submit_durable_task
 
 RUNNING_ROUND: ContextVar[tuple[str, str] | None] = ContextVar("running_research_round", default=None)
 
@@ -146,6 +146,7 @@ async def create_round(session: AsyncSession, actor_id: uuid.UUID, project_id: u
     effective = normalize_local_config(EvaluationConfigV1.model_validate(config))
     if effective.backend != "local" or effective.window.phase != "selection":
         raise ValueError("LOCAL_SELECTION_CONFIG_REQUIRED")
+    check_factor_simulation_config(effective)
     start, end = date.fromisoformat(holdout_start), date.fromisoformat(holdout_end)
     if start >= end:
         raise ValueError("Holdout start must precede end")
@@ -177,6 +178,7 @@ async def create_round(session: AsyncSession, actor_id: uuid.UUID, project_id: u
         by_name = {b.name: b for b in branches}
         branches = [by_name[d.name] for d in requested]
     else:
+        await check_preround_work(session, project_id, opening=True)
         if await session.scalar(select(FinalWindowExposure.evaluation_id).where(
                 FinalWindowExposure.project_id == project_id)):
             raise ValueError("FINAL_WINDOW_ALREADY_EXPOSED")
@@ -200,6 +202,7 @@ async def create_round(session: AsyncSession, actor_id: uuid.UUID, project_id: u
             branches.append(branch)
         await session.flush()
     return {"project_id": str(project_id), "round_id": str(row.id), "coordinator_key": key,
+            "discovery_tool": "check_research_factor_novelty", "new_factor_submission": {"only_new": True},
             "directions": [{"direction_id": str(b.id), "name": b.name, "direction_key": _direction_key(key, b.id)}
                            for b in branches]}
 
@@ -253,7 +256,7 @@ async def submit_direction(session: AsyncSession, actor_id: uuid.UUID, project_i
                            round_id: uuid.UUID, direction_id: uuid.UUID, direction_key: str,
                            definitions: list[dict], idempotency_key: str | None = None,
                            direction: Literal["higher_is_better", "lower_is_better"] | None = None,
-                           parent_evaluation_id: str | None = None) -> dict:
+                           parent_evaluation_id: str | None = None, only_new: bool = False) -> dict:
     row = await lock_round(session, actor_id, project_id, round_id)
     branch = await _branch(session, row, actor_id, direction_id, direction_key)
     if row.status != "open":
@@ -275,8 +278,22 @@ async def submit_direction(session: AsyncSession, actor_id: uuid.UUID, project_i
     params = {"kind": "factor", "config": config.model_dump(mode="json"), "direction_id": str(branch.id),
               "definitions": [d.model_dump(mode="json") for d in candidates], "parent_evaluation_id": parent_evaluation_id}
     identity = idempotency_key or content_hash("quantgpt.direction_request/v1", params)
-    return await enqueue(session, actor_id, row, params, f"direction:{branch.id}:{identity}",
-                         existing_only=branch.finished)
+    request_key = f"direction:{branch.id}:{identity}"
+    if only_new and not branch.finished:
+        # Under the project lock the next direction sees our task before it can
+        # queue its own proposal. An exact retry must still return our original task.
+        try:
+            return await enqueue(session, actor_id, row, params, request_key, existing_only=True)
+        except ExistingTaskRequired:
+            pass
+        from quantgpt.research.novelty import check_factor_novelty
+
+        report = await check_factor_novelty(session, actor_id, project_id,
+                                            expressions=[definition.expression for definition in candidates])
+        if len(report["new_indices"]) != len(candidates):
+            return {**report, "round_id": str(round_id), "status": "known_candidates", "created": False,
+                    "next_action": "submit_new_indices_or_choose_another_expression"}
+    return await enqueue(session, actor_id, row, params, request_key, existing_only=branch.finished)
 
 
 async def finish_direction(session: AsyncSession, actor_id: uuid.UUID, project_id: uuid.UUID, *,
@@ -303,17 +320,30 @@ async def finish_direction(session: AsyncSession, actor_id: uuid.UUID, project_i
 
 async def import_iteration(session: AsyncSession, actor_id: uuid.UUID, project_id: uuid.UUID, *,
                            round_id: uuid.UUID, direction_id: uuid.UUID, direction_key: str, task_id: str) -> dict:
-    from quantgpt.search_ledger import load_observed_iteration_trials
+    from quantgpt.research.legacy_history import merge_trials, review_legacy_windows
+    from quantgpt.search_ledger import IncompleteIterationHistory, load_observed_iteration_trials
 
     row = await lock_round(session, actor_id, project_id, round_id)
     branch = await _branch(session, row, actor_id, direction_id, direction_key)
-    if row.status != "open" or branch.finished:
+    existing = next((s for s in branch.legacy_sources if s["task_id"] == task_id), None)
+    if row.status != "open" or (branch.finished and not existing):
         raise ValueError("DIRECTION_CLOSED")
-    trials = await load_observed_iteration_trials(session, actor_id, task_id, project_id=project_id)
-    if not any(item["task_id"] == task_id for item in branch.legacy_sources):
-        branch.legacy_sources = [*branch.legacy_sources, {"task_id": task_id, "trials": trials}]
+    blocker = None
+    try:
+        current = await load_observed_iteration_trials(session, actor_id, task_id, project_id=project_id)
+    except IncompleteIterationHistory as exc:
+        current, blocker = exc.trials, str(exc)
+    trials = merge_trials(existing["trials"] if existing else [], current)
+    review = review_legacy_windows(trials, row.selection_config, row.holdout, unresolved_sources=[task_id] if blocker else [])
+    exposed = set(review["overlapping_or_later_trials"])
+    trials = [{**trial, "exposed_holdout": row.holdout} if trial["trial_key"] in exposed else trial for trial in trials]
+    source = {"schema_version": "legacy_iteration/v2", "task_id": task_id, "trials": trials,
+              "holdout_review": review, "history_blocker": blocker}
+    if source != existing:
+        branch.legacy_sources = [s for s in branch.legacy_sources if s["task_id"] != task_id] + [source]
         await session.flush()
-    return {"direction_id": str(branch.id), "task_id": task_id, "observed_legacy_trials": len(trials)}
+    return {"direction_id": str(branch.id), "task_id": task_id, "observed_legacy_trials": len(trials),
+            "holdout_review": review}
 
 
 async def check_components(session: AsyncSession, row: ResearchRound, spec: StrategySpecV2) -> None:

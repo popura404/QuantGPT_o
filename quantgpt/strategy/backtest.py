@@ -12,10 +12,12 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from ..backtest import _calc_ic_series, _calc_max_drawdown, build_rebalance_dates, compute_factor_values
 from ..data_quality import DataQualityConfig, run_data_quality_gate
 from ..data_snapshots import ensure_market_frame_snapshot, snapshot_result_fields
+from ..expression_parser import extract_components
 from ..fundamental_data import detect_fundamental_vars, enrich_market_data
 from ..neutralize import neutralize_factor
 from ..research.contracts import SEMANTICS_VERSION, SimulationConfigV1
 from ..research.ledger import simulate_target_weights
+from ..research.market_inputs import check_signal_availability
 from ..research.returns import annualized_return
 from ..validation.oos_score import compute_oos_score, compute_oos_selection_score
 from ..validation.split import OOSConfig, split_by_dates
@@ -79,7 +81,9 @@ def run_strategy_backtest(
     req = request if isinstance(request, StrategyBacktestRequest) else StrategyBacktestRequest.model_validate(request)
     if req.validation_stage == "final" and not final_authorized:
         raise ValueError("FINAL_AUTHORIZATION_REQUIRED: use a registered project evaluation")
-    validation = validate_strategy_spec(req.spec)
+    frozen_panel = market_df is not None and market_df.attrs.get("frozen_research_input") is True
+    fields = set(map(str, market_df.columns)) if market_df is not None and frozen_panel else None
+    validation = validate_strategy_spec(req.spec, frozen_fields=fields)
     if not validation.is_valid:
         raise StrategyValidationError(validation.issues)
 
@@ -100,11 +104,30 @@ def run_strategy_backtest(
     if "session" in market_frame:
         market_frame["trade_date"] = market_frame["session"]
     market_frame["trade_date"] = pd.to_datetime(market_frame["trade_date"])
+    availability = None
+    dq_config = _data_quality_config_from_spec(req.spec)
+    if frozen_panel:
+        market_frame = cast(pd.DataFrame, market_frame[market_frame["trade_date"] <= pd.Timestamp(req.end_date)].copy())
+        consumed = {"close"}.union(*(extract_components(factor.expression)["fields"] for factor in req.spec.factors))
+        if dq_config is not None and dq_config.enabled and dq_config.mode != "report_only":
+            consumed.update({"open", "high", "low"})
+            quality_inputs = {"volume": dq_config.require_positive_volume, "amount": dq_config.require_positive_amount,
+                              "is_st": dq_config.drop_st, "trade_status": dq_config.drop_suspended,
+                              "suspended": dq_config.drop_suspended, "listing_date": dq_config.drop_new_listing_days,
+                              "limit_up": dq_config.drop_one_price_limit, "limit_down": dq_config.drop_one_price_limit,
+                              "pre_close": True, "pct_change": True}
+            consumed.update(name for name, used in quality_inputs.items() if used and name in market_frame)
+        if req.neutralize_cap:
+            consumed.add("market_cap")
+        if req.neutralize_industry:
+            consumed.add("industry")
+        scope = market_frame.attrs.get("research_scope", {})
+        availability = check_signal_availability(market_frame, [*consumed, *market_frame.attrs.get("factor_fields", ())],
+            calendar_id=scope.get("calendar_id", ""), timezone=scope.get("timezone", "UTC"))
     if "calendar_sessions" not in market_frame.attrs:
         market_frame.attrs["calendar_sessions"] = sorted(market_frame["trade_date"].unique())
     stock_codes = stock_codes or sorted(market_frame["stock_code"].dropna().astype(str).unique().tolist())
     data_quality_report = None
-    dq_config = _data_quality_config_from_spec(req.spec)
     if dq_config is not None and dq_config.enabled:
         eligible_frame, data_quality_report = run_data_quality_gate(market_frame, dq_config)
         eligible_keys = pd.MultiIndex.from_frame(cast(pd.DataFrame, eligible_frame[["stock_code", "trade_date"]]))
@@ -156,6 +179,8 @@ def run_strategy_backtest(
         except Exception as exc:
             result.diagnostics["benchmark_blocker"] = {"error_code": "BENCHMARK_UNAVAILABLE", "message": str(exc)}
     _attach_benchmark(result, benchmark_returns)
+    if availability is not None:
+        result.diagnostics["signal_availability"] = availability
     return result
 
 
@@ -231,7 +256,8 @@ def _run_strategy_single_pass(
         ledger_targets["target_weight"] = ledger_targets["target_weight"].clip(upper=req.spec.risk_rules.max_asset_weight)
     start = pd.Timestamp(evaluation_window["start"] if evaluation_window else req.start_date)
     end = pd.Timestamp(evaluation_window["end"] if evaluation_window else req.end_date)
-    if evaluation_window is None and simulation.evaluation_start_state == "fresh_cash" and not ledger_targets.empty:
+    frozen_research = bool(market_frame.attrs.get("frozen_research_input"))
+    if not frozen_research and evaluation_window is None and simulation.evaluation_start_state == "fresh_cash" and not ledger_targets.empty:
         first_signal = pd.to_datetime(ledger_targets["trade_date"]).min()
         future = market_frame.loc[market_frame["trade_date"] > first_signal, "trade_date"]
         if not future.empty:
@@ -241,7 +267,14 @@ def _run_strategy_single_pass(
     strategy_returns = ledger.returns
     cost_by_rebalance = ledger.costs
     risk_result.turnover_by_rebalance = ledger.turnover
-    risk_result.target_weights = ledger_targets
+    # The ledger needs the previous session's signal for a first-day fill. Only
+    # target decisions made inside the registered window belong to its artifact.
+    if frozen_research:
+        risk_result.target_weights = _slice_frame_by_trade_date(ledger_targets, {"start": start, "end": end})
+        risk_result.risk_logs = [event for event in risk_result.risk_logs
+                                 if start <= pd.Timestamp(event["trade_date"]) <= end]
+    else:
+        risk_result.target_weights = ledger_targets
     risk_result.cash_weights = cast(pd.DataFrame, ledger.states[["trade_date"]]).copy()
     risk_result.cash_weights["cash_weight"] = ledger.states["cash"] / ledger.states["nav"]
     risk_result.risk_logs = [row for row in risk_result.risk_logs if row["code"] != "TURNOVER_LIMIT_REBALANCE_SKIPPED"]
@@ -272,7 +305,9 @@ def _run_strategy_single_pass(
         "strategy_rolling_validation": "not_run",
         "semantics_version": SEMANTICS_VERSION,
         "simulation_config": simulation.model_dump(mode="json"),
-        "ledger": {**ledger.metadata, "trade_count": len(ledger.trades), "final_nav": float(ledger.states.iloc[-1]["nav"]) if not ledger.states.empty else simulation.initial_cash},
+        "ledger": {**ledger.metadata, "trade_count": len(ledger.trades),
+                   "invested_sessions": sum(bool(positions) for positions in ledger.states["positions"]),
+                   "final_nav": float(ledger.states.iloc[-1]["nav"]) if not ledger.states.empty else simulation.initial_cash},
         "ic_scope": "direction_adjusted_composite_signal",
         "benchmark_status": "unavailable_for_supplied_fixture",
     }
@@ -564,6 +599,10 @@ def _compute_strategy_factor_values(
 
     observations = market_df.groupby("stock_code").cumcount() + 1
     eligibility = market_df.get("_research_eligible", pd.Series(True, index=market_df.index))
+    if market_df.attrs.get("frozen_research_input"):
+        close = cast(pd.Series, market_df["close"])
+        price_history = (close.gt(0) & close.lt(float("inf"))).groupby(market_df["stock_code"]).cumsum()
+        eligibility = eligibility & price_history.ge(spec.validation.min_history_days)
     if spec.schema_version == "strategy_spec/v0":
         factor = spec.factors[0]
         values = compute_factor_values(market_df, factor.expression)

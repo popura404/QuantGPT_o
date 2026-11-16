@@ -92,6 +92,11 @@ async def test_mcp_preparation_and_http_share_project_scope(engine, test_user, t
                              holdout_end="2025-04-01", directions=[{"name": "trend", "hypothesis": "Momentum"}])
         assert "error_code" in invalid
         assert (await call("get_research_preparation", **key))["holdout"] is None
+        unsupported = {**demo["config"], "window": {**demo["config"]["window"], "label_horizon_sessions": 1}}
+        invalid = await call("create_research_round", **key, config=unsupported, holdout_start="2024-06-03",
+                             holdout_end="2024-09-02", directions=[{"name": "trend", "hypothesis": "Momentum"}])
+        assert "LABEL_HORIZON_UNSUPPORTED" in invalid.get("message", ""), invalid
+        assert (await call("get_research_preparation", **key))["holdout"] is None
         missing_selection = {**demo["config"], "window": {
             **demo["config"]["window"], "start_session": "2023-09-01"}}
         invalid = await call("create_research_round", **key, config=missing_selection, holdout_start="2024-06-03",

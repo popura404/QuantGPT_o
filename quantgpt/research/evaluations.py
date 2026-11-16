@@ -35,6 +35,7 @@ from quantgpt.research.contracts import (
     evaluation_hash,
 )
 from quantgpt.research.evaluation_leases import evaluation_execution, fence_evaluation_execution
+from quantgpt.research.market_inputs import check_dynamic_membership, check_signal_availability
 from quantgpt.research.projects import ProjectAccessError, require_project_member
 
 
@@ -80,6 +81,18 @@ async def assert_publication_attempt(session: AsyncSession, task_context: dict |
     # cancel either wins first or observes the fully committed publication.
     if cast(CursorResult, valid).rowcount != 1:
         raise CancelledException("TASK_ATTEMPT_NO_LONGER_AUTHORIZED")
+
+
+async def guard_unmanaged_selection_publication(session: AsyncSession, actor_id: uuid.UUID, project_id: uuid.UUID,
+                                                config: EvaluationConfigV1, evaluation_id: str) -> None:
+    from quantgpt.research.hypotheses import lock_research_registration
+    from quantgpt.research.rounds import RUNNING_ROUND, guard_round_execution
+
+    if config.window.phase == "selection" and RUNNING_ROUND.get() is None:
+        # A synchronous caller can be between registration and lease acquisition
+        # when a coordinator opens the round. Recheck at the commit boundary.
+        await lock_research_registration(session, actor_id, project_id)
+        await guard_round_execution(session, project_id, config, evaluation_id)
 
 
 async def register_evaluation(session: AsyncSession, actor_id: uuid.UUID, project_id: uuid.UUID,
@@ -132,8 +145,19 @@ async def read_artifact(session: AsyncSession, actor_id: uuid.UUID, project_id: 
         raise ProjectAccessError("Artifact not found or inaccessible")
     if row.payload is None or str(row.content_hash) != content_hash(f"quantgpt.artifact/{row.artifact_type}/v1", row.payload):
         raise ValueError("Artifact content integrity check failed")
-    return {"artifact_id": str(row.id), "kind": row.artifact_type, "payload": row.payload,
-            "content_sha256": row.content_hash, "metadata": row.artifact_metadata}
+    artifact = {"artifact_id": str(row.id), "kind": row.artifact_type, "payload": row.payload,
+                "content_sha256": row.content_hash, "metadata": row.artifact_metadata}
+    if str(row.artifact_type) == "offline_validation" and isinstance(row.payload, dict):
+        from quantgpt.research.validation import archived_validation_notice
+
+        if notice := archived_validation_notice(row.payload):
+            artifact["validation_status"] = notice
+    if str(row.artifact_type) == "research_card":
+        from quantgpt.research.cards import read_card_context
+
+        artifact["research_context"] = await read_card_context(session, project_id, str(row.experiment_id),
+                                                               (row.artifact_metadata or {}).get("evaluation_hash"))
+    return artifact
 
 
 async def register_holdout(session: AsyncSession, actor_id: uuid.UUID, project_id: uuid.UUID,
@@ -226,6 +250,16 @@ def load_evaluation_panel(config: EvaluationConfigV1, snapshot_root: str | Path)
     digest = frame.attrs["data_snapshot"]["content_hash"].removeprefix("sha256:")
     if reference.content_sha256 != digest:
         raise ValueError("DATA_SNAPSHOT_CONTENT_MISMATCH")
+    # The factor engine's historical column names must refer to the same
+    # stable securities and sessions that the strategy and cash ledger use.
+    if "security_id" in frame:
+        frame["stock_code"] = frame["security_id"]
+    if "session" in frame:
+        frame["trade_date"] = frame["session"]
+    frame.attrs["research_scope"] = config.scope.model_dump(mode="json")
+    if "currency" in frame and set(frame["currency"].dropna().unique()) - {config.scope.currency}:
+        raise ValueError("FROZEN_PANEL_CURRENCY_MISMATCH")
+    check_dynamic_membership(frame, config.scope, config.window.end_session)
     return frame
 
 
@@ -261,6 +295,16 @@ def verify_frozen_config(row: Experiment) -> EvaluationConfigV1:
     return config
 
 
+def check_factor_simulation_config(config: EvaluationConfigV1) -> None:
+    simulation = config.simulation_config
+    if config.backend != "local" or simulation is None:
+        raise ValueError("Local factor runner requires local simulation config")
+    if config.window.label_horizon_sessions != simulation.rebalance_every_sessions:
+        raise ValueError("LABEL_HORIZON_UNSUPPORTED: label horizon must match the current holding period")
+    if simulation.evaluation_start_state != "fresh_cash":
+        raise ValueError("CAPABILITY_BLOCKER: factor groups require separate carry-forward state per group")
+
+
 async def evaluate_factor_batch(session: AsyncSession, actor_id: uuid.UUID, project_id: uuid.UUID,
                                  definitions: list[FactorDefinitionV1], config: EvaluationConfigV1,
                                  *, snapshot_root: str | Path, cancel_check=None, task_context: dict | None = None) -> dict:
@@ -282,12 +326,9 @@ async def evaluate_factor_batch(session: AsyncSession, actor_id: uuid.UUID, proj
     await require_project_member(session, actor_id, project_id, write=True)
     if not definitions or len(definitions) > 100:
         raise ValueError("Batch size must be between 1 and 100")
-    if config.backend != "local" or config.simulation_config is None:
-        raise ValueError("Local factor runner requires local simulation config")
+    check_factor_simulation_config(config)
     config = normalize_local_config(config)
     assert config.simulation_config is not None
-    if config.window.label_horizon_sessions != config.simulation_config.rebalance_every_sessions:
-        raise ValueError("LABEL_HORIZON_UNSUPPORTED: label horizon must match the current holding period")
     await authorize_data_inputs(session, project_id, config)
     if any(definition.language != "local" for definition in definitions):
         raise ValueError("Local runner cannot evaluate WQ expressions")
@@ -329,8 +370,10 @@ async def evaluate_factor_batch(session: AsyncSession, actor_id: uuid.UUID, proj
                 prepared_panel = cast(pd.DataFrame, panel)
 
                 def calculate(simulation: SimulationConfigV1 = simulation):
+                    availability = check_signal_availability(prepared_panel, [*definition.fields, *config.neutralization],
+                        calendar_id=config.scope.calendar_id, timezone=config.scope.timezone)
                     with api_context():
-                        return run_factor_backtest(prepared_panel, expression=definition.expression,
+                        calculated = run_factor_backtest(prepared_panel, expression=definition.expression,
                             holding_period=simulation.rebalance_every_sessions,
                             cost_rate=(simulation.fees_bps + simulation.slippage_bps) / 10000,
                             neutralize_industry="industry" in config.neutralization,
@@ -339,12 +382,14 @@ async def evaluate_factor_batch(session: AsyncSession, actor_id: uuid.UUID, proj
                             rebalance_anchor=simulation.rebalance_anchor_session.isoformat(), simulation_config=simulation,
                             evaluation_start=config.window.start_session.isoformat(),
                             evaluation_end=config.window.end_session.isoformat())
+                    return calculated, availability
 
                 engine_calls += 1
-                output = await asyncio.to_thread(calculate)
+                output, availability = await asyncio.to_thread(calculate)
             except CancelledException:
                 raise
             except (ValueError, KeyError, ArithmeticError) as exc:
+                await guard_unmanaged_selection_publication(session, actor_id, project_id, config, evaluation_id)
                 await fence_evaluation_execution(session, evaluation_id, token)
                 await assert_publication_attempt(session, task_context)
                 await require_project_member(session, actor_id, project_id, write=True)
@@ -357,6 +402,7 @@ async def evaluate_factor_batch(session: AsyncSession, actor_id: uuid.UUID, proj
             else:
                 if cancel_check:
                     cancel_check()
+                await guard_unmanaged_selection_publication(session, actor_id, project_id, config, evaluation_id)
                 await fence_evaluation_execution(session, evaluation_id, token)
                 await assert_publication_attempt(session, task_context)
                 await require_project_member(session, actor_id, project_id, write=True)
@@ -365,18 +411,17 @@ async def evaluate_factor_batch(session: AsyncSession, actor_id: uuid.UUID, proj
                            and (not isinstance(value, float) or math.isfinite(value))}
                 from quantgpt.research.cards import build_factor_research_card
                 from quantgpt.research.hypotheses import get_hypothesis
-                from quantgpt.research.validation import observed_trial_count
 
                 hypothesis = await get_hypothesis(session, actor_id, project_id, definition_hash(definition))
                 card = build_factor_research_card(evaluation_id=str(row.experiment_id), definition=definition,
-                    config=config, output=output, hypothesis_registration=hypothesis,
-                    trial_count=await observed_trial_count(session, project_id) + 1)
+                    config=config, output=output, hypothesis_registration=hypothesis)
                 returns = output["strategy_returns"].rename("return").rename_axis("session").reset_index()
                 artifacts = [await write_artifact(session, row, "returns", serialize_frame(returns))]
                 if "_factor_df" in output:
                     artifacts.append(await write_artifact(session, row, "factor_values", serialize_frame(output["_factor_df"])))
                 artifacts.append(await write_artifact(session, row, "research_card", card))
                 row.result_summary = {"metrics": metrics, "artifacts": artifacts, "performance_observed": True,
+                                      "signal_availability": availability,
                                       "phase": config.window.phase, "research_decision": "not_evaluated",
                                       "blockers": ["VALIDATION_PROFILE_INCOMPLETE"],
                                       "engine_used": "python", "semantics_version": config.engine.semantics_version}

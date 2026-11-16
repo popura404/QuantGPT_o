@@ -10,6 +10,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from .expression_parser import normalize_expression
 from .models import (
@@ -319,9 +320,15 @@ async def summarize_trial_counts(
     universe: str | None = None,
     factor_hash: str | None = None,
     operator_family: str | None = None,
+    visibility: ColumnElement[bool] | None = None,
+    project_id: uuid.UUID | None = None,
 ) -> dict[str, int]:
     base = select(func.count()).select_from(Experiment)
     project_conditions = []
+    if visibility is not None:
+        project_conditions.append(visibility)
+    if project_id is not None:
+        project_conditions.append(Experiment.project_id == project_id)
     resolved_user_id = _coerce_uuid(user_id)
     if resolved_user_id is not None:
         project_conditions.append(Experiment.user_id == resolved_user_id)
@@ -345,6 +352,9 @@ async def summarize_trial_counts(
             .select_from(FactorRegistry)
             .where(FactorRegistry.operator_family == operator_family)
         )
+        if project_conditions:
+            registry_stmt = registry_stmt.where(FactorRegistry.factor_hash.in_(
+                select(Experiment.factor_hash).where(*project_conditions)))
         same_family = await session.scalar(registry_stmt)
 
     return {

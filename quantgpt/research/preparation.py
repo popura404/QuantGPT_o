@@ -20,6 +20,7 @@ from quantgpt.models import ResearchAuditEvent, ResearchProject
 from quantgpt.research.contracts import DataInputRef
 from quantgpt.research.demo import prepare_offline_demo
 from quantgpt.research.hypotheses import ACTION, get_hypothesis, lock_research_registration
+from quantgpt.research.market_inputs import RAW_PRICE_BASES, price_basis
 from quantgpt.research.projects import ProjectAccessError, require_project_member
 
 
@@ -35,12 +36,14 @@ def _check_snapshot_path(root: Path, manifest_id: str) -> None:
 def _snapshot_summary(root: Path, manifest_id: str) -> dict:
     _check_snapshot_path(root, manifest_id)
     frame = load_frozen_market_frame(manifest_id, root)
-    required = {"trade_date", "stock_code", "open", "high", "low", "close", "volume"}
+    date_key = "session" if "session" in frame else "trade_date"
+    stock_key = "security_id" if "security_id" in frame else "stock_code"
+    required = {date_key, stock_key, "open", "high", "low", "close", "volume"}
     if frame.empty or not required.issubset(frame):
         raise ValueError(f"RESEARCH_PANEL_REQUIRED: expected populated columns {sorted(required)}")
-    dates = pd.DatetimeIndex(pd.to_datetime(frame["trade_date"], errors="coerce"))
-    securities = cast(pd.Series, frame["stock_code"])
-    if dates.hasnans or securities.isna().any() or frame.duplicated(["trade_date", "stock_code"]).any():
+    dates = pd.DatetimeIndex(pd.to_datetime(frame[date_key], errors="coerce"))
+    securities = cast(pd.Series, frame[stock_key])
+    if dates.hasnans or securities.isna().any() or pd.MultiIndex.from_arrays([dates, securities]).has_duplicates:
         raise ValueError("INVALID_SECURITY_SESSION_KEYS")
     manifest = frame.attrs["data_snapshot"]
     metadata = manifest.get("source_metadata") or {}
@@ -49,7 +52,7 @@ def _snapshot_summary(root: Path, manifest_id: str) -> dict:
     return {
         "manifest_id": manifest_id, "content_sha256": manifest["content_hash"].removeprefix("sha256:"),
         "source": manifest["vendor"], "feed": query.get("feed") or metadata.get("feed") or manifest["vendor"],
-        "adjustment": frame.attrs.get("adjustment") or metadata.get("adjustment") or "unknown",
+        "adjustment": price_basis(frame),
         "fields": {str(column): str(dtype) for column, dtype in frame.dtypes.items()},
         "rows": len(frame), "securities": int(securities.nunique()), "sessions": int(dates.nunique()),
         "start_session": cast(pd.Timestamp, dates.min()).date().isoformat(),
@@ -153,8 +156,9 @@ def _granted_snapshot(summary: dict, event: ResearchAuditEvent) -> dict:
     if recorded is None:
         return _with_reference(summary, event.created_at)
     ref = DataInputRef.model_validate(recorded)
+    recorded_basis = "raw" if ref.adjustment.lower() in RAW_PRICE_BASES else ref.adjustment
     if (ref.manifest_id != summary["manifest_id"] or ref.content_sha256 != summary["content_sha256"]
-            or ref.source != summary["source"] or ref.adjustment != summary["adjustment"]):
+            or ref.source != summary["source"] or recorded_basis not in {"unknown", summary["adjustment"]}):
         raise ValueError("GRANTED_SNAPSHOT_IDENTITY_CHANGED")
     return {**summary, "feed": ref.feed, "data_input": ref.model_dump(mode="json"), "asof_basis": event.payload["asof_basis"]}
 
@@ -168,6 +172,7 @@ async def prepare_project_demo(session: AsyncSession, actor_id: uuid.UUID, proje
     grant = await _record_grant(session, actor_id, project_id, ref, asof_basis="synthetic_fixture_version")
     if grant.payload.get("data_input"):
         payload["config"]["data_inputs"] = [grant.payload["data_input"]]
+        payload["round_setup"]["config"]["data_inputs"] = [grant.payload["data_input"]]
     await session.commit()
     return payload
 

@@ -10,13 +10,23 @@ from quantgpt.models import Experiment, ExperimentArtifact, ResearchDirection, R
 from quantgpt.research.contracts import content_hash
 from quantgpt.research.evaluations import get_evaluation, read_artifact, verify_frozen_config
 
-POLICY_VERSION = "offline_validation/v2"
+POLICY_VERSION = "offline_validation/v3"
+
+
+def archived_validation_notice(report: dict) -> dict | None:
+    if report.get("policy") == POLICY_VERSION:
+        return None
+    return {"status": "historical_replay_required", "recorded_policy": report.get("policy"),
+            "current_policy": POLICY_VERSION, "next_action": "validate_research_evaluation",
+            "evaluation_id": report.get("evaluation_id")}
+
+
 VALIDATION_PROFILES = {
     "local_factor": {"required": ("definition_config", "replayable_data", "data_quality", "oos",
                                   "label_boundaries", "walk_forward", "placebo", "trial_correction", "similarity"),
                      "optional": ("psr", "dsr"), "not_applicable": ("platform_checks",)},
     "local_strategy": {"required": ("strategy_identity", "factor_lineage", "replayable_data", "simulation",
-                                    "strategy_oos", "walk_forward", "costs", "risk", "trial_correction"),
+                                    "strategy_oos", "label_boundaries", "walk_forward", "costs", "risk", "trial_correction"),
                        "optional": ("psr", "dsr"), "not_applicable": ("platform_checks",)},
     "wq_remote": {"required": ("remote_request", "remote_run_ref", "raw_response", "platform_checks", "platform_scope"),
                   "optional": ("psr", "dsr"), "not_applicable": ("local_holdout", "local_snapshot")},
@@ -61,7 +71,7 @@ def _portfolio_trial_keys(payloads: Iterable) -> set[str]:
 
 
 async def build_trial_manifest(session, project_id, evaluation_ids: Iterable[str] | None, *,
-                               legacy_trials: Iterable[dict] = ()) -> dict:
+                               legacy_trials: Iterable[dict] = (), legacy_window_review: dict | None = None) -> dict:
     """Create a stable family of server-observed calculations for this project or a frozen round."""
     selection = select(Experiment.experiment_id, Experiment.evaluation_hash,
                        Experiment.result_summary["performance_observed"].as_boolean()).where(
@@ -83,7 +93,9 @@ async def build_trial_manifest(session, project_id, evaluation_ids: Iterable[str
                 "evaluation_ids": sorted(r[0] for r in rows if r[2]),
                 "unobserved_evaluation_ids": sorted(r[0] for r in rows if not r[2]),
                 "evaluation_trials": len(evaluations), "portfolio_trials": len(portfolios),
-                "legacy_trials": len(imported)}
+                "legacy_trials": len(imported - evaluations)}
+    if legacy_window_review is not None:
+        manifest["legacy_window_review"] = legacy_window_review
     return {**manifest, "manifest_hash": content_hash("quantgpt.trial_manifest/v1", manifest)}
 
 
@@ -93,10 +105,18 @@ async def observed_trial_count(session, project_id) -> int:
         Experiment.project_id == project_id, Experiment.result_summary["performance_observed"].as_boolean().is_(True)))
     payloads = await session.scalars(select(ExperimentArtifact.payload).join(Experiment).where(
         Experiment.project_id == project_id, ExperimentArtifact.artifact_type == "portfolio_optimization"))
-    sources = await session.scalars(select(ResearchDirection.legacy_sources).join(ResearchRound).where(
+    from quantgpt.research.legacy_history import round_legacy_trials
+
+    directions = await session.scalars(select(ResearchDirection).join(ResearchRound).where(
         ResearchRound.project_id == project_id))
-    legacy_keys = {trial["trial_key"] for direction in sources for source in direction for trial in source["trials"]}
-    return int(evaluations or 0) + len(_portfolio_trial_keys(payloads)) + len(legacy_keys)
+    legacy_keys = {trial["trial_key"] for trial in await round_legacy_trials(session, directions, project_id)}
+    aliases = {key.removeprefix("evaluation:") for key in legacy_keys if key.startswith("evaluation:")}
+    duplicated = 0
+    if aliases:
+        duplicated = await session.scalar(select(func.count(func.distinct(identity))).where(
+            Experiment.project_id == project_id, Experiment.result_summary["performance_observed"].as_boolean().is_(True),
+            identity.in_(aliases))) or 0
+    return int(evaluations or 0) + len(_portfolio_trial_keys(payloads)) + len(legacy_keys) - duplicated
 
 
 async def evaluate_profile(session, actor_id, project_id, evaluation_id: str, *, profile: str) -> dict:
@@ -128,6 +148,7 @@ async def evaluate_profile(session, actor_id, project_id, evaluation_id: str, *,
             ExperimentArtifact.payload["profile"].as_string() == profile,
         )
         payload = ExperimentArtifact.payload
+        query = query.where(payload["policy"].as_string() == POLICY_VERSION)
         if round_context is not None:
             manifest = round_context["trial_manifest"]
             n_trials = manifest["observed_trials"]
@@ -140,7 +161,6 @@ async def evaluate_profile(session, actor_id, project_id, evaluation_id: str, *,
         # supersede a current report with pre-exposure selection evidence.
         query = query.order_by(case((payload["observed_project_trials"].as_integer() == n_trials, 0), else_=1),
                                case((payload["selection_hash"].as_string().is_not(None), 0), else_=1),
-                               case((payload["policy"].as_string() == POLICY_VERSION, 0), else_=1),
                                ExperimentArtifact.created_at.asc(), ExperimentArtifact.id.asc()).limit(1)
         record = await session.scalar(query)
         if record is not None:
@@ -158,6 +178,10 @@ async def evaluate_profile(session, actor_id, project_id, evaluation_id: str, *,
             else:
                 checks = report["checks"]
             blockers.extend(report["external_acceptance"]["blockers"])
+        elif await session.scalar(select(ExperimentArtifact.id).where(
+                ExperimentArtifact.experiment_id == evaluation_id, ExperimentArtifact.artifact_type == "offline_validation",
+                payload["profile"].as_string() == profile).limit(1)):
+            blockers.append("OFFLINE_VALIDATION_REPLAY_REQUIRED")
     for name in rules["required"]:
         check = checks.get(name)
         if not isinstance(check, dict) or check.get("status") != "passed":

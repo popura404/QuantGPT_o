@@ -18,7 +18,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from quantgpt.models import Experiment, ExperimentArtifact, FinalWindowExposure
-from quantgpt.research.contracts import EvaluationConfigV1, content_hash
+from quantgpt.research.contracts import EvaluationConfigV1, FactorDefinitionV1, content_hash
 from quantgpt.research.evaluations import (
     assert_publication_attempt,
     authorize_data_inputs,
@@ -28,6 +28,7 @@ from quantgpt.research.evaluations import (
     verify_frozen_config,
     write_artifact,
 )
+from quantgpt.research.market_inputs import check_signal_availability
 from quantgpt.research.projects import require_project_member
 from quantgpt.research.returns import annualized_return
 from quantgpt.research.runtime import local_engine_identity
@@ -117,7 +118,10 @@ def _replay(frame: pd.DataFrame, frozen: dict, config: EvaluationConfigV1,
         result = run_strategy_backtest(request, panel, final_authorized=True)
         return {"returns": result.strategy_returns, "weights": result.target_weights,
                 "risk_logs": result.risk_logs, "costs": result.cost_by_rebalance,
-                "simulation": result.diagnostics.get("ledger", {})}
+                "simulation": result.diagnostics.get("ledger", {}), "signal_availability": result.diagnostics["signal_availability"]}
+    definition = FactorDefinitionV1.model_validate(frozen["definition"])
+    availability = check_signal_availability(panel, [*definition.fields, *config.neutralization],
+        calendar_id=config.scope.calendar_id, timezone=config.scope.timezone)
     with api_context():
         output = run_factor_backtest(panel, expression=frozen["definition"]["expression"],
             holding_period=simulation.rebalance_every_sessions,
@@ -128,7 +132,7 @@ def _replay(frame: pd.DataFrame, frozen: dict, config: EvaluationConfigV1,
             rebalance_anchor=simulation.rebalance_anchor_session.isoformat(), simulation_config=simulation,
             evaluation_start=start, evaluation_end=end)
     return {"returns": output["strategy_returns"], "rank_ic": output["_raw_rank_ic_series"],
-            "simulation": output["simulation_config"], "ledgers": output["_group_ledgers"]}
+            "simulation": output["simulation_config"], "ledgers": output["_group_ledgers"], "signal_availability": availability}
 
 
 def _numerical_checks(frame: pd.DataFrame, frozen: dict, config: EvaluationConfigV1,
@@ -139,6 +143,7 @@ def _numerical_checks(frame: pd.DataFrame, frozen: dict, config: EvaluationConfi
     if cancel_check:
         cancel_check()
     replay = _replay(frame, frozen, config)
+    checks["signal_availability"] = replay["signal_availability"]
     actual = replay["returns"]
     same = actual.index.equals(saved.index) and np.allclose(actual.to_numpy(), saved.to_numpy(), atol=1e-9, rtol=1e-8)
     checks["simulation"] = _check(bool(same), observations=len(actual), method="frozen_entrypoint_replay")
@@ -168,14 +173,18 @@ def _numerical_checks(frame: pd.DataFrame, frozen: dict, config: EvaluationConfi
     if "weights" in replay:
         weights = replay["weights"]
         column = "target_weight" if "target_weight" in weights else "weight"
-        if not weights.empty and column in weights:
+        invested_sessions = replay["simulation"].get("invested_sessions", 0)
+        details = {"scope": "declared_weight_constraints_only", "events": replay["risk_logs"],
+                   "invested_sessions": invested_sessions, "window_target_rows": len(weights)}
+        if weights.empty or column not in weights or not invested_sessions:
+            checks["risk"] = {"status": "insufficient_data", "reason": "NO_IN_WINDOW_POSITION_EVIDENCE", **details}
+        else:
             exposure = weights.groupby("trade_date")[column].sum()
             limit = frozen["strategy"]["risk_rules"]["max_asset_weight"]
-            valid = bool(np.isfinite(weights[column]).all() and weights[column].between(0, limit + 1e-9).all()
+            valid = bool(pd.to_datetime(weights["trade_date"]).isin(scored).all()
+                         and np.isfinite(weights[column]).all() and weights[column].between(0, limit + 1e-9).all()
                          and exposure.between(0, 1 + 1e-9).all())
-        else:
-            valid = False
-        checks["risk"] = _check(valid, scope="declared_weight_constraints_only", events=replay["risk_logs"])
+            checks["risk"] = _check(valid, **details)
     # These are new simulations, with fresh cash in each forward window and a
     # fixed candidate; never describe slices of one return curve as retraining.
     if config.window.phase != "final" or len(scored) < 3 * MIN_SESSIONS:
@@ -273,7 +282,7 @@ async def run_local_validation(session: AsyncSession, actor_id: uuid.UUID, proje
     if round_context is not None:
         identity.update(round_id=str(round_context["round_id"]), selection_evaluation_id=selection_evaluation_id,
                         trial_manifest_hash=round_context["trial_manifest"]["manifest_hash"])
-    report_key = content_hash("quantgpt.offline_validation/v2", identity)
+    report_key = content_hash("quantgpt.offline_validation/v3", identity)
     existing = (await session.scalars(select(ExperimentArtifact.id).where(
         ExperimentArtifact.experiment_id == evaluation_id, ExperimentArtifact.artifact_type == "offline_validation",
         ExperimentArtifact.payload["report_key"].as_string() == report_key))).first()
@@ -281,6 +290,12 @@ async def run_local_validation(session: AsyncSession, actor_id: uuid.UUID, proje
         return (await read_artifact(session, actor_id, project_id, existing))["payload"]
     panel = await asyncio.to_thread(load_evaluation_panel, config, snapshot_root)
     panel = cast(pd.DataFrame, panel[pd.to_datetime(panel.trade_date) <= pd.Timestamp(config.window.end_session)].copy())
+    if "strategy" in frozen:
+        from quantgpt.research.strategies import check_factor_lineage
+        from quantgpt.strategy.spec import StrategySpecV2
+
+        panel.attrs["factor_fields"] = await check_factor_lineage(session, actor_id, project_id,
+            StrategySpecV2.model_validate(frozen["strategy"]), config)
     checks = await asyncio.to_thread(_numerical_checks, panel, frozen, config, saved, trials, cancel_check)
     count_scope = "frozen_round" if round_context is not None else "project"
     checks["trial_correction"].update(trial_count_scope=count_scope, observed_trials=trials)
@@ -291,12 +306,16 @@ async def run_local_validation(session: AsyncSession, actor_id: uuid.UUID, proje
         config.window.phase == "final" and selected is not None,
         selection_evaluation_id=selection_evaluation_id, phase=config.window.phase,
         reason="Requires the same frozen candidate selected before the reserved final window")
-    if profile == "local_strategy":
-        from quantgpt.research.strategies import check_factor_lineage
-        from quantgpt.strategy.spec import StrategySpecV2
+    if round_context is not None:
+        from quantgpt.research.legacy_history import legacy_window_blocker
 
-        await check_factor_lineage(session, actor_id, project_id,
-            StrategySpecV2.model_validate(frozen["strategy"]), config)
+        review = round_context["trial_manifest"].get("legacy_window_review") or {"status": "clear"}
+        blocker = legacy_window_blocker(review)
+        if blocker:
+            name = "strategy_oos" if profile == "local_strategy" else "oos"
+            checks[name].update(status="failed" if review["status"] == "exposed" else "insufficient_data",
+                                reason=blocker, legacy_window_review=review)
+    if profile == "local_strategy":
         checks["factor_lineage"] = _check(True)
     else:
         checks["similarity"] = {"status": "insufficient_data", "reason": "A preregistered comparison library of aligned signals is required"}

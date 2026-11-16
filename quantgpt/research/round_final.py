@@ -12,15 +12,43 @@ import pandas as pd
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from quantgpt.models import Experiment, ExperimentArtifact, FinalWindowExposure, ResearchRound, Task
+from quantgpt.models import (
+    EvaluationExecutionLease,
+    Experiment,
+    ExperimentArtifact,
+    FinalWindowExposure,
+    ResearchRound,
+    Task,
+)
 from quantgpt.research.contracts import EvaluationConfigV1, content_hash, strategy_hash
 from quantgpt.research.evaluations import assert_publication_attempt, authorize_data_inputs, load_evaluation_panel
+from quantgpt.research.legacy_history import legacy_window_blocker, review_legacy_windows, round_legacy_trials
 from quantgpt.research.runtime import local_engine_identity
 from quantgpt.research.runtime import snapshot_root as default_snapshot_root
 from quantgpt.research.strategies import get_strategy_run, run_strategy_evaluation
 from quantgpt.research.validation import build_trial_manifest
 from quantgpt.research.validation_runner import MIN_SESSIONS, run_local_validation
 from quantgpt.strategy.spec import StrategySpecV2
+from quantgpt.task_store import TERMINAL_TASK_STATUSES
+
+
+async def check_preround_work(session: AsyncSession, project_id: uuid.UUID, *, opening: bool) -> None:
+    """Called under the project admission lock. Durable requests and synchronous work both count."""
+    pending = await session.scalar(select(Task.id).where(Task.project_id == project_id,
+        Task.task_type == "research_evaluation", Task.params["round_id"].as_string().is_(None),
+        Task.params["kind"].as_string().in_(["factor", "strategy"]),
+        Task.params["config"]["window"]["phase"].as_string() == "selection",
+        Task.status.not_in(TERMINAL_TASK_STATUSES)).limit(1))
+    # At freeze all round tasks have drained, so any outstanding selection
+    # lease with unpublished results also belongs to outside work.
+    active = await session.scalar(select(EvaluationExecutionLease.evaluation_id).join(
+        Experiment, Experiment.experiment_id == EvaluationExecutionLease.evaluation_id).where(
+        Experiment.project_id == project_id, EvaluationExecutionLease.expires_at > datetime.now(timezone.utc),
+        Experiment.evaluation_config["config"]["window"]["phase"].as_string() == "selection",
+        Experiment.result_summary["performance_observed"].as_boolean().is_(None)).limit(1))
+    if pending or active:
+        action = "opening" if opening else "freezing"
+        raise ValueError(f"PREROUND_SELECTION_PENDING: finish or cancel earlier selection work before {action} the round")
 
 
 def _frozen_record(row: ResearchRound) -> dict:
@@ -95,8 +123,34 @@ async def final_validation_context(session: AsyncSession, project_id: uuid.UUID,
     if row is None:
         return None
     frozen = _frozen_record(row)
+    manifest = frozen["trial_manifest"]
+    review = manifest.get("legacy_window_review")
+    if review is None:
+        # Archived v1 freezes never recorded parent trials or checked overlap.
+        # Never promote their historic pass without reconstructing the original
+        # search evidence. Preserve all frozen identities when originals are gone.
+        from quantgpt.research.rounds import round_directions
+
+        directions = await round_directions(session, row.id)
+        if not manifest.get("legacy_trials") and not any(branch.legacy_sources for branch in directions):
+            return {"round_id": str(row.id), "selection_evaluation_id": frozen["selection_evaluation_id"],
+                    "trial_manifest": manifest}
+        unresolved: set[str] = set()
+        legacy = await round_legacy_trials(session, directions, row.project_id, unresolved_sources=unresolved)
+        old_keys = set(manifest["trial_keys"])
+        recorded = {r["trial_key"] for r in legacy}
+        for key in old_keys - recorded:
+            if key.startswith("legacy:"):
+                legacy.append({"trial_key": key})
+        review = review_legacy_windows(legacy, row.selection_config, row.holdout, unresolved_sources=unresolved)
+        keys = old_keys | recorded
+        revised = {**manifest, "trial_keys": sorted(keys), "observed_trials": len(keys),
+                   "legacy_trials": len({t["trial_key"] for t in legacy if not t["trial_key"].startswith("evaluation:")}),
+                   "legacy_window_review": review, "original_manifest_hash": manifest["manifest_hash"]}
+        revised.pop("manifest_hash")
+        manifest = {**revised, "manifest_hash": content_hash("quantgpt.trial_manifest/v1", revised)}
     return {"round_id": str(row.id), "selection_evaluation_id": frozen["selection_evaluation_id"],
-            "trial_manifest": frozen["trial_manifest"]}
+            "trial_manifest": manifest}
 
 
 async def finalize_round(session: AsyncSession, actor_id: uuid.UUID, project_id: uuid.UUID, *, round_id: uuid.UUID,
@@ -139,6 +193,7 @@ async def finalize_round(session: AsyncSession, actor_id: uuid.UUID, project_id:
         # Interrupted or uncertain work can still produce another observation.
         if any(str(task.status) not in {"completed", "failed", "cancelled"} for task in tasks):
             raise ValueError("ROUND_TASKS_PENDING")
+        await check_preround_work(session, project_id, opening=False)
         chosen = [task for task in tasks if (task.params or {}).get("kind") == "strategy"
                   and str(task.status) == "completed" and (task.result or {}).get("strategy_run_id") == str(selection_run_id)]
         if not chosen:
@@ -160,8 +215,13 @@ async def finalize_round(session: AsyncSession, actor_id: uuid.UUID, project_id:
         evaluation_ids = (await session.scalars(select(Experiment.experiment_id).where(
             Experiment.project_id == project_id,
             Experiment.evaluation_config["config"]["window"]["phase"].as_string() == "selection"))).all()
-        legacy = [trial for direction in directions for source in direction.legacy_sources for trial in source["trials"]]
-        manifest = await build_trial_manifest(session, project_id, evaluation_ids, legacy_trials=legacy)
+        unresolved: set[str] = set()
+        legacy = await round_legacy_trials(session, directions, row.project_id, unresolved_sources=unresolved)
+        review = review_legacy_windows(legacy, row.selection_config, row.holdout, unresolved_sources=unresolved)
+        blocker = legacy_window_blocker(review)
+        if blocker:
+            raise ValueError(f"{blocker}: {review}; verify archived source dates or choose an independent holdout")
+        manifest = await build_trial_manifest(session, project_id, evaluation_ids, legacy_trials=legacy, legacy_window_review=review)
         if saved["evaluation_id"] not in manifest["evaluation_ids"]:
             raise ValueError("ROUND_SELECTION_OBSERVATION_REQUIRED")
         record = {"schema_version": "research_round_freeze/v1", "round_id": str(round_id),
@@ -177,6 +237,13 @@ async def finalize_round(session: AsyncSession, actor_id: uuid.UUID, project_id:
     params = {"kind": "round_final", "round_id": str(round_id), "config": frozen["config"],
               "spec": frozen["spec"], "server_config_frozen": True}
     accepted = await enqueue(session, actor_id, row, params, f"final:{round_id}")
+    if accepted["status"] == "completed":
+        from quantgpt.research.validation import archived_validation_notice
+
+        completed_task = await session.get(Task, accepted["task_id"])
+        report = (completed_task.result or {}).get("validation") if completed_task else None
+        if isinstance(report, dict) and (notice := archived_validation_notice(report)):
+            accepted["validation_status"] = notice
     if accepted["status"] == "cancelled" and row.status == "frozen":
         task = await session.get(Task, accepted["task_id"], populate_existing=True)
         if (task is None or cast(dict, task.params) != params or str(task.user_id) != str(actor_id)
@@ -213,6 +280,13 @@ async def execute_final(session: AsyncSession, actor_id: uuid.UUID, project_id: 
     config = EvaluationConfigV1.model_validate(frozen["config"])
     if config.engine != local_engine_identity():
         raise ValueError("CODE_VERSION_CHANGED: final requires the frozen selection engine")
+    context = await final_validation_context(session, project_id, frozen["final_evaluation_id"])
+    assert context is not None
+    manifest = context["trial_manifest"]
+    blocker = legacy_window_blocker(manifest.get("legacy_window_review") or {"status": "clear"})
+    if blocker and not await session.scalar(select(FinalWindowExposure.evaluation_id).where(
+            FinalWindowExposure.project_id == project_id, FinalWindowExposure.evaluation_id == frozen["final_evaluation_id"])):
+        raise ValueError(f"{blocker}: archived selection lacks evidence of an independent final window")
     await session.commit()
     root = snapshot_root if snapshot_root is not None else default_snapshot_root()
     result = await run_strategy_evaluation(session, actor_id, project_id, StrategySpecV2.model_validate(frozen["spec"]),
@@ -231,7 +305,7 @@ async def execute_final(session: AsyncSession, actor_id: uuid.UUID, project_id: 
         ExperimentArtifact.experiment_id == result["evaluation_id"], ExperimentArtifact.artifact_type == "offline_validation",
         ExperimentArtifact.payload["report_key"].as_string() == report["report_key"]))).one()
     payload = {**result, "round_id": str(round_id), "selection_run_id": frozen["selection_run_id"],
-               "selection_evaluation_id": frozen["selection_evaluation_id"], "trial_manifest": frozen["trial_manifest"],
+               "selection_evaluation_id": frozen["selection_evaluation_id"], "trial_manifest": manifest,
                "freeze_hash": frozen["freeze_hash"], "validation": report, "validation_artifact": {
                    "artifact_id": str(artifact.id), "content_sha256": artifact.content_hash,
                    "kind": "offline_validation", "project_id": str(project_id), "evaluation_id": result["evaluation_id"]}}

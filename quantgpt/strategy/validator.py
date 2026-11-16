@@ -44,7 +44,8 @@ def _validation_dummy() -> pd.DataFrame:
     })
 
 
-def validate_strategy_spec(data: StrategySpecV0 | StrategySpecV1 | dict) -> StrategyValidationResult:
+def validate_strategy_spec(data: StrategySpecV0 | StrategySpecV1 | dict, *,
+                           frozen_fields: set[str] | None = None) -> StrategyValidationResult:
     issues: list[StrategyValidationIssue] = []
     spec: StrategySpecV0 | StrategySpecV1 | None = None
 
@@ -82,7 +83,7 @@ def validate_strategy_spec(data: StrategySpecV0 | StrategySpecV1 | dict) -> Stra
             path="asset_class",
             hint=f"Use asset_class={caps.asset_class!r} for market {spec.market}.",
         ))
-    if spec.universe not in caps.universes:
+    if frozen_fields is None and spec.universe not in caps.universes:
         issues.append(StrategyValidationIssue(
             code=MARKET_UNSUPPORTED,
             message=f"Unsupported universe for {spec.market}: {spec.universe}",
@@ -97,11 +98,12 @@ def validate_strategy_spec(data: StrategySpecV0 | StrategySpecV1 | dict) -> Stra
             hint="Set risk_rules.allow_short=false.",
         ))
 
-    allowed_fields = {field.name for field in caps.data_fields}
+    allowed_fields = frozen_fields if frozen_fields is not None else {field.name for field in caps.data_fields}
     for idx, factor in enumerate(spec.factors):
         try:
             func = parse_expression(factor.expression, mode="local")
-            func(_validation_dummy())
+            if frozen_fields is None:
+                func(_validation_dummy())
         except Exception as exc:
             issues.append(StrategyValidationIssue(
                 code=EXPRESSION_INVALID,

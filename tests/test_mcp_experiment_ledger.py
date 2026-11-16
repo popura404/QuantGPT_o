@@ -2,11 +2,12 @@
 
 import asyncio
 import json
+import uuid
 from concurrent.futures import Future
 
 import pandas as pd
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from quantgpt import mcp_server
@@ -325,6 +326,66 @@ async def test_export_experiment_report_returns_detail(mcp_ledger_fakes):
     assert report["experiment"]["experiment_id"] == result["experiment_id"]
     assert "report_markdown" in report
     assert result["factor_hash"] in report["report_markdown"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_ledger_shares_reads_but_requires_write_role_for_audit_events(mcp_ledger_fakes, test_user):
+    from quantgpt.experiment_ledger import record_experiment
+    from quantgpt.models import User
+    from quantgpt.research.projects import MCP_ACTOR, create_project, set_project_member
+
+    actor = test_user.id
+    owner = uuid.uuid4()
+    async with mcp_ledger_fakes() as session:
+        session.add(User(id=owner, email="ledger-owner@example.invalid", is_active=True))
+        await session.flush()
+        shared = (await create_project(session, owner, name="shared")).id
+        private = (await create_project(session, owner, name="private")).id
+        await set_project_member(session, owner, shared, actor, "viewer")
+        for eid, author, project in (("mine", actor, None), ("other", owner, None), ("shared-mine", actor, shared),
+                                    ("shared-other", owner, shared), ("old-mine", actor, private)):
+            row = await record_experiment(session, experiment_id=eid, user_id=author,
+                                          expression="rank(close)", status="multiple_testing_checked")
+            row.project_id = project
+        await session.commit()
+
+    token = MCP_ACTOR.set(actor)
+    try:
+        allowed = {"mine", "shared-mine", "shared-other"}
+        rows = json.loads(await mcp_server.list_experiments())
+        assert {row["experiment_id"] for row in rows["experiments"]} == allowed
+        matches = json.loads(await mcp_server.find_similar_factors("rank(close)"))
+        assert {m["experiment"]["experiment_id"] for m in matches["matches"]} == allowed
+        lineage = json.loads(await mcp_server.show_factor_lineage("shared-other"))
+        assert {r["experiment_id"] for r in lineage["same_factor_attempts"]} == allowed
+        assert json.loads(await mcp_server.get_experiment("old-mine"))["error_code"] == "EXPERIMENT_NOT_FOUND"
+        assert json.loads(await mcp_server.compare_experiments("mine", "other"))["missing"] == ["other"]
+        counts = json.loads(await mcp_server.summarize_trial_counts(user_id=str(owner)))
+        assert counts["scope"] == "actor_visible_authored" and counts["total_trials_in_project"] == 2
+        scoped = json.loads(await mcp_server.summarize_trial_counts(project_id=str(shared)))
+        assert scoped["project_id"] == str(shared) and scoped["total_trials_in_project"] == 2
+        assert "error_code" in json.loads(await mcp_server.summarize_trial_counts(project_id=str(private)))
+        request = {"p_value": 0.01, "trial_counts": {"total_trials_in_project": 2}, "experiment_id": "shared-other"}
+        assert "ledger_warning" in json.loads(await mcp_server.run_multiple_testing_check(**request))
+        assert "error_code" in json.loads(await mcp_server.promote_experiment("shared-other"))
+        assert "error_code" in json.loads(await mcp_server.reject_experiment("shared-other", "viewer"))
+        await asyncio.to_thread(mcp_server._record_strategy_export_event_sync,
+                                {"experiment_id": "shared-other"}, {"schema_version": "legacy"})
+        async with mcp_ledger_fakes() as session:
+            for model in (ExperimentResult, PromotionEvent, ExportEvent):
+                assert await session.scalar(select(func.count()).select_from(model)) == 0
+            await set_project_member(session, owner, shared, actor, "researcher")
+            await session.commit()
+        assert "ledger_warning" not in json.loads(await mcp_server.run_multiple_testing_check(**request))
+        assert json.loads(await mcp_server.reject_experiment("shared-other", "review"))["status"] == "rejected"
+        assert json.loads(await mcp_server.reject_experiment("mine", "personal"))["status"] == "rejected"
+        async with mcp_ledger_fakes() as session:
+            await set_project_member(session, owner, shared, actor, None)
+            await session.commit()
+        assert json.loads(await mcp_server.get_experiment("shared-mine"))["error_code"] == "EXPERIMENT_NOT_FOUND"
+        assert json.loads(await mcp_server.summarize_trial_counts())["total_trials_in_project"] == 1
+    finally:
+        MCP_ACTOR.reset(token)
 
 
 def _strategy_export_input(experiment_id: str, factor_hash: str, data_snapshot_id: str, provenance: dict) -> dict:

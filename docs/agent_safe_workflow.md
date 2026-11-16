@@ -8,7 +8,7 @@
 
 ## 子代理同时探索各自方向
 
-1. 从快照可用字段构造候选表达式，提交 `submit_research_direction`。同一批定义共用方向与冻结配置。每批返回 `task_id`，多个方向可在同一连接上并发提交。
+1. 从快照可用字段构造候选表达式，先调用 `check_research_factor_novelty`。根据 `exact_matches` 找到正在开发或已保存的公式，根据 `family_matches` 检查参数变体与当前假设是否有独立研究价值。挖新因子时向 `submit_research_direction` 传 `only_new=true`，若返回 `known_candidates`，从 `new_indices` 挑选新表达式重新提交。刻意复验已有公式时使用默认提交模式；同一评价可以被多个方向引用。
 2. 通过 `get_mcp_task_status(task_id, include_result=true)` 获取状态与结果。从成功评价取得 `evaluation_id`、`evaluation_hash`、`definition_hash`、`project_id` 和 `backend`，用冻结配置的 `window.phase` 填写组件引用的 `scope`。后续改进可带 `parent_evaluation_id`。可用 `import_research_iteration` 将已有迭代中实际观察过的试验登记到方向历史。
 3. 调用 `finish_research_direction` 表明已结束该方向的提交。遇到失败或取消时记录任务状态和原因，已观察的成功、失败筛选结果均应计入选择过程。
 

@@ -46,16 +46,23 @@ def register_round_tools(mcp: FastMCP) -> None:
         return await _run(describe_round, project_id, round_id=round_id)
 
     @mcp.tool()
+    async def check_research_factor_novelty(project_id: uuid.UUID, expressions: list[str]) -> str:
+        """Before mining, compare proposals with accessible factor libraries, historical evaluations and active project tasks. Exact formula matches and parameter-family hints include source IDs."""
+        from quantgpt.research.novelty import check_factor_novelty
+
+        return await _run(check_factor_novelty, project_id, expressions=expressions)
+
+    @mcp.tool()
     async def submit_research_direction(project_id: uuid.UUID, round_id: uuid.UUID, direction_id: uuid.UUID,
                                         direction_key: str, definitions: list[dict], idempotency_key: str | None = None,
                                         direction: Literal["higher_is_better", "lower_is_better"] | None = None,
-                                        parent_evaluation_id: str | None = None) -> str:
-        """Queue a direction's factor definitions on the frozen selection data. Poll the returned task ID."""
+                                        parent_evaluation_id: str | None = None, only_new: bool = False) -> str:
+        """Mine new ideas with only_new=true: atomically check the batch and return new_indices if any formula is known. For deliberate replication, omit only_new to share exact evaluation work and credit this direction."""
         from quantgpt.research.rounds import submit_direction
 
         return await _run(submit_direction, project_id, dispatch=True, round_id=round_id, direction_id=direction_id,
                           direction_key=direction_key, definitions=definitions, idempotency_key=idempotency_key,
-                          direction=direction, parent_evaluation_id=parent_evaluation_id)
+                          direction=direction, parent_evaluation_id=parent_evaluation_id, only_new=only_new)
 
     @mcp.tool()
     async def cancel_research_round_task(project_id: uuid.UUID, round_id: uuid.UUID, task_id: str,

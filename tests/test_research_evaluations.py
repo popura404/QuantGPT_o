@@ -50,6 +50,11 @@ async def test_evaluation_retry_and_artifact_scope(db_session, test_user):
     assert first.experiment_id == second.experiment_id
     artifact = await write_artifact(db_session, first, "returns", [{"return": .01}])
     assert (await read_artifact(db_session, test_user.id, project.id, uuid.UUID(artifact["artifact_id"])))["payload"] == [{"return": .01}]
+    old_card = {"schema_version": "factor_research_card/v1", "statistics": {"observed_project_trials": 4}}
+    old = await write_artifact(db_session, first, "research_card", old_card)
+    reread = await read_artifact(db_session, test_user.id, project.id, uuid.UUID(old["artifact_id"]))
+    assert reread["payload"] == old_card and reread["content_sha256"] == old["content_sha256"]
+    assert reread["research_context"]["observed_project_trials"] == 0
     other = await create_project(db_session, test_user.id, name="Different project")
     with pytest.raises(ProjectAccessError):
         await read_artifact(db_session, test_user.id, other.id, uuid.UUID(artifact["artifact_id"]))

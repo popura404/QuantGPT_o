@@ -39,6 +39,10 @@ class TaskConflictError(ValueError):
     """An idempotency key or worker attempt no longer identifies this update."""
 
 
+class ExistingTaskRequired(TaskConflictError):
+    """An exact retry was requested but no durable task has that key."""
+
+
 class RoundTaskCredentialRequired(ValueError):
     """Managed tasks use the direction or coordinator cancellation tool."""
 
@@ -64,6 +68,14 @@ def _task_payload(record: TaskModel) -> dict[str, Any]:
         "lease_expires_at": _utc(record.lease_expires_at).isoformat() if record.lease_expires_at else None,
     }
     payload.update(record.progress_json or {})
+    if str(record.task_type) == "research_evaluation" and isinstance(record.result, dict):
+        kind = (record.params or {}).get("kind")
+        report = record.result if kind == "validation" else record.result.get("validation") if kind == "round_final" else None
+        if isinstance(report, dict):
+            from .research.validation import archived_validation_notice
+
+            if notice := archived_validation_notice(report):
+                payload["validation_status"] = notice
     if record.status in TERMINAL_TASK_STATUSES:
         payload["completed_at"] = payload["updated_at"]
     if str(record.status) == "iteration_completed" and isinstance(record.result, dict):
@@ -133,7 +145,7 @@ async def submit_durable_task(
                 return await _retry_authorized_task(session, existing), False
             return _task_payload(existing), False
     if existing_only:
-        raise TaskConflictError("EXISTING_TASK_REQUIRED: use the original idempotency key and payload")
+        raise ExistingTaskRequired("EXISTING_TASK_REQUIRED: use the original idempotency key and payload")
     record = TaskModel(
         id=uuid_mod.uuid4().hex[:12], user_id=actor, project_id=project,
         session_id=uuid_mod.UUID(session_id) if session_id else None,

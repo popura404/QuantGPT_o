@@ -8,7 +8,7 @@ import math
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from sqlalchemy import func, or_, select
@@ -83,12 +83,36 @@ def summarize_attempts(attempts: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
+def _legacy_scope(*sources: dict) -> dict:
+    scope = {}
+    for name in ("start_date", "end_date", "market", "universe", "manifest_id"):
+        value = next((s[name] for s in sources if s.get(name)), None)
+        if name in {"start_date", "end_date"} and value:
+            try:
+                value = date.fromisoformat(str(value)).isoformat()
+            except ValueError:
+                value = None
+        if isinstance(value, str):
+            scope[name] = value
+    return scope
+
+
+def _observed_score(value) -> bool:
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+class IncompleteIterationHistory(ValueError):
+    def __init__(self, message: str, trials: list[dict]):
+        super().__init__(message)
+        self.trials = trials
+
+
 async def load_observed_iteration_trials(session, actor_id: uuid.UUID, task_id: str, *, project_id=None) -> list[dict]:
-    """Import every observed candidate of an owned, completed legacy iteration."""
+    """Read owned terminal search evidence, including scores published before cancellation."""
     from .models import Task
     from .research.contracts import content_hash
 
-    task = await session.get(Task, task_id)
+    task = await session.get(Task, task_id, populate_existing=True)
     if task is None or str(task.user_id) != str(actor_id):
         raise ValueError("ITERATION_TASK_NOT_FOUND")
     if task.project_id is not None:
@@ -99,49 +123,86 @@ async def load_observed_iteration_trials(session, actor_id: uuid.UUID, task_id: 
         await require_project_member(session, actor_id, task.project_id)
     # The terminal status also identifies historical iteration tasks whose
     # task_type predates the explicit iteration discriminator.
-    if task.status != "iteration_completed":
+    if task.status != "iteration_completed" and not (
+            task.task_type == "iteration" and (task.status in {"cancelled", "failed"}
+            or (task.status == "interrupted" and not task.retryable))):
         raise ValueError("COMPLETED_ITERATION_REQUIRED")
     saved = task.result or {}
-    # The published task result survives best-effort writes of individual attempts.
-    # Older workers sometimes kept the attempt only in the search ledger.
-    attempts = {str(a["id"]): a for a in saved.get("search_attempts", []) if a.get("id")}
-    rows = await session.scalars(select(FactorSearchAttempt).where(
-        FactorSearchAttempt.task_id == task_id, FactorSearchAttempt.user_id == task.user_id))
+    params = task.params or {}
+    frozen_parent = params.get("parent_snapshot") or {}
+    parent_id = task.parent_task_id or saved.get("parent_task_id") or params.get("parent_task_id")
+    parent = await session.get(Task, parent_id) if parent_id else None
+    if parent and (parent.user_id != actor_id or parent.project_id not in {None, project_id}):
+        parent = None
+    persisted_parent = (parent.result or {}) if parent else {}
+    parent_result = frozen_parent.get("result") or persisted_parent
+    base_scope = _legacy_scope(parent_result.get("params") or {}, params, persisted_parent.get("params") or {})
+    observations: dict[str, dict] = {}
+    incomplete: set[str] = set()
+
+    def observe(attempt_id: str, expression: str, score, scope: dict) -> None:
+        if not _observed_score(score) or not expression:
+            incomplete.add(attempt_id)
+            return
+        previous = observations.get(attempt_id, {})
+        observations[attempt_id] = {"trial_key": f"legacy:{task_id}:{attempt_id}", "task_id": task_id,
+            "attempt_id": attempt_id, "expression_key": expression_key(expression),
+            "scope": _legacy_scope(scope, previous.get("scope", {}), base_scope)}
+
+    rows = (await session.scalars(select(FactorSearchAttempt).where(
+        FactorSearchAttempt.task_id == task_id, FactorSearchAttempt.user_id == task.user_id))).all()
     for row in rows:
         if row.status == "success" and not row.failed:
-            attempts.setdefault(str(row.id), {"id": str(row.id), "status": row.status,
-                "expression": row.expression, "raw_score": row.raw_score})
-    observations = {}
-    missing_evidence = set()
-    for attempt in attempts.values():
-        score = attempt.get("raw_score")
-        if attempt.get("performance_observed", attempt.get("status") == "success" and not attempt.get("failed")):
-            if type(score) in (float, int) and math.isfinite(score):
-                observations[str(attempt["id"])] = attempt["expression"]
-            else:
-                missing_evidence.add(attempt["expression"])
+            scope = _legacy_scope({"start_date": row.start_date, "end_date": row.end_date, "universe": row.universe},
+                                  row.params or {})
+            observe(str(row.id), str(row.expression), row.raw_score, scope)
+    attempts = saved.get("search_attempts") or []
+    for attempt in attempts:
+        if attempt.get("id") and attempt.get("performance_observed",
+                attempt.get("status") == "success" and not attempt.get("failed")):
+            observe(str(attempt["id"]), attempt.get("expression"), attempt.get("raw_score"),
+                    _legacy_scope(attempt, attempt.get("params") or {}))
     candidates = saved.get("candidates", [])
-    if not attempts and not candidates:
-        raise ValueError("ITERATION_HISTORY_UNAVAILABLE")
+    if not rows and not attempts and not candidates and task.status == "iteration_completed" and not parent_id:
+        raise IncompleteIterationHistory("ITERATION_HISTORY_UNAVAILABLE", [])
     for candidate in candidates:
         score = candidate.get("raw_score", candidate.get("score"))
         if candidate.get("status") != "success":
             continue
         expr = candidate["expression"]
-        if type(score) not in (float, int) or not math.isfinite(score):
-            missing_evidence.add(expr)
-            continue
         attempt_id = (candidate.get("search_attempt") or {}).get("id")
         if not attempt_id:
             # Pre-ledger published results identify each evaluated expression in this task.
-            if expr in observations.values():
+            if any(o["expression_key"] == expression_key(expr) for o in observations.values()):
                 continue
             attempt_id = content_hash("quantgpt.legacy_candidate/v1", [task_id, expression_key(expr)])
-        observations[str(attempt_id)] = expr
-    if missing_evidence.difference(observations.values()):
-        raise ValueError("ITERATION_OBSERVED_EVIDENCE_INCOMPLETE")
-    return [{"trial_key": f"legacy:{task_id}:{attempt_id}", "task_id": task_id, "attempt_id": attempt_id,
-             "expression_key": expression_key(expr)} for attempt_id, expr in sorted(observations.items())]
+        observe(str(attempt_id), expr, score, candidate.get("params") or {})
+    imported = [observations[k] for k in sorted(observations)]
+    parent_expr = saved.get("parent_expression") or frozen_parent.get("expression") or task.expression
+    if not parent_expr and parent:
+        parent_expr = parent.expression
+    # An interrupted search can retain only its completed parent's snapshot and
+    # an observed child. An unscored parent reference alone is never a trial.
+    if parent_id and parent_expr and (_observed_score(saved.get("parent_score")) or (
+            imported and (parent_result.get("metrics") or parent_result.get("backtest_summary")))):
+        from .models import Experiment
+
+        key = f"legacy-parent:{parent_id}"
+        if project_id is not None:
+            ref = parent_result.get("evaluation_id") or parent_result.get("experiment_id")
+            match = (await session.execute(select(Experiment.evaluation_hash, Experiment.experiment_id).where(
+                Experiment.project_id == project_id,
+                or_(Experiment.task_id == parent_id, Experiment.experiment_id == ref),
+                Experiment.result_summary["performance_observed"].as_boolean().is_(True),
+                Experiment.evaluation_config["config"]["window"]["phase"].as_string() == "selection").limit(1))).first()
+            if match:
+                key = f"evaluation:{match[0] or match[1]}"
+        imported.append({"trial_key": key, "task_id": task_id, "attempt_id": f"parent:{parent_id}",
+            "parent_task_id": parent_id, "expression_key": expression_key(parent_expr),
+            "scope": _legacy_scope(parent_result.get("params") or {}, base_scope)})
+    if incomplete.difference(observations):
+        raise IncompleteIterationHistory("ITERATION_OBSERVED_EVIDENCE_INCOMPLETE", imported)
+    return imported
 
 
 def attempt_payload(

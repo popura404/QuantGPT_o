@@ -171,9 +171,11 @@ async def submit_research_request(session, actor_id: uuid.UUID, project_id: uuid
             raise ValueError("CODE_VERSION_CHANGED: recompute before validating")
         if params.get("selection_evaluation_id"):
             await get_evaluation(session, actor_id, project_id, params["selection_evaluation_id"])
+        from quantgpt.research.validation import POLICY_VERSION
+
         payload, created = await submit_durable_task(session, actor_id=str(actor_id), project_id=str(project_id),
             task_type="research_evaluation", params={**params, "config": config.model_dump(mode="json"),
-                                                      "server_config_frozen": True}, idempotency_key=idempotency_key)
+                "server_config_frozen": True}, idempotency_key=f"{POLICY_VERSION}:{idempotency_key}" if idempotency_key else None)
         return {"task_id": payload["task_id"], "status": payload["status"], "created": created,
                 "result": payload.get("result"), "poll_url": f"/api/v1/tasks/{payload['task_id']}"}
     config = EvaluationConfigV1.model_validate(params["config"])

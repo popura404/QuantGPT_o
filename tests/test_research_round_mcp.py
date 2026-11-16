@@ -77,7 +77,9 @@ async def test_four_agents_submit_merge_and_finalize_over_one_stdio_connection(t
         engine = create_engine(f"sqlite:///{tmp_path / 'round.sqlite'}")
         with engine.begin() as conn:
             conn.execute(Task.__table__.insert().values(id="legacy-task", user_id=MCP_SYSTEM_ACTOR,
-                task_type="iteration", status="iteration_completed", result={"selected_candidate_index": 0,
+                task_type="iteration", status="iteration_completed", params={"market": "demo_global_equity",
+                "universe": "demo_large", "start_date": "2023-01-02", "end_date": "2023-11-30"},
+                result={"selected_candidate_index": 0,
                 "search_attempts": [{"id": "win", "expression": "rank(close)", "status": "success", "raw_score": 83},
                                     {"id": "loss", "expression": "-rank(open)", "status": "success", "raw_score": 0},
                                     {"id": "bad", "expression": "rank(", "status": "failed", "raw_score": 0}],
@@ -103,6 +105,13 @@ async def test_four_agents_submit_merge_and_finalize_over_one_stdio_connection(t
                        ["rank(ts_delta(close, 3))"], ["rank(close / ts_mean(close, 10))"]]
         requests = [{**cred, "definitions": [{**demo["definitions"][0], "expression": expr} for expr in batch],
                      "idempotency_key": f"propose-{i}"} for i, (cred, batch) in enumerate(zip(credentials, expressions))]
+        novelty = await call(client, "check_research_factor_novelty", project_id=project_id, expressions=expressions[0])
+        assert novelty["new_indices"] == [1]
+        known = await call(client, "submit_research_direction", **requests[0], only_new=True)
+        assert known["status"] == "known_candidates" and known["new_indices"] == [1] and "task_id" not in known
+        # The other two directions are searching for previously undeveloped expressions.
+        for req in requests[2:]:
+            req["only_new"] = True
         wrong_branch = await call(client, "submit_research_direction",
                                   **{**requests[0], "direction_key": credentials[1]["direction_key"]})
         assert "error_code" in wrong_branch and "task_id" not in wrong_branch
@@ -165,6 +174,16 @@ async def test_four_agents_submit_merge_and_finalize_over_one_stdio_connection(t
         artifact = await call(client, "get_research_artifact", project_id=project_id,
                               artifact_id=final["validation_artifact"]["artifact_id"])
         assert artifact["payload"] == validation
+        assert validation["checks"]["risk"]["status"] == "passed"
+        assert validation["external_acceptance"]["status"] == "not_run"
+        export = await call(client, "export_research_strategy", project_id=project_id,
+                            strategy_run_id=final["strategy_run_id"])
+        assert export["exported"] is False and "EXTERNAL_DATA_ACCEPTANCE_REQUIRED" in export["validation"]["blockers"]
+        shared_card_id = next(ref["artifact_id"] for ref in results_by_expr["rank(close)"]["summary"]["artifacts"]
+                              if ref["kind"] == "research_card")
+        card = await call(client, "get_research_artifact", project_id=project_id, artifact_id=shared_card_id)
+        assert {d["name"] for d in card["research_context"]["direction_hypotheses"]} == set(names[:2])
+        assert card["research_context"]["observed_project_trials"] == 8
         finished = await call(client, "get_research_round", **scope)
         assert finished["status"] == "completed" and finished["final_task"]["task_id"] == accepted["task_id"]
         assert finished["frozen"]["trial_manifest"]["manifest_hash"] == validation["trial_manifest_hash"]
@@ -189,3 +208,5 @@ async def test_four_agents_submit_merge_and_finalize_over_one_stdio_connection(t
         assert final_again["trial_manifest"] == final["trial_manifest"]
         assert final_again["validation_artifact"] == final["validation_artifact"]
         assert final_again["validation"] == validation
+        for expression, original in results_by_expr.items():
+            assert original["summary"]["artifacts"] == reversed_rows[expression]["summary"]["artifacts"]

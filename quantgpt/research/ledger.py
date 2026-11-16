@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from .contracts import SEMANTICS_VERSION, SimulationConfigV1
+from .market_inputs import price_basis
 
 
 class LedgerError(ValueError):
@@ -59,11 +60,8 @@ def prepare_market_context(market_frame: pd.DataFrame) -> PreparedMarketContext:
     pandas group and copy. Neither the original frame nor its attrs are edited.
     """
     attrs = market_frame.attrs
-    snapshot = attrs.get("data_snapshot") or {}
-    query = snapshot.get("query_params") or {}
-    source = attrs.get("source_metadata") or {}
-    adjustment = attrs.get("adjustment") or source.get("adjustment") or query.get("adjustment_type")
-    if adjustment not in {None, "unknown", "raw", "none", "unadjusted"}:
+    adjustment = price_basis(market_frame)
+    if adjustment not in {"unknown", "raw"}:
         raise LedgerError("INCOMPATIBLE_PRICE_BASIS", f"Raw-price ledger cannot consume {adjustment!r} prices")
     stock_column = "security_id" if "security_id" in market_frame else "stock_code"
     date_column = "session" if "session" in market_frame else "trade_date"
@@ -210,28 +208,27 @@ class ResearchLedger:
                 opening = {}
             if not skipped:
                 current = {s: self.positions.get(s, 0.0) * opening[s] for s in assets}
-                opening_nav = self.cash + sum(current.values()) + sum(item["amount"] for item in self.receivables.values())
+                available = self.cash + sum(current.values())
+                opening_nav = available + sum(item["amount"] for item in self.receivables.values())
+                invested_fraction = sum(targets.values())
+                # Preserve relative target sizes inside the settled budget even
+                # when dividends have entered NAV but cannot yet fund orders.
+                target_nav = min(opening_nav, available / invested_fraction) if invested_fraction else opening_nav
                 fee_rate = (self.config.fees_bps + self.config.slippage_bps) / 10000.0
-                requested_turnover = sum(abs(targets.get(s, 0) * opening_nav - current[s]) for s in assets) / opening_nav / 2
+                requested_turnover = sum(abs(targets.get(s, 0) * target_nav - current[s]) for s in assets) / opening_nav / 2
                 if max_turnover is not None and requested_turnover > max_turnover + 1e-12:
                     skipped = True
                 else:
-                    # Solve post-fee NAV so fully invested targets reserve their own fees.
-                    low, high = 0.0, opening_nav
+                    low, high = 0.0, target_nav
                     for _ in range(64):
                         post_fee_nav = (low + high) / 2
                         cost = fee_rate * sum(abs(targets.get(s, 0) * post_fee_nav - current[s]) for s in assets)
-                        if post_fee_nav + cost > opening_nav:
+                        if post_fee_nav + cost > opening_nav or invested_fraction * post_fee_nav + cost > available:
                             high = post_fee_nav
                         else:
                             low = post_fee_nav
                     post_fee_nav = low
                     desired = {s: targets.get(s, 0) * post_fee_nav / opening[s] for s in assets}
-                    # Receivables are NAV but cannot fund purchases before payment.
-                    cash_required = sum(desired[s] * opening[s] for s in assets) + fee_rate * sum(abs(desired[s] * opening[s] - current[s]) for s in assets)
-                    available = self.cash + sum(current.values())
-                    if cash_required > available + 1e-7:
-                        raise LedgerError("INSUFFICIENT_SETTLED_CASH", "Unpaid dividend receivables cannot fund purchases")
                     changes = {s: desired[s] - self.positions.get(s, 0) for s in assets}
                     for security_id in sorted(assets, key=lambda s: changes[s]):
                         quantity = changes[security_id]

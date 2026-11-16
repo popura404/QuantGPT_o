@@ -6,11 +6,13 @@
 
 1. 主代理通过 `create_research_project` 或 `list_research_projects` 选择项目。用 `list_research_snapshot_imports` 查找已发布的面板，调用 `register_research_snapshot` 登记，再用 `get_research_preparation` 核对实际字段、日期和证券覆盖。离线演练可用 `prepare_research_demo` 准备合成面板。
 2. 主代理用 `create_research_round` 登记选择期、最终留出窗口和方向假设。工具会先检查快照能否覆盖两个窗口及热身期，再创建轮次。要比较现有组合的增量时，先用 `register_research_holdout` 登记留出窗口，在选择期跑基线，再把基线的 `strategy_run_id` 传给 `create_research_round`。每个子代理只领取自己的方向凭据。
-3. 子代理分别调用 `submit_research_direction`，从 `get_mcp_task_status` 读取结果，可将本轮已评价候选的 `evaluation_id` 作为后续候选的 `parent_evaluation_id`。用 `cancel_research_round_task` 取消本方向任务，用 `finish_research_direction` 结束提交。
+3. 子代理构思公式后，先用 `check_research_factor_novelty(project_id, expressions)` 查询已有公式及相同结构的参数变体。挖新因子时调用 `submit_research_direction` 并传 `only_new=true`。服务器在入队时再次查重；出现 `known_candidates` 时读 `new_indices`，只提交这些新候选，或改换表达式。需要有意复验或共享相同评价时，用默认提交方式。通过 `get_mcp_task_status` 读取结果，用 `parent_evaluation_id` 记录上游候选，用 `finish_research_direction` 结束提交。
 4. 主代理用 `get_research_round` 取回各方向的候选评价引用，调用 `submit_round_strategy` 回测组合。有预登记基线时用 `compare_research_strategies_to_baseline` 比较净收益、换手与信号相关性。
 5. 主代理用 `finalize_research_round` 冻结入选组合，轮询该任务取得 `validation` 和 `validation_artifact`。`export_research_strategy` 按服务端验证结果处理导出。项目成员可随时凭引用读取有权访问的历史产物。
 
 同一 MCP 身份可以持不同方向凭据同时工作。各代理以独立身份登录时，应先加入同一项目，并在创建轮次时指定相应方向的 `actor_id`。参数和返回值详见[研究 API/MCP](RESEARCH_API.md)。
+
+离线演练时，`prepare_research_demo` 返回可直接传给 `create_research_round` 的 `round_setup`（选择配置、留出起止日）。再传入项目 ID 和方向列表即可。读到 `LEGACY_HOLDOUT_EXPOSED` 时，检查导入的历史试验并选择未经使用的留出期。正式导出以服务端证据门槛为准。
 
 ## 快速开始（推荐）
 

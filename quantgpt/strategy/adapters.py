@@ -79,6 +79,10 @@ class MarketAdapter(Protocol):
         ...
 
 
+def canonical_market_name(market: str) -> str:
+    return "us" if market == "us_equity" else market
+
+
 class AdapterRegistry:
     def __init__(self):
         self._adapters: dict[str, MarketAdapter] = {}
@@ -88,7 +92,7 @@ class AdapterRegistry:
 
     def get(self, market: str) -> MarketAdapter:
         try:
-            return self._adapters[market]
+            return self._adapters[canonical_market_name(market)]
         except KeyError as exc:
             raise ValueError(f"Unsupported market: {market}") from exc
 

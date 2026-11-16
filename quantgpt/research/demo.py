@@ -65,7 +65,15 @@ def prepare_offline_demo(root: str | Path) -> dict:
         "risk_rules": {"allow_short": False, "max_asset_weight": .2, "max_turnover": 2},
         "cost_model": {"type": "fixed_bps", "bps": 10},
         "validation": {"min_history_days": 30}, "outputs": {"report": True, "signal_export": False}}
-    return {"synthetic": True, "notice": "Offline contract fixture; not real US market evidence",
+    selection_end = date.fromisoformat(str(sessions[99])[:10])
+    holdout_start = str(sessions[100])[:10]
+    holdout_end = config.window.end_session.isoformat()
+    round_window = config.window.model_copy(update={"end_session": selection_end, "split_id": "offline_demo_round",
+        "split_hash": content_hash("quantgpt.demo/round_split/v1",
+            [config.window.start_session.isoformat(), selection_end.isoformat(), holdout_start, holdout_end])})
+    round_setup = {"config": config.model_copy(update={"window": round_window}).model_dump(mode="json"),
+                   "holdout_start": holdout_start, "holdout_end": holdout_end}
+    return {"synthetic": True, "notice": "Offline contract fixture; not real US market evidence", "round_setup": round_setup,
             "field_catalog": [field.model_dump(mode="json") for field in US_RESEARCH_FIELDS],
             "config": config.model_dump(mode="json"), "definitions": [definition.model_dump(mode="json")],
             "strategy_template": template}

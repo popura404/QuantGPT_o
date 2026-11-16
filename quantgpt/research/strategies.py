@@ -13,13 +13,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from quantgpt.experiment_ledger import record_experiment
 from quantgpt.models import Experiment, Strategy, StrategyRun
-from quantgpt.research.contracts import EvaluationConfigV1, FactorDefinitionV1, strategy_hash
+from quantgpt.research.contracts import EvaluationConfigV1, FactorDefinitionV1, FieldContract, strategy_hash
 from quantgpt.research.evaluation_leases import evaluation_execution, fence_evaluation_execution
 from quantgpt.research.evaluations import (
     assert_publication_attempt,
     authorize_data_inputs,
     get_evaluation,
     guard_evaluation_window,
+    guard_unmanaged_selection_publication,
     load_evaluation_panel,
     read_artifact,
     serialize_frame,
@@ -35,13 +36,14 @@ from quantgpt.strategy.spec import StrategySpecV2
 
 
 async def check_factor_lineage(session: AsyncSession, actor_id: uuid.UUID, project_id: uuid.UUID,
-                               spec: StrategySpecV2, config: EvaluationConfigV1) -> None:
+                               spec: StrategySpecV2, config: EvaluationConfigV1) -> tuple[FieldContract, ...]:
     if (spec.market, spec.universe) != (config.scope.market, config.scope.universe_id):
         raise ValueError("STRATEGY_SCOPE_MISMATCH")
     if spec.simulation_config != config.simulation_config:
         raise ValueError("STRATEGY_SIMULATION_MISMATCH")
     if spec.validation.oos is not None and spec.validation.oos.enabled:
         raise ValueError("V2 uses the registered evaluation window; nested legacy OOS splits are not supported")
+    fields = []
     for factor, ref in zip(spec.factors, spec.factor_evaluations, strict=True):
         if ref.project_id != str(project_id):
             raise ProjectAccessError("Component not found or inaccessible")
@@ -72,6 +74,8 @@ async def check_factor_lineage(session: AsyncSession, actor_id: uuid.UUID, proje
             raise ValueError("FACTOR_EXPRESSION_MISMATCH")
         if not (row.result_summary or {}).get("performance_observed"):
             raise ValueError("FACTOR_EVALUATION_REQUIRED")
+        fields.extend(definition.fields)
+    return tuple(fields)
 
 
 async def get_strategy_run(session: AsyncSession, actor_id: uuid.UUID, project_id: uuid.UUID,
@@ -120,7 +124,7 @@ async def run_strategy_evaluation(session: AsyncSession, actor_id: uuid.UUID, pr
     await require_project_member(session, actor_id, project_id, write=True)
     config = normalize_local_config(config)
     await authorize_data_inputs(session, project_id, config)
-    await check_factor_lineage(session, actor_id, project_id, spec, config)
+    factor_fields = await check_factor_lineage(session, actor_id, project_id, spec, config)
     identity = strategy_hash(spec.model_dump(mode="json"), config, spec.factor_evaluations)
     run_id = uuid.uuid5(project_id, "strategy:" + identity)
     evaluation_id = "se_" + run_id.hex
@@ -150,19 +154,22 @@ async def run_strategy_evaluation(session: AsyncSession, actor_id: uuid.UUID, pr
         if token is None:
             saved = await get_strategy_run(session, actor_id, project_id, run_id)
             return cast(dict, saved.result)
-        output = await asyncio.to_thread(_compute_strategy_artifacts, spec, config, snapshot_root)
+        output = await asyncio.to_thread(_compute_strategy_artifacts, spec, config, snapshot_root, factor_fields)
         if cancel_check:
             cancel_check()
+        await guard_unmanaged_selection_publication(session, actor_id, project_id, config, evaluation_id)
         await fence_evaluation_execution(session, evaluation_id, token)
         await assert_publication_attempt(session, task_context)
         await require_project_member(session, actor_id, project_id, write=True)
         return await _publish_strategy(session, actor_id, project_id, spec, config, row, run_id, identity, output)
 
 
-def _compute_strategy_artifacts(spec: StrategySpecV2, config: EvaluationConfigV1, snapshot_root: str | Path) -> dict:
+def _compute_strategy_artifacts(spec: StrategySpecV2, config: EvaluationConfigV1, snapshot_root: str | Path,
+                                factor_fields: tuple[FieldContract, ...]) -> dict:
     panel = load_evaluation_panel(config, snapshot_root)
     panel = cast(pd.DataFrame, panel[pd.to_datetime(panel["trade_date"]) <= pd.Timestamp(config.window.end_session)].copy())
     panel.attrs["frozen_research_input"] = True
+    panel.attrs["factor_fields"] = factor_fields
     numeric_spec = spec.calculation_spec()
     request = StrategyBacktestRequest(spec=numeric_spec, start_date=config.window.start_session.isoformat(),
         end_date=config.window.end_session.isoformat(), benchmark=config.scope.benchmark,

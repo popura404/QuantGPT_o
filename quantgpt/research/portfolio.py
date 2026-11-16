@@ -28,6 +28,7 @@ from quantgpt.research.evaluations import (
     verify_frozen_config,
     write_artifact,
 )
+from quantgpt.research.market_inputs import check_signal_availability, price_basis
 from quantgpt.research.projects import require_project_member
 
 
@@ -107,6 +108,11 @@ def optimize_portfolio(signals: pd.DataFrame, market_frame: pd.DataFrame,
     Turnover and costs both use the sum of absolute buy and sell notional / NAV.
     Exposures are total NAV exposures, so cash contributes zero.
     """
+    if ((config.risk_aversion_candidates or config.max_adv_participation is not None)
+            and not {"raw_open", "raw_close"}.issubset(market_frame) and price_basis(market_frame) == "raw"):
+        aliases = {f"raw_{field}": market_frame[field] for field in ("open", "close")
+                   if field in market_frame and f"raw_{field}" not in market_frame}
+        market_frame = market_frame.assign(**aliases)
     if config.risk_aversion_candidates:
         return _select_parameters(signals, market_frame, config)
     cutoff = pd.Timestamp(config.asof_session)
@@ -367,7 +373,23 @@ async def optimize_signal_reference(session: AsyncSession, actor_id: uuid.UUID, 
 
     def compute():
         panel = load_evaluation_panel(frozen, snapshot_root)
-        return optimize_portfolio(pd.DataFrame(artifact["payload"]), panel, config)
+        dates = pd.to_datetime(panel["session" if "session" in panel else "trade_date"])
+        panel = cast(pd.DataFrame, panel[dates <= pd.Timestamp(config.asof_session)])
+        fields = ["close"]
+        if config.industry_max_weights:
+            fields.append("industry")
+        if config.log_market_cap_min is not None or config.log_market_cap_max is not None:
+            fields.append("market_cap")
+        if config.beta_min is not None or config.beta_max is not None:
+            fields.append("beta")
+        if config.max_adv_participation is not None:
+            fields.extend(("volume", "raw_close" if "raw_close" in panel else "close"))
+        if config.risk_aversion_candidates:
+            fields.extend(("raw_open" if "raw_open" in panel else "open", "raw_close" if "raw_close" in panel else "close"))
+        availability = check_signal_availability(panel, [field for field in fields if field in panel],
+            calendar_id=frozen.scope.calendar_id, timezone=frozen.scope.timezone)
+        result = optimize_portfolio(pd.DataFrame(artifact["payload"]), panel, config)
+        return {**result, "risk_input_availability": availability}
 
     result = await asyncio.to_thread(compute)
     payload = {**result, "portfolio_hash": identity, "signal_ref": reference,

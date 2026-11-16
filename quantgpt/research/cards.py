@@ -9,16 +9,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, cast
+from uuid import UUID
 
 import numpy as np
 import pandas as pd
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from quantgpt.models import ResearchDirection, ResearchRound, Task
 from quantgpt.research.contracts import (
     EvaluationConfigV1,
     FactorDefinitionV1,
     content_hash,
     definition_hash,
     evaluation_hash,
+    normalize_expression,
 )
 from quantgpt.research.ledger import LedgerResult
 from quantgpt.statistics.multiple_testing import bootstrap_mean_ci
@@ -183,18 +188,18 @@ def build_factor_research_card(*, evaluation_id: str, definition: FactorDefiniti
     if config.evidence_eligibility == "research_only":
         blockers.append("DATA_OR_ENGINE_VERSION_UNVERIFIED")
     if not economic_hypothesis:
-        blockers.append("ECONOMIC_HYPOTHESIS_NOT_REGISTERED")
+        blockers.append("DEFINITION_HYPOTHESIS_NOT_REGISTERED")
     elif hypothesis_registration is None:
         blockers.append("HYPOTHESIS_REGISTRATION_REQUIRES_AUDIT_RECORD")
     payload: dict[str, Any] = {
-        "schema_version": "factor_research_card/v1", "evaluation_id": evaluation_id,
+        "schema_version": "factor_research_card/v2", "evaluation_id": evaluation_id,
         "evaluation_hash": evidence.identity, "definition_hash": definition_hash(definition),
         "backend": config.backend, "scope": config.window.phase, "research_scope": config.scope.model_dump(mode="json"),
         "window": config.window.model_dump(mode="json"), "simulation_config": config.simulation_config.model_dump(mode="json") if config.simulation_config else None,
         "data_inputs": [item.model_dump(mode="json") for item in config.data_inputs],
-        "expression": definition.expression, "economic_hypothesis": economic_hypothesis,
+        "expression": normalize_expression(definition.expression), "economic_hypothesis": economic_hypothesis,
         "hypothesis_registration": hypothesis_registration,
-        "fields": [item.model_dump(mode="json") for item in definition.fields],
+        "fields": [item.model_dump(mode="json") for item in sorted(definition.fields, key=lambda field: field.name)],
         "coverage": {"factor_rows": len(values), "securities": int(values.stock_code.nunique()),
                      "observed_sessions": int(values.trade_date.nunique()),
                      "finite_factor_rows": int(np.isfinite(values.factor_value.to_numpy(dtype=float)).sum()),
@@ -210,15 +215,49 @@ def build_factor_research_card(*, evaluation_id: str, definition: FactorDefiniti
         "historical_stability": {"status": "descriptive", "calendar_years": stability},
         "library_similarity": _unavailable("No registered reference signals and return streams supplied"),
         "incremental_contribution": _unavailable("No preregistered frozen portfolio baseline supplied"),
-        "statistics": {"observed_project_trials": trial_count, "multiple_test_correction": "not_available",
+        "statistics": {"observed_project_trials": trial_count,
+                       "trial_count_source": "explicit_input" if trial_count is not None else "artifact_research_context",
+                       "multiple_test_correction": "not_available",
                        "confidence_scope": "descriptive_pointwise", "selection_adjusted": False},
         "execution": {"status": "simulated" if groups else "unavailable",
                       "scope": "long_only_book; liquidity/corporate-action coverage requires external verification"},
         "conclusion": conclusion, "evidence_status": "research_only", "research_decision": "not_evaluated",
         "blockers": blockers,
     }
-    payload["card_hash"] = content_hash("quantgpt.factor_research_card/v1", payload)
+    payload["card_hash"] = content_hash("quantgpt.factor_research_card/v2", payload)
     return payload
+
+
+async def read_card_context(session: AsyncSession, project_id: UUID, evaluation_id: str,
+                            digest: str | None) -> dict:
+    """Read proposal provenance separately so another proposal cannot change a persisted card."""
+    from quantgpt.research.validation import observed_trial_count
+
+    row = await session.scalar(select(ResearchRound).where(ResearchRound.project_id == project_id))
+    sources: list[dict] = []
+    if row is not None and digest:
+        query = select(Task.id, Task.params).where(Task.project_id == project_id,
+            Task.task_type == "research_evaluation", Task.params["round_id"].as_string() == str(row.id),
+            Task.params["kind"].as_string() == "factor")
+        by_direction: dict[str, list[str]] = {}
+        for task_id, params in await session.execute(query):
+            config = EvaluationConfigV1.model_validate(params["config"])
+            if any(evaluation_hash(FactorDefinitionV1.model_validate(item), config) == digest
+                   for item in params["definitions"]):
+                by_direction.setdefault(params["direction_id"], []).append(str(task_id))
+        directions = await session.scalars(select(ResearchDirection).where(ResearchDirection.round_id == row.id)
+                                           .order_by(ResearchDirection.name))
+        for branch in directions:
+            task_ids = by_direction.get(str(branch.id))
+            if task_ids:
+                sources.append({"direction_id": str(branch.id), "name": branch.name, "hypothesis": branch.hypothesis,
+                                "actor_id": str(branch.actor_id), "proposal_task_ids": sorted(task_ids)})
+    manifest = ((row.frozen or {}).get("trial_manifest") or {}) if row is not None else {}
+    frozen = evaluation_id in manifest.get("evaluation_ids", ())
+    return {"round_id": str(row.id) if row is not None and (sources or frozen) else None,
+            "direction_hypotheses": sources, "trial_count_scope": "frozen_round" if frozen else "live_project",
+            "observed_project_trials": manifest["observed_trials"] if frozen else await observed_trial_count(session, project_id),
+            "trial_manifest_hash": manifest.get("manifest_hash") if frozen else None}
 
 
 def _comparable(left: EvaluationEvidence, right: EvaluationEvidence, *, variation: str = "none") -> None:

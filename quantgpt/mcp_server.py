@@ -44,9 +44,6 @@ from .experiment_ledger import (
 from .experiment_ledger import (
     record_promotion_event as _ledger_record_promotion_event,
 )
-from .experiment_ledger import (
-    summarize_trial_counts as _ledger_summarize_trial_counts,
-)
 from .expression_parser import __doc__ as _expr_module_doc
 from .expression_parser import parse_expression
 from .factor_pool import (
@@ -103,6 +100,9 @@ from .research.access_ledger import (
 )
 from .research.access_ledger import (
     list_experiments as _ledger_list_experiments,
+)
+from .research.access_ledger import (
+    summarize_trial_counts as _ledger_summarize_trial_counts,
 )
 from .research.access_ledger import (
     transition_status as _ledger_transition_status,
@@ -212,7 +212,9 @@ mcp = FastMCP(
         "不要直接把单股问题升级为全 CSI500 因子回测。"
         "用于研究结论或候选选择时，score_factor/run_backtest 默认走 OOS selection："
         "train 定方向，valid 选候选。新的共享研究使用 list_research_projects/evaluate_factors，"
-        "多代理使用 create_research_round 冻结研究口径，各方向并发提交，协调者汇总选择后冻结组合并运行最终窗口。"
+        "多代理使用 create_research_round 冻结研究口径。挖新因子时先用 check_research_factor_novelty 查询已有公式，"
+        "向 submit_research_direction 传 only_new=true；若返回 known_candidates，改用 new_indices 中的新候选。"
+        "有意复验已知公式时可用默认提交模式复用计算。协调者汇总选择后冻结组合并运行最终窗口。"
     ),
     streamable_http_path="/",
     stateless_http=True,
@@ -597,7 +599,7 @@ def _record_strategy_export_event_sync(result_payload: dict, export_payload: dic
     async def _record() -> None:
         factory = _get_ledger_session_factory()
         async with factory() as session:
-            row = await _ledger_get_experiment(session, experiment_id)
+            row = await _ledger_get_experiment(session, experiment_id, write=True)
             if row is None:
                 return
             await _ledger_record_export_event(
@@ -636,6 +638,9 @@ async def _record_mcp_experiment_result(
             if isinstance(snapshot, dict) and snapshot.get("snapshot_id"):
                 await persist_data_snapshot(session, snapshot)
             await ensure_mcp_system_user(session)
+            parent = params.get("parent_experiment_id")
+            if parent and await _ledger_get_experiment(session, parent) is None:
+                raise ValueError("Experiment not found or inaccessible")
             experiment = await _ledger_record_experiment(
                 session,
                 expression=expression,
@@ -2341,14 +2346,17 @@ async def summarize_trial_counts(
     universe: str | None = None,
     factor_hash: str | None = None,
     user_id: str | None = None,
+    project_id: str | None = None,
 ) -> str:
-    """汇总实验 ledger trial counts，供 multiple-testing gate 使用。"""
+    """默认统计当前身份创建且仍可见的实验；传 project_id 统计该项目所有成员的实验。正式轮次使用冻结的 trial_manifest。"""
+    import uuid
+
     try:
         factory = _get_ledger_session_factory()
         async with factory() as session:
             counts = await _ledger_summarize_trial_counts(
                 session,
-                user_id=resolve_mcp_actor(),
+                project_id=uuid.UUID(project_id) if project_id is not None else None,
                 universe=universe,
                 factor_hash=factor_hash,
             )
@@ -2400,7 +2408,7 @@ async def run_multiple_testing_check(
         try:
             factory = _get_ledger_session_factory()
             async with factory() as session:
-                row = await _ledger_get_experiment(session, experiment_id)
+                row = await _ledger_get_experiment(session, experiment_id, write=True)
                 if row is None:
                     report["ledger_warning"] = "EXPERIMENT_NOT_FOUND"
                 else:
@@ -2429,7 +2437,7 @@ async def promote_experiment(experiment_id: str, boundary: str = "candidate", pr
             raise ValueError("Unknown promotion boundary")
         factory = _get_ledger_session_factory()
         async with factory() as session:
-            row = await _ledger_get_experiment(session, experiment_id)
+            row = await _ledger_get_experiment(session, experiment_id, write=True)
             if row is None:
                 return json.dumps({"error_code": "EXPERIMENT_NOT_FOUND", "experiment_id": experiment_id}, ensure_ascii=False)
             from .research.validation import evaluate_profile
