@@ -12,6 +12,7 @@ Provides tools for Agent-driven backtest workflow:
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -20,11 +21,14 @@ import time
 import traceback
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import date
-from typing import Awaitable, Callable, Literal
+from functools import wraps
+from typing import Any, Awaitable, Callable, Literal
 
 import pandas as pd
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 
 from .data_quality import DataQualityConfig, run_data_quality_gate
@@ -84,6 +88,7 @@ from .market_data import (
     read_cached_universe,
     universe_cache_path,
 )
+from .mcp_client import request_timeout_seconds
 from .mcp_task_helper import (
     complete_mcp_task,
     force_mcp_task_id,
@@ -191,26 +196,62 @@ _MCP_BACKGROUND_TASKS: set[asyncio.Task] = set()
 @asynccontextmanager
 async def _research_mcp_lifespan(server):
     from .db import _get_session_factory, init_db
-    from .task_executor import start_task_dispatcher, stop_task_dispatcher
+    from .task_executor import task_dispatcher_lifespan
 
     await init_db()
     async with _get_session_factory()() as session:
         await ensure_mcp_system_user(session)
         await session.commit()
-    start_task_dispatcher()
-    try:
+    async with task_dispatcher_lifespan():
         yield {}
-    finally:
-        await stop_task_dispatcher()
 
 _SHARED_RESEARCH_GUIDE = (
     "共享项目研究的主代理与子代理均按 docs/agent_safe_workflow.md 操作。"
+    "提交超时先只读查询原任务。无进展或空回包时，按指南中的「MCP 调用超时与恢复」处理。"
     "可在本版仓库中阅读该文件，或打开 "
     "https://github.com/popura404/QuantGPT_o/blob/main/docs/agent_safe_workflow.md"
 )
 
 
-mcp = FastMCP(
+_in_sync_mcp_tool: ContextVar[bool] = ContextVar("in_sync_mcp_tool", default=False)
+
+
+class QuantGPTMCP(FastMCP):
+    """Bound a native tools/call while leaving durable task execution on its own deadline."""
+
+    def add_tool(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> None:
+        if inspect.iscoroutinefunction(fn):
+            super().add_tool(fn, *args, **kwargs)
+            return
+
+        # Blocking synchronous tools must leave the server loop free to answer
+        # the deadline and other agents' status queries. Preserve the MCP schema.
+        @wraps(fn)
+        async def run_in_thread(*tool_args: Any, **tool_kwargs: Any) -> Any:
+            token = _in_sync_mcp_tool.set(True)
+            try:
+                return await asyncio.to_thread(fn, *tool_args, **tool_kwargs)
+            finally:
+                _in_sync_mcp_tool.reset(token)
+
+        super().add_tool(run_in_thread, *args, **kwargs)
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        seconds = request_timeout_seconds()
+        deadline = asyncio.timeout(seconds)
+        try:
+            async with deadline:
+                return await super().call_tool(name, arguments)
+        except TimeoutError as exc:
+            if not deadline.expired():
+                raise
+            raise ToolError(json.dumps({
+                "error_code": "MCP_REQUEST_TIMEOUT", "tool": name, "timeout_seconds": seconds,
+                "outcome": "unknown", "next_action": "Check the original receipt before resubmitting a write.",
+            })) from exc
+
+
+mcp = QuantGPTMCP(
     "quantgpt",
     lifespan=_research_mcp_lifespan,
     instructions=(
@@ -583,10 +624,13 @@ def _get_ledger_session_factory():
 
 
 def _run_ledger_sync(coro_factory):
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro_factory())
+    # Preserve the server's existing guard against synchronous ledger writes
+    # on its async DB engine when a native MCP call moves to a worker thread.
+    if not _in_sync_mcp_tool.get():
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro_factory())
     logger.warning("Synchronous MCP ledger write skipped inside running event loop")
     return None
 

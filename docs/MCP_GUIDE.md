@@ -4,6 +4,18 @@
 
 本页说明 MCP 连接与工具参数。客户端连接后，可通过 `prompts/get` 获取名为 `shared_research_workflow` 的提示以定位操作指南，通过 `tools/list` 查看当前服务注册的工具。
 
+## MCP 请求期限与命令行查询
+
+`QUANTGPT_MCP_REQUEST_TIMEOUT` 接受大于零的秒数，默认 180 秒。MCP 服务在工具调用超过期限时返回 `MCP_REQUEST_TIMEOUT`。服务端处理超时依赖事件循环能够调度，Agent 宿主也要设置自己的读取期限，以便在服务失联时采取下一步。已领取后台任务的执行期限由 `QUANTGPT_TASK_TIMEOUT` 单独控制，默认 600 秒。研究任务的排队、进度和超时恢复步骤见[操作指南](agent_safe_workflow.md#mcp-调用超时与恢复)。
+
+共享研究优先使用持久 MCP 会话。单次 CLI 查询可用项目虚拟环境中的 Python 运行 `scripts/mcp_bridge.py`。例如，用下列命令从已启动的 HTTP 服务读取工具列表，`RESEARCH_TOKEN` 是本机保存本次研究身份令牌的环境变量名。
+
+```sh
+python scripts/mcp_bridge.py --url http://127.0.0.1:8003/mcp/ --bearer-token-env RESEARCH_TOKEN --timeout-seconds 30 list
+```
+
+`call 工具名 "@args.json"` 从 JSON 文件读取参数。`--timeout-seconds` 覆盖此次 CLI 的单次请求期限。省略 `--url` 时，脚本启动一个 stdio 服务子进程，命令结束后该子进程退出。跨命令持续处理异步研究任务需要长连接或同库常驻的任务执行服务。
+
 ## 快速开始（推荐）
 
 在仓库根目录安装 CPython 3.12 的锁定依赖。Linux 执行 `make setup`，Windows PowerShell 执行 `.\scripts\setup.ps1`。两者默认创建 `.venv312`，首次安装会从 `.env.example` 复制本机 `.env`。stdio 客户端直接启动该环境里的 Python。

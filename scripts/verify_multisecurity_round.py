@@ -20,6 +20,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_STALL_TIMEOUT_SECONDS = 300
 SHORT_SELECTION_SESSIONS = 75
 SHORT_HOLDOUT_SESSIONS = 65
 SHORT_WARMUP_SESSIONS = 25
@@ -63,34 +64,74 @@ def require(condition: bool, message: str) -> None:
 
 @asynccontextmanager
 async def connection(server, log):
+    from quantgpt.mcp_client import request_timeout_seconds
+
     with log.open("a", encoding="utf-8") as stderr:
         async with stdio_client(server, errlog=stderr) as streams, ClientSession(
-            *streams, read_timeout_seconds=timedelta(minutes=3)
+            *streams, read_timeout_seconds=timedelta(seconds=request_timeout_seconds())
         ) as client:
             await client.initialize()
             yield client
 
 
-async def call(client, tool_name, **arguments):
-    reply = await client.call_tool(tool_name, arguments)
-    if reply.isError or not reply.content:
-        raise RuntimeError(f"{tool_name}: {reply.content[0].text if reply.content else 'empty response'}")
-    result = json.loads(reply.content[0].text)
-    if result.get("error_code"):
-        raise RuntimeError(f"{tool_name}: {result.get('error_code')} {result.get('message') or result.get('hint', '')}")
+async def call(client: ClientSession, tool_name: str, *, _timeout_seconds: float | None = None, **arguments) -> dict:
+    from quantgpt.mcp_client import McpCallFailure, call_mcp_tool
+
+    try:
+        result = await call_mcp_tool(client, tool_name, arguments, timeout_seconds=_timeout_seconds)
+    except McpCallFailure as exc:
+        receipt = exc.payload.get("reconciliation")
+        if not isinstance(receipt, dict):
+            receipt = {}
+        if exc.payload.get("reconciliation_tool") == "find_research_submission" and (
+            receipt.get("found") is True and receipt.get("task_id")
+        ):
+            return receipt
+        if tool_name != "create_research_round" or not receipt.get("round_id") or not arguments.get("coordinator_key"):
+            identifiers = {k: arguments[k] for k in ("project_id", "round_id", "direction_id", "task_id", "idempotency_key")
+                           if k in arguments}
+            exc.add_note(f"{tool_name} {identifiers}: {exc.payload.get('next_action') or exc.payload['error_code']}")
+            raise
+        # Recover direction credentials with the original key after the read-only round lookup.
+        result = await call_mcp_tool(client, tool_name, arguments, timeout_seconds=_timeout_seconds)
+        if not isinstance(result, dict) or result.get("round_id") != receipt["round_id"]:
+            raise RuntimeError("Recovered round does not match the round lookup") from exc
+    if not isinstance(result, dict) or not result:
+        raise RuntimeError(f"{tool_name}: expected a nonempty JSON object")
     return result
 
 
-async def wait_result(client, submitted):
+async def wait_result(client: ClientSession, submitted: dict, *,
+                      stall_timeout_seconds: float = DEFAULT_STALL_TIMEOUT_SECONDS) -> dict:
+    from quantgpt.mcp_client import request_timeout_seconds
+
     task_id = submitted.get("task_id")
     require(bool(task_id), f"Submission was not queued: {submitted.get('status')}")
-    while True:
-        task = await call(client, "get_mcp_task_status", task_id=task_id, include_result=True)
-        if task["status"] == "completed":
-            return task["result"]
-        if task["status"] not in {"queued", "running"}:
-            raise RuntimeError(f"Task {task_id}: {task['status']} {task.get('error')}")
-        await asyncio.sleep(.5)
+    status = submitted.get("status")
+    marker = ("queued",) if status in {"queued", "pending"} else (status, None, None, None, None)
+    deadline = time.monotonic() + stall_timeout_seconds
+    rpc_timeout = request_timeout_seconds()
+    while (remaining := deadline - time.monotonic()) > 0:
+        task = await call(client, "get_mcp_task_status", task_id=task_id, include_result=True,
+                          _timeout_seconds=min(remaining, rpc_timeout))
+        if task.get("task_id") != task_id:
+            raise RuntimeError(f"Status response does not identify requested task {task_id}")
+        status = task.get("status")
+        if status == "completed":
+            result = task.get("result")
+            if not isinstance(result, dict) or not result:
+                raise RuntimeError(f"Task {task_id}: completed without the required result object")
+            return result
+        if status not in {"queued", "pending", "running"}:
+            raise RuntimeError(f"Task {task_id}: {status} {task.get('error')}")
+        current = (("queued",) if status in {"queued", "pending"} else
+                   tuple(task.get(key) for key in ("status", "stage", "progress", "progress_current", "progress_total")))
+        if marker != current:
+            marker = current
+            deadline = time.monotonic() + stall_timeout_seconds
+        await asyncio.sleep(min(.5, max(0, deadline - time.monotonic())))
+    raise RuntimeError(f"Task {task_id}: no progress for {stall_timeout_seconds}s in {status}; "
+                       "inspect the original task before continuing")
 
 
 def factor(proposal: Proposal, currency: str) -> dict:
@@ -183,7 +224,7 @@ async def selection_score(client, row, scored_days):
     return {"net_return": math.prod(1 + value for value in returns) - 1, "sessions": len(returns), "artifact": ref}
 
 
-async def explore(server, log, start, common, branch, proposal, currency, scored_days):
+async def explore(server, log, start, common, branch, proposal, currency, scored_days, stall_timeout):
     async with connection(server, log) as client:
         cred = {**common, "direction_id": branch["direction_id"], "direction_key": branch["direction_key"]}
         await start.wait()
@@ -192,10 +233,11 @@ async def explore(server, log, start, common, branch, proposal, currency, scored
         require(proposal_check["new_indices"] == [0], f"Known candidate in {proposal.name}")
         request = {**cred, "definitions": [factor(proposal, currency)], "only_new": True, "idempotency_key": proposal.name}
         submitted = await call(client, "submit_research_direction", **request)
-        result = await wait_result(client, submitted)
+        result = await wait_result(client, submitted, stall_timeout_seconds=stall_timeout)
         row = result["evaluations"][0]
         require(row["summary"].get("performance_observed") is True, f"{proposal.name}: {row.get('failure_reason')}")
         score = await selection_score(client, row, scored_days)
+        # Deliberate idempotency check after observing completion of the original task.
         retry = await call(client, "submit_research_direction", **request)
         require(retry["task_id"] == submitted["task_id"], "Direction retry changed task identity")
         await call(client, "finish_research_direction", **cred)
@@ -238,11 +280,14 @@ async def verify(args):
         await call(client, "register_research_hypothesis", project_id=project_id, definition=factor(BASELINE, args.currency),
                    economic_hypothesis=BASELINE.hypothesis)
         baseline_factor = (await wait_result(client, await call(client, "evaluate_factors", project_id=project_id,
-            definitions=[factor(BASELINE, args.currency)], config=config, idempotency_key="baseline-factor")))["evaluations"][0]
+            definitions=[factor(BASELINE, args.currency)], config=config, idempotency_key="baseline-factor"),
+            stall_timeout_seconds=args.stall_timeout_seconds))["evaluations"][0]
         require(baseline_factor["summary"].get("performance_observed") is True, f"Baseline: {baseline_factor.get('failure_reason')}")
         baseline = await wait_result(client, await call(client, "run_research_strategy", project_id=project_id,
-            spec=specification(config, [(BASELINE, baseline_factor)], top_n), config=config, idempotency_key="baseline-strategy"))
+            spec=specification(config, [(BASELINE, baseline_factor)], top_n), config=config, idempotency_key="baseline-strategy"),
+            stall_timeout_seconds=args.stall_timeout_seconds)
         created = await call(client, "create_research_round", project_id=project_id, config=config,
+            coordinator_key=secrets.token_urlsafe(32),
             holdout_start=dates[2], holdout_end=dates[3], baseline_run_id=baseline["strategy_run_id"],
             directions=[{"name": p.name, "hypothesis": p.hypothesis} for p in PROPOSALS])
         common = {"project_id": project_id, "round_id": created["round_id"]}
@@ -251,7 +296,8 @@ async def verify(args):
         require(known["new_indices"] == [], "Saved baseline was not recognized by the novelty lookup")
         start = asyncio.Barrier(len(PROPOSALS))
         async with asyncio.TaskGroup() as workers:
-            jobs = [workers.create_task(explore(server, run_dir / f"{p.name}.log", start, common, b, p, args.currency, scored_days))
+            jobs = [workers.create_task(explore(server, run_dir / f"{p.name}.log", start, common, b, p, args.currency,
+                                                scored_days, args.stall_timeout_seconds))
                     for b, p in zip(created["directions"], PROPOSALS, strict=True)]
             peak = 0
             while not all(job.done() for job in jobs):
@@ -263,11 +309,13 @@ async def verify(args):
         require(peak >= 2, "No overlapping direction tasks were observed by the coordinator")
         selected = sorted(rows, key=lambda item: (-item[3]["net_return"], item[1]["evaluation_hash"]))[:SELECTION_RULE["add_directions"]]
         spec = specification(config, [(BASELINE, baseline_factor)] + [(p, row) for p, row, _, _ in selected], top_n)
-        strategy = await wait_result(client, await call(client, "submit_round_strategy", **coordinator, spec=spec))
+        strategy = await wait_result(client, await call(client, "submit_round_strategy", **coordinator, spec=spec),
+                                     stall_timeout_seconds=args.stall_timeout_seconds)
         comparison = await call(client, "compare_research_strategies_to_baseline", **common,
                                 augmented_run_id=strategy["strategy_run_id"])
         finalized = await call(client, "finalize_research_round", **coordinator, selection_run_id=strategy["strategy_run_id"])
-        final = await wait_result(client, finalized)
+        final = await wait_result(client, finalized, stall_timeout_seconds=args.stall_timeout_seconds)
+        # Exercise the frozen-final replay contract only after the original produced its result.
         retried_final = await call(client, "finalize_research_round", **coordinator, selection_run_id=strategy["strategy_run_id"])
         require(retried_final["task_id"] == finalized["task_id"], "Final retry changed the frozen task")
         state = await call(client, "get_research_round", **common)
@@ -337,6 +385,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                              f"Explicit {SHORT_SELECTION_SESSIONS}/{SHORT_HOLDOUT_SESSIONS} also restores the "
                              f"{SHORT_WARMUP_SESSIONS}-session warmup and historical rebalance anchor.")
     parser.add_argument("--timeout-seconds", type=int, default=900)
+    parser.add_argument("--stall-timeout-seconds", type=int, default=DEFAULT_STALL_TIMEOUT_SECONDS,
+                        help="Seconds to wait in the queue or without a change in execution progress")
     args = parser.parse_args(argv)
     if args.manifest_id and not args.import_root:
         parser.error("--manifest-id requires --import-root")
@@ -352,8 +402,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.selection_sessions = SHORT_SELECTION_SESSIONS if args.demo else DEFAULT_SELECTION_SESSIONS
     if args.holdout_sessions is None:
         args.holdout_sessions = SHORT_HOLDOUT_SESSIONS if args.demo else DEFAULT_HOLDOUT_SESSIONS
-    if args.selection_sessions < 30 or args.holdout_sessions < 60 or args.timeout_seconds < 1:
-        parser.error("Specify at least 30 selection sessions, 60 final sessions and a positive timeout")
+    if (args.selection_sessions < 30 or args.holdout_sessions < 60
+            or min(args.timeout_seconds, args.stall_timeout_seconds) < 1):
+        parser.error("Specify at least 30 selection sessions, 60 final sessions and positive timeouts")
     return args
 
 

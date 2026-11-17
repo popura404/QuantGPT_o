@@ -50,11 +50,27 @@ def register_round_tools(mcp: FastMCP) -> None:
                           as_of=as_of)
 
     @mcp.tool()
-    async def get_research_round(project_id: uuid.UUID, round_id: uuid.UUID) -> str:
-        """Read the round, its directions, task states and candidate evaluation IDs after checking project membership."""
+    async def get_research_round(project_id: uuid.UUID, round_id: uuid.UUID | None = None) -> str:
+        """Read the round. With project_id alone, return only project_id and the visible round_id (null if absent)."""
         from quantgpt.research.rounds import describe_round
 
         return await _run(describe_round, project_id, round_id=round_id)
+
+    @mcp.tool()
+    async def find_research_submission(project_id: uuid.UUID,
+            submission_tool: Literal["evaluate_factors", "run_research_strategy", "submit_research_direction",
+                                     "submit_round_strategy", "finalize_research_round"],
+            idempotency_key: str | None = None, round_id: uuid.UUID | None = None,
+            direction_id: uuid.UUID | None = None, spec: dict | None = None,
+            selection_run_id: uuid.UUID | None = None) -> str:
+        """Read your original task receipt after a timeout. Use the original explicit key for factor/direction or
+        standalone strategy submissions, the original spec for a round strategy, or selection_run_id for the final.
+        A missing receipt may still be in flight. This lookup never submits work."""
+        from quantgpt.research.rounds import find_submission
+
+        return await _run(find_submission, project_id, submission_tool=submission_tool,
+                          idempotency_key=idempotency_key, round_id=round_id, direction_id=direction_id,
+                          spec=spec, selection_run_id=selection_run_id)
 
     @mcp.tool()
     async def check_research_factor_novelty(project_id: uuid.UUID, expressions: list[str]) -> str:

@@ -111,7 +111,8 @@ MCP 新工具：`list_research_projects`、`evaluate_factors`、`run_research_st
 | `import_research_iteration` | 子代理传入方向凭据和已有迭代任务的 `task_id` | 将整批已观察候选登记为该方向的研究历史 |
 | `cancel_research_round_task` | 子代理用方向凭据取消自己的任务，协调者用轮次凭据处理指定任务 | 取消结果或当前终态；协调者可用原 `selection_run_id` 再次调用终验，恢复同一冻结任务 |
 | `finish_research_direction` | 子代理使用自己的凭据结束提交，协调者也可接手关闭离线成员的方向 | 关闭该方向的新提案，记录关闭人；终验仍需等待在途任务结束 |
-| `get_research_round` | 项目成员传入 `project_id` 和 `round_id` | 方向假设、各提案表达式与结果引用、指标、失败原因和当前试验数；冻结后返回固定清单和报告引用 |
+| `get_research_round` | 项目成员传入 `project_id`，可选 `round_id` | 仅传项目时返回 `project_id` 和 `round_id`（无轮次为 `null`）。传两者时返回各方向、提案与任务状态、当前试验数，以及冻结后的清单和报告引用 |
+| `find_research_submission` | 原提交身份传 `project_id`、`submission_tool` 及原请求标识，具体参数见[操作指南](agent_safe_workflow.md#mcp-调用超时与恢复) | 只读核对已提交的任务。找到时返回 `found=true`、`task_id` 和 `status`，`found=false` 表示查询时尚未找到匹配回执 |
 | `submit_round_strategy` | 协调者提交组合的 v2 `spec`、组件引用和协调者凭据 | 选择期策略回测任务，完成后取得 `strategy_run_id` |
 | `finalize_research_round` | 协调者传入 `selection_run_id` 和协调者凭据 | 冻结入选策略及试验集合，提交单次 final 任务 |
 

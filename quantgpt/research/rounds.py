@@ -30,7 +30,7 @@ from quantgpt.research.round_final import check_final_session_coverage, check_pr
 from quantgpt.research.runtime import normalize_local_config, snapshot_root
 from quantgpt.research.strategies import check_factor_lineage, get_strategy_run
 from quantgpt.strategy.spec import StrategySpecV2
-from quantgpt.task_store import ExistingTaskRequired, submit_durable_task
+from quantgpt.task_store import ExistingTaskRequired, durable_idempotency_key, submit_durable_task
 
 RUNNING_ROUND: ContextVar[tuple[str, str] | None] = ContextVar("running_research_round", default=None)
 
@@ -276,6 +276,10 @@ async def enqueue(session: AsyncSession, actor_id: uuid.UUID, row: ResearchRound
             "poll_url": f"/api/v1/tasks/{payload['task_id']}"}
 
 
+def _direction_request_key(direction_id: uuid.UUID, identity: str) -> str:
+    return f"direction:{direction_id}:{identity}"
+
+
 async def submit_direction(session: AsyncSession, actor_id: uuid.UUID, project_id: uuid.UUID, *,
                            round_id: uuid.UUID, direction_id: uuid.UUID, direction_key: str,
                            definitions: list[dict], idempotency_key: str | None = None,
@@ -302,7 +306,7 @@ async def submit_direction(session: AsyncSession, actor_id: uuid.UUID, project_i
     params = {"kind": "factor", "config": config.model_dump(mode="json"), "direction_id": str(branch.id),
               "definitions": [d.model_dump(mode="json") for d in candidates], "parent_evaluation_id": parent_evaluation_id}
     identity = idempotency_key or content_hash("quantgpt.direction_request/v1", params)
-    request_key = f"direction:{branch.id}:{identity}"
+    request_key = _direction_request_key(branch.id, identity)
     if only_new and not branch.finished:
         # Under the project lock the next direction sees our task before it can
         # queue its own proposal. An exact retry must still return our original task.
@@ -382,6 +386,11 @@ async def check_components(session: AsyncSession, row: ResearchRound, spec: Stra
                                EvaluationConfigV1.model_validate(row.selection_config))
 
 
+def _strategy_request(row: ResearchRound, candidate: StrategySpecV2) -> tuple[dict, str]:
+    params = {"kind": "strategy", "config": row.selection_config, "spec": candidate.model_dump(mode="json")}
+    return params, f"strategy:{row.id}:{content_hash('quantgpt.round_spec/v1', params)}"
+
+
 async def submit_strategy(session: AsyncSession, actor_id: uuid.UUID, project_id: uuid.UUID, *,
                           round_id: uuid.UUID, coordinator_key: str, spec: dict) -> dict:
     row = await lock_round(session, actor_id, project_id, round_id)
@@ -390,14 +399,52 @@ async def submit_strategy(session: AsyncSession, actor_id: uuid.UUID, project_id
         raise ValueError("ROUND_CLOSED")
     candidate = StrategySpecV2.model_validate(spec)
     await check_components(session, row, candidate)
-    params = {"kind": "strategy", "config": row.selection_config, "spec": candidate.model_dump(mode="json")}
-    return await enqueue(session, actor_id, row, params, f"strategy:{row.id}:{content_hash('quantgpt.round_spec/v1', params)}")
+    params, key = _strategy_request(row, candidate)
+    return await enqueue(session, actor_id, row, params, key)
+
+
+async def find_submission(session: AsyncSession, actor_id: uuid.UUID, project_id: uuid.UUID, *,
+                          submission_tool: str, idempotency_key: str | None = None, round_id: uuid.UUID | None = None,
+                          direction_id: uuid.UUID | None = None, spec: dict | None = None,
+                          selection_run_id: uuid.UUID | None = None) -> dict:
+    """Look up the original actor's durable receipt without claiming, dispatching or retrying it."""
+    await require_project_member(session, actor_id, project_id)
+    if submission_tool in {"evaluate_factors", "run_research_strategy"} and round_id is None and idempotency_key:
+        kind = "factor" if submission_tool == "evaluate_factors" else "strategy"
+        key = idempotency_key
+    elif submission_tool == "submit_research_direction" and round_id and direction_id and idempotency_key:
+        kind, key = "factor", _direction_request_key(direction_id, idempotency_key)
+    elif submission_tool == "submit_round_strategy" and round_id and spec is not None:
+        row = await get_round(session, actor_id, project_id, round_id)
+        _, key = _strategy_request(row, StrategySpecV2.model_validate(spec))
+        kind = "strategy"
+    elif submission_tool == "finalize_research_round" and round_id and selection_run_id:
+        row = await get_round(session, actor_id, project_id, round_id)
+        if (row.frozen or {}).get("selection_run_id") != str(selection_run_id):
+            return {"found": False}
+        kind, key = "round_final", f"final:{round_id}"
+    else:
+        raise ValueError("SUBMISSION_LOOKUP_REQUIRES_ORIGINAL_IDENTIFIERS")
+
+    task = await session.scalar(select(Task).where(
+        Task.project_id == project_id, Task.user_id == actor_id, Task.task_type == "research_evaluation",
+        Task.idempotency_key == durable_idempotency_key(str(project_id), "research_evaluation", key),
+    ))
+    params = (cast(dict | None, task.params) or {}) if task is not None else {}
+    if (task is None or params.get("kind") != kind or params.get("round_id") != (str(round_id) if round_id else None)
+            or (direction_id is not None and params.get("direction_id") != str(direction_id))):
+        return {"found": False}
+    return {"found": True, "task_id": str(task.id), "status": str(task.status)}
 
 
 async def describe_round(session: AsyncSession, actor_id: uuid.UUID, project_id: uuid.UUID, *,
-                         round_id: uuid.UUID) -> dict:
+                         round_id: uuid.UUID | None = None) -> dict:
     from quantgpt.research.validation import observed_trial_count
 
+    if round_id is None:
+        await require_project_member(session, actor_id, project_id)
+        round_id = await session.scalar(select(ResearchRound.id).where(ResearchRound.project_id == project_id))
+        return {"project_id": str(project_id), "round_id": str(round_id) if round_id else None}
     row = await get_round(session, actor_id, project_id, round_id)
     branches = await round_directions(session, round_id)
     tasks = await round_tasks(session, round_id)

@@ -109,6 +109,10 @@ async def load_durable_task(session: AsyncSession, task_id: str, actor_id: str, 
     return _task_payload(record)
 
 
+def durable_idempotency_key(project_id: str | None, task_type: str, idempotency_key: str) -> str:
+    return hashlib.sha256(f"{project_id or ''}:{task_type}:{idempotency_key}".encode()).hexdigest()
+
+
 async def submit_durable_task(
     session: AsyncSession, *, actor_id: str, task_type: str, params: dict,
     expression: str | None = None, project_id: str | None = None,
@@ -133,7 +137,7 @@ async def submit_durable_task(
                           "expression": expression, "session_id": session_id},
                          sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
     request_hash = hashlib.sha256(encoded.encode()).hexdigest()
-    key = hashlib.sha256(f"{project_id or ''}:{task_type}:{idempotency_key}".encode()).hexdigest() if idempotency_key else None
+    key = durable_idempotency_key(project_id, task_type, idempotency_key) if idempotency_key else None
     if key:
         existing = (await session.scalars(select(TaskModel).where(TaskModel.user_id == actor,
                                                                  TaskModel.idempotency_key == key))).first()

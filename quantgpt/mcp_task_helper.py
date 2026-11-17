@@ -330,7 +330,14 @@ async def complete_mcp_task(
         changes = {"result": result, "error": error}
         if expression:
             changes["expression"] = expression
-        task = transition_task(task_id, "failed" if error else "completed", expected_attempt=original_attempt, **changes)
+        status = "failed" if error else "completed"
+        current_call = asyncio.current_task()
+        if not error and current_call is not None and current_call.cancelling() and result is None:
+            # A cancelled RPC can enter the legacy worker's finally block before
+            # it has a result. A remote submission may already have been accepted.
+            status = "remote_outcome_unknown" if str(task.get("task_type", "")).startswith("wq_") else "interrupted"
+            changes["error"] = "MCP_CALL_INTERRUPTED: response ended before the tool recorded a result"
+        task = transition_task(task_id, status, expected_attempt=original_attempt, **changes)
         if task is None:
             raise ValueError("TASK_STALE_ATTEMPT: old worker cannot complete a newer attempt")
 

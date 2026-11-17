@@ -52,16 +52,13 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("Database initialized")
 
-    from .db import _get_session_factory as _sf
-    from .task_executor import start_task_dispatcher, stop_task_dispatcher
-
-    start_task_dispatcher()
-
     from .auth import (
         _DEV_USER_ID,
         ADMIN_SYSTEM_USER_EMAIL,
         ADMIN_SYSTEM_USER_ID,
     )
+    from .db import _get_session_factory as _sf
+    from .task_executor import task_dispatcher_lifespan
     async with _sf()() as session:
         result = await session.execute(select(User).where(User.id == ADMIN_SYSTEM_USER_ID))
         if not result.scalar_one_or_none():
@@ -149,13 +146,10 @@ async def lifespan(app: FastAPI):
 
     from .mcp_server import mcp as _mcp_server
     _mcp_server.streamable_http_app()
-    async with _mcp_server.session_manager.run():
+    async with task_dispatcher_lifespan(), _mcp_server.session_manager.run():
         logger.info("MCP streamable-http session manager started")
 
-        try:
-            yield
-        finally:
-            await stop_task_dispatcher()
+        yield
 
     scheduler.shutdown(wait=False)
     from .task_executor import shutdown_executor

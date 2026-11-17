@@ -20,13 +20,16 @@ import os
 import threading
 import time
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
+from contextlib import asynccontextmanager
 
 from sqlalchemy import select, update
 
 logger = logging.getLogger(__name__)
 
 _dispatcher_task: asyncio.Task | None = None
+_dispatcher_owners = 0
 _worker_monitors: set[asyncio.Task] = set()
 
 
@@ -145,6 +148,7 @@ async def dispatch_pending_tasks_once(session=None) -> int:
 
 
 def start_task_dispatcher() -> None:
+    """Wake the dispatcher after submission without extending its service lifetime."""
     global _dispatcher_task
     if _dispatcher_task is not None and not _dispatcher_task.done():
         return
@@ -162,12 +166,29 @@ def start_task_dispatcher() -> None:
 
 async def stop_task_dispatcher() -> None:
     global _dispatcher_task
+    if _dispatcher_owners:
+        return
     running = [task for task in [_dispatcher_task, *_worker_monitors] if task is not None]
+    # Detach this generation before awaiting cleanup. A new session may arrive
+    # while cancellation is draining and must retain its own dispatcher and monitors.
+    _dispatcher_task = None
+    _worker_monitors.clear()
     for task in running:
         task.cancel()
     await asyncio.gather(*running, return_exceptions=True)
-    _worker_monitors.clear()
-    _dispatcher_task = None
+
+
+@asynccontextmanager
+async def task_dispatcher_lifespan() -> AsyncIterator[None]:
+    """Share the event-loop dispatcher across the HTTP app and active MCP sessions."""
+    global _dispatcher_owners
+    start_task_dispatcher()
+    _dispatcher_owners += 1
+    try:
+        yield
+    finally:
+        _dispatcher_owners -= 1
+        await stop_task_dispatcher()
 
 
 # ---------------------------------------------------------------------------
