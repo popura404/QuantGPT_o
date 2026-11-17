@@ -1,6 +1,6 @@
 # 多代理共享因子研究操作指南
 
-主代理和子代理在同一项目内开发因子时，按本指南从行情登记走到组合终验。MCP 客户端用 `tools/list` 检查是否已注册 `create_research_round`、`submit_research_direction`、`finalize_research_round`。连接配置见 [MCP 指南](MCP_GUIDE.md)，参数和返回值见 [研究 API](RESEARCH_API.md)。
+主代理和子代理在同一项目内开发因子时，按本指南从行情登记走到组合终验。从默认分支 `main` 启动 MCP 后，用 `tools/list` 确认 `create_research_round`、`submit_research_direction`、`finalize_research_round` 已注册。连接配置见 [MCP 指南](MCP_GUIDE.md)，参数和返回值见 [研究 API](RESEARCH_API.md)。
 
 ## 1. 主代理准备项目和身份
 

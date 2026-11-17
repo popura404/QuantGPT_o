@@ -45,7 +45,7 @@ docs/DEPLOYMENT.md
 ## 2. 推荐部署：Docker
 
 ```bash
-git clone --branch codex/review-fixes-offline-validation https://github.com/popura404/QuantGPT_o.git
+git clone https://github.com/popura404/QuantGPT_o.git
 cd QuantGPT_o
 
 cp .env.example .env
@@ -109,7 +109,7 @@ docker compose pull               # 仅在使用远程镜像时需要
 ## 3. 裸机部署
 
 ```bash
-git clone --branch codex/review-fixes-offline-validation https://github.com/popura404/QuantGPT_o.git
+git clone https://github.com/popura404/QuantGPT_o.git
 cd QuantGPT_o
 
 make setup

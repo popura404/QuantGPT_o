@@ -77,7 +77,7 @@ Windows 配置中的路径可使用正斜杠。将以下示例目录替换为本
 ### 从 GitHub 安装
 
 ```bash
-git clone --branch codex/review-fixes-offline-validation https://github.com/popura404/QuantGPT_o.git
+git clone https://github.com/popura404/QuantGPT_o.git
 cd QuantGPT_o
 ```
 

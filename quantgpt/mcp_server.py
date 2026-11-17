@@ -206,7 +206,7 @@ async def _research_mcp_lifespan(server):
 _SHARED_RESEARCH_GUIDE = (
     "共享项目研究的主代理与子代理均按 docs/agent_safe_workflow.md 操作。"
     "可在本版仓库中阅读该文件，或打开 "
-    "https://github.com/popura404/QuantGPT_o/blob/codex/review-fixes-offline-validation/docs/agent_safe_workflow.md"
+    "https://github.com/popura404/QuantGPT_o/blob/main/docs/agent_safe_workflow.md"
 )
 
 

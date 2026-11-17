@@ -5,7 +5,7 @@
 ## Getting Started
 
 ```bash
-git clone --branch codex/review-fixes-offline-validation https://github.com/popura404/QuantGPT_o.git
+git clone https://github.com/popura404/QuantGPT_o.git
 cd QuantGPT_o
 make setup      # installs CPython 3.12 dependencies in .venv312 and creates .env if missing
 make test       # run tests
@@ -16,7 +16,7 @@ No paid API keys required for basic development — the expression engine and ba
 
 ## Development Workflow
 
-1. Fork the repo and branch from the target of your change. Shared research tools currently target `codex/review-fixes-offline-validation`.
+1. Fork the repo and create your development branch from `main`.
 2. Make your changes
 3. Run `make lint && make test` to verify
 4. Submit a PR with a clear description

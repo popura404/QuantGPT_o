@@ -6,10 +6,10 @@ QuantGPT 是供主代理和子代理共同使用的日频因子研究工具。�
 
 ## 本地启动
 
-本版的项目轮次和默认窗口工具位于 `codex/review-fixes-offline-validation` 分支。
+默认克隆的 `main` 已包含多代理研究、日频窗口规划和组合终验工具。
 
 ```sh
-git clone --branch codex/review-fixes-offline-validation https://github.com/popura404/QuantGPT_o.git
+git clone https://github.com/popura404/QuantGPT_o.git
 cd QuantGPT_o
 ```
 

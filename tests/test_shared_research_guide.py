@@ -11,6 +11,7 @@ from quantgpt.strategy.validator import validate_strategy_spec
 
 ROOT = Path(__file__).resolve().parents[1]
 GUIDE = "docs/agent_safe_workflow.md"
+GUIDE_URL = f"https://github.com/popura404/QuantGPT_o/blob/main/{GUIDE}"
 
 
 @pytest.mark.asyncio
@@ -19,11 +20,11 @@ async def test_research_agent_can_discover_the_guide_without_starting_a_task():
     for name in ("README.md", "PROMPT.md"):
         assert f"]({GUIDE})" in (ROOT / name).read_text(encoding="utf-8")
 
-    assert GUIDE in (mcp.instructions or "")
+    assert GUIDE_URL in (mcp.instructions or "")
     assert "shared_research_workflow" in {prompt.name for prompt in await mcp.list_prompts()}
     prompt = await mcp.get_prompt("shared_research_workflow")
     content = prompt.messages[0].content
-    assert content.type == "text" and GUIDE in content.text
+    assert content.type == "text" and GUIDE_URL in content.text
 
 
 @pytest.mark.asyncio

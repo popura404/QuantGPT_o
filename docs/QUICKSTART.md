@@ -7,10 +7,10 @@
 
 ## 1. Clone & Setup
 
-Use the branch that contains the shared research round tools and daily window planner.
+The default branch includes the shared research round tools and daily window planner.
 
 ```bash
-git clone --branch codex/review-fixes-offline-validation https://github.com/popura404/QuantGPT_o.git
+git clone https://github.com/popura404/QuantGPT_o.git
 cd QuantGPT_o
 ```
 
