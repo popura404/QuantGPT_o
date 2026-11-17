@@ -1,9 +1,4 @@
-# Free US data decision and verification boundary
-
-Decision date: 2026-10-05 (Asia/Shanghai). User direction: complete offline
-contracts first, use free data for a small verification, retain paid-provider
-integration points. No subscription was purchased and no private credential was
-read. P13/P14 are **partially implemented / in_review**, not G3 verified.
+# Free US data interfaces and verification
 
 ## Selected interfaces
 
@@ -71,27 +66,19 @@ units; no automatic conversion of cumulative YTD into quarters is claimed.
 Reported shares are not yet suitable for split-consistent historical market cap,
 and current SIC is not presented as historical industry.
 
-## Evidence and status
+## Verification
 
-`tests/test_us_data.py` plus existing factor/adapter regressions: 24 passed on
-Python 3.12.14. HTTP is mocked only at the provider boundary; the REST test invokes
-the real factor service, registered adapter and expression evaluator with a test
-database/authentication. JSON fixtures are synthetic and labelled accordingly.
-Cancellation, quota failure without blind retry, response fingerprints, internal
-holes, effective ticker dates, SEC revisions/units and bounded safe pagination
-are covered. Provider keys are absent from persisted metadata and error messages.
+Run `python -m pytest tests/test_us_data.py -q` for the adapter contracts.
+Provider HTTP calls use mocks. The tests exercise cancellation, quota errors,
+response fingerprints, missing sessions, security mapping dates, SEC revisions,
+reported units and pagination.
 
-An actual public IBM demo request returned 10 sessions for 2026-09-19 through
-2026-10-03 without missing sessions. Evidence is in
-[us-free-external-sample.json](testing/us-free-external-sample.json): response hash,
-request hash, UTC timestamp and row count, with no raw vendor prices committed.
-`external_integration=limited_demo_response_verified` does not mean full P13
-acceptance. SEC actual external requests remain `not_run` because a real contact
-User-Agent was not configured. Research performance was not evaluated.
+For an external check, record the source, request and response hashes, UTC
+observation time, requested dates, returned sessions and gaps. Keep licensed
+data and provider credentials outside Git. SEC requests require an
+operator-supplied contact User-Agent.
 
-Still required for P13/P14 completion: verified rename and delisting/cash-merger
-terminal examples, split/dividend accounting samples, licensed immutable replay,
-historical universe/security master, trustworthy publication/share-adjustment
-history, PIT industry, financial daily enrichment and the complete REST/MCP
-backtest path. The free data boundary therefore remains `research_only` and
-cannot be used as trusted promotion or export evidence.
+Formal market evidence requires historical security and membership records,
+delisting settlements, verified split and dividend treatment, an immutable
+snapshot with retention rights and the applicable point-in-time fields. The
+evaluation records the available evidence and any missing prerequisites.

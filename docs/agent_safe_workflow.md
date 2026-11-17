@@ -18,7 +18,7 @@
 
 主代理用 `get_research_round` 检查各方向任务，用 `submit_round_strategy` 提交带组件引用的 v2 组合。`compare_research_strategies_to_baseline` 对比预登记基线与增强组合的配对净收益、换手和信号相关性。若要探索组合风险参数，在冻结入选组合前运行 `optimize_research_portfolio`。最终任务冻结时一并封存已观察的参数试验。
 
-当各方向结束且相关任务终止后，用 `finalize_research_round` 提交唯一 `selection_run_id`。任务结果包含冻结的 `trial_manifest`、`validation` 和 `validation_artifact`。按 `get_research_artifact` 读取报告，按 `export_research_strategy` 的实际决策处理候选信号导出。保留 `external_data_acceptance` 状态，复核真实市场数据覆盖。[完整接口](RESEARCH_API.md) · [研究执行状态](US_RESEARCH_EXECUTION_STATUS.md)
+当各方向结束且相关任务终止后，用 `finalize_research_round` 提交唯一 `selection_run_id`。任务结果包含冻结的 `trial_manifest`、`validation` 和 `validation_artifact`。按 `get_research_artifact` 读取报告，按 `export_research_strategy` 的实际决策处理候选信号导出。保留 `external_data_acceptance` 状态，复核真实市场数据覆盖。[完整接口](RESEARCH_API.md)
 
 ## Historical diagnostic tools
 

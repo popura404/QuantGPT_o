@@ -78,7 +78,6 @@ EXAMPLES:
 条件因子: rank(where(ts_rank(volume,20) > 0.7, ts_delta(close,10)/close, 0)) * rank(volume/adv20)
 多头排列: rank(where(close > ts_mean(close, 5) and ts_mean(close, 5) > ts_mean(close, 10), close / ts_mean(close, 20), 0))
 衰减加权: decay_linear(rank(ts_corr(vwap, volume, 10)), 5)
-VWAP偏离(WQ BRAIN近A级): -1 * rank(ts_decay_linear(close / vwap, 5))
 复合因子: sign_power(rank(volume/adv20), 2) * rank((close-vwap)/close) * rank(ts_std(returns,20))
 裁剪因子: rank(clip(ts_corr(close, volume, 20), -0.5, 0.5)) * sign_power(ts_delta(close,20)/close, 0.5)
 价值因子: rank(-1 * pe)
@@ -119,8 +118,7 @@ _SYSTEM_PROMPT = """你是一个量化因子表达式生成器。用户会用自
 ================================================================================
 🎯 因子质量指南（非常重要）
 ================================================================================
-简单单因子（如 rank(ts_delta(close, 20))）通常 Sharpe < 0.3，效果很差。
-请优先生成**多信号复合因子**，结合不同维度的信息：
+根据用户的假设选择信号维度。需要组合多个信号时，可使用以下构造方法：
 
 高质量因子设计原则：
 1. 多维度组合：结合价格动量 + 成交量 + 波动率等至少2个维度
@@ -129,8 +127,7 @@ _SYSTEM_PROMPT = """你是一个量化因子表达式生成器。用户会用自
 4. 截面标准化：最外层用 rank() 或 zscore() 保证因子截面可比
 5. 适度复杂度：3-6层嵌套为宜，避免过度简单也避免过度复杂
 
-避免生成以下低效因子：
-- 仅包含单一算子的简单因子：rank(close), rank(ts_delta(close, 20))
+检查候选是否重复，或因取值过少而无法有效分组：
 - 仅调整窗口参数的同质因子：ts_mean(close, 5) - ts_mean(close, 20)
 - 纯离散型因子（大量使用 where 生成 -1/0/1 值）
 
@@ -140,20 +137,7 @@ _SYSTEM_PROMPT = """你是一个量化因子表达式生成器。用户会用自
 Fitness = Sharpe × √(|Returns| / max(Turnover, 0.125))
 三个杠杆：高 Sharpe、高绝对收益、低换手率。
 
-提升 Fitness 的关键技巧（按优先级排列）：
-1. ts_decay_linear() 包裹最终信号：ts_decay_linear(rank(signal), 5~10)，平滑信号降低换手率
-2. rank() 是最关键算子：将原始信号转为百分位，消除量纲偏差，提升单调性
-3. ts_zscore(col, N) 取代原始值：ts_zscore(pe, 63) 捕捉变化而非水平
-4. 双重排名（时序+截面）：rank(ts_rank(col, 40)) 双重过滤提高稳定性
-5. 相关性过滤：-ts_av_diff(x, 50) * ts_corr(x, y, 50) 仅在结构性有效时入场
-6. trade_when 波动率门控：trade_when(vol<threshold, signal, 0) 大幅降低换手率
-
-高 Fitness 模板（可直接使用或改编）：
-- ts_decay_linear(rank((vwap-close)/close), 5)                 — Fitness ~2.86
-- rank(ts_rank(close/ts_shift(close,5)-1, 40))                 — Fitness ~1.42-1.58
-- -ts_av_diff(close, 50) * ts_corr(close, volume, 50)          — Fitness ~1.70
-- -rank(ts_zscore(pe, 63))                                     — Fitness ~1.26-1.70
-- trade_when(ts_std(returns,20)<threshold, rank(signal), 0)    — 最强降换手算子
+根据假设选择平滑、排序或条件过滤算子。候选表达式的收益、换手率和 Fitness 以本次评价结果为准。
 
 ================================================================================
 🚨 输出格式要求（必须严格遵守）🚨

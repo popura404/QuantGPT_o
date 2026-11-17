@@ -19,26 +19,26 @@ venv/
 .env.*
 !.env.example
 
-# Data & reports (generated)
-data/
-reports/
-feedback/
+# Project runtime data and reports
+/data/
+/reports/
+/feedback/
 
 # Deploy (removed — local project only)
-deploy/
+/deploy/
 
 # Alembic config (contains DB URL)
 alembic.ini
 
 # Frontend
-frontend/node_modules/
-frontend/dist/
+/frontend/node_modules/
+/frontend/dist/
 
 # Logs
-logs/
+/logs/
 *.log
-benchmark-results/
-test-results/
+/benchmark-results/
+/test-results/
 
 # MCP config (local paths)
 .mcp.json
@@ -47,14 +47,29 @@ test-results/
 *.tsbuildinfo
 
 # Marketing (local only)
-marketing/
+/marketing/
 
 # Claude Code
 .claude/
 
-# Research notes (runtime artifacts, not source code)
-research_notes/
-docs/factor_research/
+# Local research notes, factor screenshots and generated reports
+/research_notes/
+/factor_research/
+/docs/factor_research/
+/example_factor/
+/docs/knowledge/findings/
+/docs/knowledge/failures/
+/docs/knowledge/rules/
+
+# Generated review logs, reproductions and test evidence
+/docs/reviews/*-20??????.txt
+/docs/reviews/*-20??????.json
+/docs/reviews/reproduce_20??????.py
+/docs/reviews/20??-??-??-*-audit.md
+/docs/reviews/20??-??-??-*-self-review.md
+/docs/testing/P[0-9][0-9]_*.md
+/docs/testing/performance-*.json
+/docs/testing/*-external-sample.json
 
 # IDE
 .vscode/
@@ -80,6 +95,7 @@ engine/target/
 
 # Local credentials and platform sessions; never store these as test fixtures.
 .credentials/
+/.aws/
 credentials.json
 credentials.local.json
 token.json

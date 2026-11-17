@@ -19,7 +19,7 @@ The core tooling lives in [`scripts/factor_miner.py`](../scripts/factor_miner.py
 1. Verify the backtest server is healthy
 2. Load the target research notebook (for example, a project-local or external note for the current direction)
 3. Review: current baseline (expression + metrics), key findings, completed experiments (avoid repeats), next directions
-4. Load the knowledge base (`docs/knowledge/INDEX.md`): rules (must follow), findings (reference), failures (do not repeat)
+4. Use the [knowledge note template](knowledge/INDEX.md). When local notes exist, review rules, findings and previous failures for the current direction.
 5. Identify starting point: first uncompleted direction
 
 ### Phase 1: Factor Design
@@ -156,9 +156,9 @@ Available for local research but not accepted by BRAIN. Use the WQ substitution 
 | `ema/sma/wma` | `decay_linear(x,N)` / `ts_mean(x,N)` |
 | `rsi/macd/obv/atr` | Hand-write with base operators |
 
-### Proven Expression Templates
+### Expression Syntax Examples
 
-These structures have been validated to produce high-fitness factors:
+These expressions illustrate ranking, smoothing and conditional operators.
 
 ```
 rank(ts_delta(close, 5) / ts_shift(close, 5))

@@ -2,7 +2,7 @@
 
 ## US research adapter
 
-`market=us` 提供显式固定cohort的免费 Alpha Vantage OHLCV演示；`USDataProvider` 是可替换的许可供应商接口。XNYS会话日历与 SEC companyfacts PIT 容器有离线契约测试；数据缺少主证券库、完整公司行动/退市、成员历史或可验证基准时返回research_only能力限制。来源与实际短样本结果见 [免费数据决策](US_FREE_DATA_DECISION.md)。完整快照覆盖全部消费列及公司行动/日历属性，并校验manifest身份与文件内容。raw现金账本拒绝显式qfq/hfq价格，不能双计公司行动。
+`market=us` 提供使用固定股票池的 Alpha Vantage OHLCV 演示，许可供应商可接入 `USDataProvider`。XNYS 交易日历与 SEC companyfacts 的时点数据容器有离线契约测试。缺少证券主数据、完整公司行动和退市记录、历史成员或可验证基准时，适配器返回 `research_only` 和具体缺项。快照覆盖计算使用的列、公司行动和日历属性，并校验清单身份和文件内容。使用原始价格的现金账本拒绝显式前复权或后复权价格，避免重复计算公司行动。[数据接口与验证边界](US_FREE_DATA_DECISION.md)
 
 Purpose: describe the source order and provenance fields used by market data.
 

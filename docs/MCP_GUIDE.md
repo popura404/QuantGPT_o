@@ -17,6 +17,8 @@
 
 ## 快速开始（推荐）
 
+在仓库根目录安装 CPython 3.12 的锁定依赖。Linux 执行 `make setup`，Windows PowerShell 执行 `.\scripts\setup.ps1`。两者默认创建 `.venv312`，首次安装会从 `.env.example` 复制本机 `.env`。stdio 客户端直接启动该环境里的 Python。
+
 ### Claude Code
 
 在项目根目录添加 `.mcp.json`（stdio 模式，推荐）：
@@ -26,30 +28,24 @@
   "mcpServers": {
     "quantgpt": {
       "type": "stdio",
-      "command": "/absolute/path/to/QuantGPT_o/.venv/bin/python",
+      "command": "/absolute/path/to/QuantGPT_o/.venv312/bin/python",
       "args": ["-m", "quantgpt"],
-      "cwd": "/absolute/path/to/QuantGPT_o"
-    },
-    "deepseek": {
-      "type": "stdio",
-      "command": "/absolute/path/to/QuantGPT_o/.venv/bin/python",
-      "args": ["scripts/mcp_deepseek.py"],
       "cwd": "/absolute/path/to/QuantGPT_o"
     }
   }
 }
 ```
 
-本机执行副本使用同样的配置形态，只需要把路径替换为实际 checkout 的绝对路径。例如：
+Windows 配置中的路径可使用正斜杠。将以下示例目录替换为本机仓库的绝对路径。
 
 ```json
 {
   "mcpServers": {
     "quantgpt": {
       "type": "stdio",
-      "command": "/absolute/path/to/current-checkout/.venv/bin/python",
+      "command": "C:/work/QuantGPT_o/.venv312/Scripts/python.exe",
       "args": ["-m", "quantgpt"],
-      "cwd": "/absolute/path/to/current-checkout"
+      "cwd": "C:/work/QuantGPT_o"
     }
   }
 }
@@ -57,10 +53,10 @@
 
 **关键要点：**
 
-1. **必须用 stdio 模式** — Claude Code 对 `streamable-http` / `sse` 类型支持不稳定，stdio 最可靠
-2. **command 必须用 Python 绝对路径** — 优先使用项目虚拟环境的 `.venv/bin/python`，不要用 `python3`（Claude Code 的子进程环境可能找不到）
-3. **cwd 必须用绝对路径** — 指向项目根目录，确保 `python3 -m quantgpt` 能找到包
-4. **deepseek MCP 需要 `.env` 中配置 `DEEPSEEK_API_KEY`** — 脚本会自动从 `.env` 读取
+1. 本机连接可以使用 stdio，共享 HTTP 服务的连接方式见下方「HTTP 服务模式」。
+2. `command` 使用项目虚拟环境中 Python 的绝对路径。
+3. `cwd` 使用项目根目录的绝对路径。
+4. 需要 DeepSeek 交叉评审时，可添加独立的 `deepseek` stdio 条目，沿用相同的 `command` 和 `cwd`，将 `args` 设置为 `["scripts/mcp_deepseek.py"]`。脚本从环境或本机 `.env` 读取 `DEEPSEEK_API_KEY`。
 5. **因子重工具默认只读本地缓存** — `score_factor` / `run_backtest` / `compute_factor_values` / 验证类重工具在缓存缺失时会快速返回 `MARKET_DATA_UNAVAILABLE`，避免 Agent 长时间无输出后断流；确认要阻塞式拉取远程行情时再传 `allow_remote_fetch=true`
 6. **长任务可异步提交** — 支持 `submit_only=true` 的工具返回 `task_id`，再用 `get_mcp_task_status` 查询进度或 `cancel_mcp_task` 请求协作式取消
 7. **单股研究先读单股缓存** — 研究 `600487` 这类单只 A 股时先调用 `get_stock_history` / `check_market_cache`，不要直接调用 `compute_factor_values(csi500)` 或 `score_factor(csi500)`
@@ -70,7 +66,7 @@
 ```bash
 # 在 Claude Code 中输入
 /mcp
-# 应显示 quantgpt: connected, deepseek: connected
+# 检查 quantgpt 连接状态。可用 list_operators 验证调用。
 ```
 
 ### Claude Desktop
@@ -81,7 +77,7 @@
 {
   "mcpServers": {
     "quantgpt": {
-      "command": "/absolute/path/to/QuantGPT_o/.venv/bin/python",
+      "command": "/absolute/path/to/QuantGPT_o/.venv312/bin/python",
       "args": ["-m", "quantgpt"],
       "cwd": "/absolute/path/to/QuantGPT_o"
     }
@@ -95,24 +91,17 @@
 # 克隆项目
 git clone https://github.com/popura404/QuantGPT_o.git
 cd QuantGPT_o
-
-# 安装依赖
-pip install -e .
-
-# 配置（在 .env 中设置 DeepSeek API Key，米筐账号可选）
-cp .env.example .env
-# 编辑 .env
-
-# .mcp.json 已包含在仓库中，重启 Claude Code 即自动连接
 ```
+
+在当前目录按上方步骤安装，创建本机的 `.mcp.json`，然后连接客户端。具体平台命令见[快速开始](QUICKSTART.md)。
 
 ### 常见问题
 
 **Q: MCP 连不上？**
 
-1. 确认 `command` 是绝对路径，运行 `which python3` 获取
+1. 确认 `command` 指向实际执行过安装的 `.venv312` 解释器，可用该路径加 `--version` 检查是否为 Python 3.12。
 2. 确认 `cwd` 指向项目根目录（包含 `quantgpt/` 子目录的那层）
-3. 确认 `pip install -e .` 已执行（quantgpt 包已安装）
+3. 确认 `make setup` 或 `.\scripts\setup.ps1` 成功完成。
 4. 修改 `.mcp.json` 后必须重启 Claude Code
 
 **Q: score_factor / run_backtest 很快返回 MARKET_DATA_UNAVAILABLE？**
@@ -123,7 +112,7 @@ MCP 重工具默认使用本地缓存，避免 baostock / akshare 远程拉取�
 
 **Q: HTTP 模式（streamable-http）能用吗？**
 
-MCP 同时挂载在 HTTP 服务上（`/mcp/` 和 `/mcp-sse/`），但需要先启动 HTTP 服务（`bash restart.sh`），且 FastMCP 的 `allowed_hosts` 必须包含带端口的 host（当前代码包含 `localhost:8003` 和 `127.0.0.1:8003`）。如果 `AUTH_DISABLED=false`，客户端还必须发送 `Authorization: Bearer <QUANTGPT_MCP_HTTP_TOKEN>`。stdio 模式无 HTTP 暴露面，推荐优先使用。
+可以。按下方「HTTP 服务模式」启动后，MCP 挂载在 `/mcp/` 和 `/mcp-sse/`。FastMCP 的 `allowed_hosts` 包含 `localhost:8003` 和 `127.0.0.1:8003`。
 
 直接用浏览器或普通 `curl` 打开 `/mcp/` 可能返回 `406 Not Acceptable`，这不是可用性测试失败。streamable-http 客户端需要发送 `Accept: application/json, text/event-stream` 并执行 `initialize`、`tools/list` 或工具调用。
 
@@ -470,11 +459,9 @@ rank(ts_delta(roe, 60))
 
 ## HTTP 服务模式（可选）
 
-启动 HTTP 服务后，MCP 自动挂载到两个端点：
+首次启动 HTTP 服务前，在本机 `.env` 中替换 `JWT_SECRET_KEY`（至少 32 个字符）和 `QUANTGPT_ADMIN_PASSWORD` 的示例值。`.env.example` 默认启用认证（`AUTH_DISABLED=false`）。客户端的 `Authorization: Bearer <token>` 可使用用户 JWT 或 API key，以该用户身份访问项目。使用部署级凭据时，将 `QUANTGPT_MCP_HTTP_TOKEN` 设置为单独的随机值，并在客户端使用同一值。
 
-```bash
-bash restart.sh   # 启动 HTTP 服务（端口 8003）
-```
+Linux 运行 `make dev`，Windows PowerShell 运行 `.\scripts\dev.ps1`。两个开发入口都监听 `127.0.0.1:8003`，在该地址提供以下端点。
 
 | 端点 | 协议 | 说明 |
 |------|------|------|

@@ -1,6 +1,6 @@
 # 持久任务、WQ 平台研究与组合优化契约
 
-本文记录 P11、P12、P16 的实现和离线验证边界，补充 [研究 API](RESEARCH_API.md)、[执行状态](US_RESEARCH_EXECUTION_STATUS.md) 与 [执行计划](US_RESEARCH_EXECUTION_PLAN.md)。不代表 G2/G3/G4 整体通过，也不代表真实 WQ 模拟、真实美股完整风险数据或研究候选已通过独立终验。
+本页说明持久研究任务的生命周期、WQ 模拟的结果对账，以及研究组合对信号和风险数据的要求。[研究 API](RESEARCH_API.md)
 
 ## 1. P11：接受、派发与不可变请求
 
@@ -40,11 +40,9 @@ worker 发布使用两层保护：
 - 内存层：`transition_task(expected_attempt=...)` 在 `tasks_lock` 内比较 attempt 并更新；`snapshot_task` 在同一锁内取得对应 attempt 的深拷贝。旧 worker 的成功、错误、取消与超时分支都不能修改新 attempt 的缓存。
 - 数据库层：持久化核对 actor、当前项目权限、attempt、revision、有效租约及非终态/未取消条件。即使重试尚停在 queued、数据库 attempt 已清空，旧的非空 attempt 仍被拒绝。研究 artifact 发布前通过条件 UPDATE 锁定任务行，锁持有到产物事务提交，使取消与产物发布按提交顺序决定胜者。
 
-2026-10-05 补充的缓存竞态修复针对一个不能仅靠数据库保护解决的缺陷：旧 worker 在数据库被拒绝前，曾可能先把新 attempt 缓存标记为取消或完成。新增真实线程/SQLite 回归覆盖迟到成功、迟到取消异常、claim 快照不受缓存改变影响，以及旧 attempt 不得覆盖重试 queued 状态。
-
 SSE 使用 revision 作为事件 ID，同阶段进度变化也发送；携带 `Last-Event-ID` 重连时返回当前快照并继续订阅。当前没有历史事件流保留或完整事件重放承诺。内存完成结果在其 revision 持久化前不作为已发布结果展示。
 
-2026-10-18：组合回测和迭代入口也使用持久接受/outbox，支持 `Idempotency-Key`。迭代接受时冻结父任务结果，重启后不依赖内存；选定候选的索引写回持久结果。两个 worker 均按 attempt 校验更新，在计算及报告发布边界检查取消。对比、相关性与归因等同步计算路由在 FastAPI 线程池执行，避免行情等待或 Future.result 阻塞事件循环。
+组合回测和迭代入口也使用持久接受/outbox，支持 `Idempotency-Key`。迭代接受时冻结父任务结果，重启后从数据库读取，选定候选的索引写回持久结果。两个 worker 均按 attempt 校验更新，在计算及报告发布边界检查取消。对比、相关性与归因等同步计算路由在 FastAPI 线程池执行，避免行情等待或 Future.result 阻塞事件循环。
 
 研究任务的线程外壳将数据库协程交回 dispatcher 所属事件循环，避免共享 AsyncEngine 的连接池在不同 loop 间争用；快照读取和数值计算使用 `asyncio.to_thread`。独立 worker 无调度 loop 时仍支持原 standalone 入口。单连接文件 SQLite 的真实争用测试覆盖 API/worker 使用同一 loop 并成功完成持久任务。迭代候选报告也通过任务的条件更新事务发布，取消先提交时不能再新增报告记录。
 
@@ -78,7 +76,7 @@ MCP 状态入口使用异步 `get_mcp_task_status_payload_async`，缓存丢失�
 
 有服务端保存的请求、引用、原始响应、平台检查和一致平台 scope 时，证据可按 `wq_remote` profile 评价。同一证据不能通过 `local_strategy` profile，也不能变成本地独立 final 证明。现有正式提交 preflight、权限及 override 审计门禁保留。`submit_alpha` 同样不在失去响应后盲重发，不把不明平台状态当作提交成功。
 
-当前 `external_integration=not_run`：测试全部使用 mock，不运行真实模拟或正式提交。远程取消能力、平台底层版本、按指纹查回请求和自定义日期控制仍为 unknown/unavailable。
+WQ 离线回归使用模拟的 HTTP 响应。远程取消、平台底层版本、按指纹查回请求和自定义日期控制均需相应的平台证据。
 
 ## 5. P16：保存信号驱动的研究组合
 
@@ -115,16 +113,9 @@ MCP 状态入口使用异步 `get_mcp_task_status_payload_async`，缓存丢失�
 
 输出仍为 `research_only`，`local_strategy_eligible=false`。估计效用不是实现收益，验证期增量不是独立终验。真实历史行业、beta、股本、市值、公司行动、存活/退市资格与可验证风险模型未因合成测试而变成可用。
 
-## 7. 已执行证据与复跑方式
+## 7. 离线回归
 
-以下是具体检查点计数，集合有交叉，不能相加当作独立测试总数；后续新增用例会改变复跑计数。统一使用 Python 3.12，在仓库根目录执行，临时目录位于已忽略的 data 下。
-
-| 检查点 | 当时结果 | 证明范围 |
-|---|---|---|
-| P02/P06 算子、neutralize、bridge、OOS 基础回归 | 132 passed | 数值/身份/lookback 与可信 Python 回退；不是 Rust 全算子差分认证 |
-| job 冻结、WQ、组合、dispatcher、持久任务集合 | 52 passed | 冻结配置、未知远程结果、权限、优化约束；发生在追加缓存竞态回归前 |
-| 组合/WQ 新契约及旧 WQ/preflight 回归 | 75 passed | 新旧 WQ 兼容、平台 scope、优化预算等；全部远程交互为 mock |
-| 缓存 attempt 竞态修复后的任务/HTTP/MCP/WQ 集合 | 106 passed | 包含迟到成功、迟到取消异常、独立 claim 快照和 queued 期间旧发布拒绝；修改模块 Ruff/Pyright 均为零诊断 |
+在仓库根目录使用 Python 3.12 运行。为并发测试分配不同的临时目录。
 
 ```powershell
 .venv312/Scripts/python.exe -m pytest tests/test_operator_correctness.py tests/test_expression_parser.py tests/test_neutralize.py tests/test_rust_bridge.py tests/test_oos_validation.py -q --disable-warnings -p no:cacheprovider --basetemp data/test-tmp-p02-final
@@ -134,7 +125,7 @@ MCP 状态入口使用异步 `get_mcp_task_status_payload_async`，缓存丢失�
 .venv312/Scripts/python.exe -m pytest tests/test_research_portfolio.py tests/test_wq_research.py tests/test_wq_brain.py tests/test_wq_submission_guard.py -q --disable-warnings -p no:cacheprovider --basetemp data/test-tmp-p16-budget2 --tb=line
 ```
 
-缓存竞态修复后的扩大检查集合：
+下列命令核对任务状态、取消、重试和发布时的 attempt 校验。
 
 ```powershell
 .venv312/Scripts/python.exe -m pytest tests/test_durable_tasks.py tests/test_task_store.py tests/test_task_executor.py tests/test_mcp_task_cancel_progress.py tests/test_routes_backtest.py tests/test_routes_strategy.py tests/test_research_job_freeze.py tests/test_wq_research.py -q --disable-warnings -p no:cacheprovider --basetemp data/test-tmp-attempt-fence-final --tb=line
@@ -143,4 +134,4 @@ MCP 状态入口使用异步 `get_mcp_task_status_payload_async`，缓存丢失�
 .venv312/Scripts/python.exe -m pyright quantgpt/task_store.py quantgpt/task_executor.py quantgpt/research/jobs.py quantgpt/mcp_task_helper.py quantgpt/routes/backtest_tasks.py
 ```
 
-精确最终计数及性能基准以本轮 [执行状态](US_RESEARCH_EXECUTION_STATUS.md) 收口记录为准。源码变更会改变本地引擎身份；缓存竞态修复后须重新核对性能基准的代码身份。SQLite 故障注入成功不能替代 PostgreSQL、多进程部署、真实平台或真实全量行情验收。
+比较性能时记录本地引擎的代码身份、配置和数据快照，以便重现对应测试。

@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-QuantGPT is a Python backend with a Rust acceleration engine and a React frontend. Backend code lives in `quantgpt/`, with FastAPI routes in `quantgpt/routes/`, migrations in `quantgpt/migrations/`, and strategy modules in `quantgpt/strategy/`. Tests live in `tests/`. The Rust engine is under `engine/src/`. Frontend source is in `frontend/src/`, with API clients in `api/`, reusable UI in `components/`, hooks in `hooks/`, and route pages in `pages/`. Documentation and research notes are in `docs/`; example factor assets are in `example_factor/`.
+QuantGPT is a Python backend with a Rust acceleration engine and a React frontend. Backend code lives in `quantgpt/`, with FastAPI routes in `quantgpt/routes/`, migrations in `quantgpt/migrations/`, and strategy modules in `quantgpt/strategy/`. Tests live in `tests/`. The Rust engine is under `engine/src/`. Frontend source is in `frontend/src/`, with API clients in `api/`, reusable UI in `components/`, hooks in `hooks/`, and route pages in `pages/`. Product documentation is in `docs/`. Local research notes use the template in `docs/knowledge/INDEX.md`.
 
 ## Build, Test, and Development Commands
 

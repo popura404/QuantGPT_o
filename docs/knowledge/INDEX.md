@@ -1,30 +1,10 @@
-# Knowledge Base Index
+# Local research notes
 
-Agent-driven factor research produces three types of knowledge entries.
-Each entry is a standalone markdown file categorized by outcome.
+Create one Markdown file per observation in `rules/`, `findings/` or `failures/` under this directory. These files stay in the local workspace. Use the following fields when recording an observation.
 
-> This is a sample of the knowledge base structure. The full knowledge base (40+ entries) is built up over multiple research sessions and is not included in the open-source release.
-
-## Rules (Stable Rules)
-Permanent platform constraints and validated operational rules.
-
-- [SC Saturation Rule](rules/sc-saturation-rule.md) — Each operator family saturates at ~3-5 ACTIVEs before SC blocks further submissions
-
-## Findings (Empirical Discoveries)
-Validated signal structures and operator behaviors from WQ BRAIN simulation.
-
-- [VWAP Decay Reversal](findings/vwap-decay-reversal.md) — close/vwap decay_linear + fundamental composite factor family
-
-## Failures (Dead Ends)
-Documented failed approaches — prevents re-exploring exhausted directions.
-
-- [Pasteurize Unavailable](failures/pasteurize-unavailable.md) — pasteurize() operator not available on Gold tier
-
----
-
-## Conventions
-
-- **`[Agent+DS Consensus]`**: Both Claude and DeepSeek agree on the conclusion
-- **`[Agent+DS Disagreement]`**: Views differ — both positions documented
-- **One file per discovery**: Each entry gets its own markdown file
-- **Date**: Include discovery date for time-sensitive findings
+| Field | What to record |
+|---|---|
+| Date and scope | Trading dates, market, universe and snapshot reference |
+| Hypothesis or rule | The question tested or the operating constraint |
+| Evidence | Project, round and evaluation references, plus the relevant measurements |
+| Conclusion | What the evidence supports and where uncertainty remains |

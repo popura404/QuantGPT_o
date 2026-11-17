@@ -1,6 +1,6 @@
 # Architecture
 
-本轮新增 `quantgpt/research/` 作为项目授权、不可变评价、产物、持久研究任务、最终窗口、策略血缘和优化的共同业务层。HTTP 与 MCP 复用该层，数值计算复用修正后的 Python 因子/持仓账本；未验证的 Rust 路径明确回退。新旧身份并存，不重解释旧 factor_hash。详见 [研究接口](RESEARCH_API.md) 与 [实施范围](US_RESEARCH_EXECUTION_STATUS.md)。
+`quantgpt/research/` 管理项目授权、不可变评价及其产物、持久研究任务、最终窗口、策略血缘和优化。HTTP 与 MCP 共用该业务层和 Python 因子及持仓账本。缺少数值一致性验证的 Rust 路径回退到 Python。已有记录保留原 `factor_hash`。[研究接口](RESEARCH_API.md)
 
 QuantGPT 是 Agent-Driven 的因子研究引擎。核心架构分为六层：Agent 接口、表达式引擎、回测引擎、验证体系、数据管道、进化引擎。
 
@@ -9,7 +9,7 @@ QuantGPT 是 Agent-Driven 的因子研究引擎。核心架构分为六层：Age
 ```
 LLM Agent (Claude Code / Claude Desktop)
     │
-    ├── MCP Tools (49 个)            ← Agent 的工具箱
+    ├── MCP Tools                    ← Agent 的工具箱
     │   ├── 因子研究                 ← 表达式校验、回测、评分、诊断、OOS/rolling、factor_values
     │   ├── StrategySpec 工作流       ← 模板、校验、回测、评分、报告、候选导出、优化
     │   └── WQ BRAIN 工作流          ← 远程模拟、批量扫描、状态检查、preflight-gated 正式提交
@@ -146,7 +146,7 @@ Request
 
 ### MCP Server (`mcp_server.py`)
 
-49 个 MCP 工具，供 Claude Code / AI Agent 直接调用：
+Agent 可以通过 MCP 枚举当前服务提供的工具。常用入口包括以下几组。
 - 因子研究：`list_operators` / `list_universes` / `validate_expression` /
   `get_stock_history` / `check_market_cache` /
   `run_backtest` / `score_factor` / `compute_factor_values` / `diagnose_factor` /

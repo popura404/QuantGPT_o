@@ -32,8 +32,7 @@ Both install exact, SHA-256 checked platform locks and the editable project with
 `--no-deps --no-build-isolation`. The build backend and wheel tool are included in
 the lock. Setup copies `.env.example` only if `.env` does not exist and preserves
 its authentication setting. Servers bind to loopback by default. Setup never
-reuses an incompatible interpreter or deletes an old environment. The existing
-Python 3.14 `.venv` from the original audit can coexist with `.venv312`.
+reuses an incompatible interpreter or deletes an old environment.
 
 The checked-in locks are `requirements/windows-py312.lock` and
 `requirements/linux-py312.lock`; `engine/Cargo.lock` and
@@ -79,10 +78,8 @@ coverage.
 
 ## Type debt is explicit
 
-The original `25bda5e` code under the locked Python 3.12 environment has **649
-Pyright errors**, individually stored in `docs/testing/pyright-baseline.json`.
-This differs from the audit's 436 errors under Python 3.14 and is the measured
-baseline, not a number of reproduced runtime defects.
+The tracked baseline in `docs/testing/pyright-baseline.json` supplies reference
+diagnostics for the locked Python 3.12 environment.
 
 `check_pyright_baseline.py` compares exact repository-relative file, severity,
 rule, message and multiplicity. Lines are recorded for navigation but are not
@@ -186,18 +183,6 @@ These assertions also run once in CI. Raw snapshots/databases stay under ignored
 printed speed difference measures evidence reuse, not numerical engine speed.
 Source changes during a run invalidate the benchmark and require a fresh run.
 
-The checked-in historical result in
-`docs/testing/performance-baseline-2026-10-05.json` loads the exact parser source
-from `25bda5e` using `--source-ref`. Its label is `known-incorrect-pre-fix-baseline`:
-old values contain known semantic bugs and must never be an algorithm oracle.
-P19 needs a new correctness-repaired baseline plus licensed frozen real data.
-The proposed 500-stock, 10-year real workload remains unverified.
-
-## Recorded status
-
-See [P00 baseline evidence](testing/P00_BASELINE.md). Local Windows success does
-not imply Linux CI, browser end-to-end, PostgreSQL, licensed US data, WQ external
-integration, or Rust numerical parity was verified. The CI matrix is executable
-configuration until an actual run supplies that evidence. Generated environments,
-cache files, credentials, SQLite sidecars, test output and benchmark runs are
-ignored. `make clean` never deletes user databases or research assets.
+To benchmark a particular parser revision, supply its Git reference with
+`--source-ref` in expression mode and store the output under `benchmark-results/`.
+The `make clean` target prints cleanup guidance and leaves local files in place.
