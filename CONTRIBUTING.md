@@ -5,9 +5,9 @@
 ## Getting Started
 
 ```bash
-git clone https://github.com/popura404/QuantGPT_o.git
+git clone --branch codex/review-fixes-offline-validation https://github.com/popura404/QuantGPT_o.git
 cd QuantGPT_o
-make setup      # creates venv, installs deps, copies .env
+make setup      # installs CPython 3.12 dependencies in .venv312 and creates .env if missing
 make test       # run tests
 make lint       # ruff + pyright
 ```
@@ -16,7 +16,7 @@ No paid API keys required for basic development — the expression engine and ba
 
 ## Development Workflow
 
-1. Fork the repo and create a feature branch from `main`
+1. Fork the repo and branch from the target of your change. Shared research tools currently target `codex/review-fixes-offline-validation`.
 2. Make your changes
 3. Run `make lint && make test` to verify
 4. Submit a PR with a clear description
@@ -74,7 +74,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed design documentati
 
 ```bash
 make test                  # all tests
-.venv/bin/pytest tests/test_expression_parser.py -v   # specific file
+.venv312/bin/python -m pytest tests/test_expression_parser.py -v   # specific file
 ```
 
 Tests use SQLite in-memory database. No external services needed.

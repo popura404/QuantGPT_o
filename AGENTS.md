@@ -4,9 +4,11 @@
 
 QuantGPT is a Python backend with a Rust acceleration engine and a React frontend. Backend code lives in `quantgpt/`, with FastAPI routes in `quantgpt/routes/`, migrations in `quantgpt/migrations/`, and strategy modules in `quantgpt/strategy/`. Tests live in `tests/`. The Rust engine is under `engine/src/`. Frontend source is in `frontend/src/`, with API clients in `api/`, reusable UI in `components/`, hooks in `hooks/`, and route pages in `pages/`. Product documentation is in `docs/`. Local research notes use the template in `docs/knowledge/INDEX.md`.
 
+Agents conducting shared project research follow the [multi-agent research guide](docs/agent_safe_workflow.md).
+
 ## Build, Test, and Development Commands
 
-- `make setup`: create `.venv`, install dev dependencies, and copy `.env.example` to `.env`.
+- `make setup`: create the CPython 3.12 environment at `.venv312`, install the locked dependencies, and create `.env` from `.env.example` if absent.
 - `make dev`: run the backend HTTP server on port `8003`.
 - `make run`: run the default QuantGPT server.
 - `make test`: run `pytest tests/ -x -q`.
@@ -18,7 +20,7 @@ QuantGPT is a Python backend with a Rust acceleration engine and a React fronten
 
 ## Coding Style & Naming Conventions
 
-Use Python 3.10+ with 4-space indentation and typed public interfaces. Ruff handles imports, pyupgrade, bugbear, and simplification rules with a 120-character line length. Prefer `snake_case` for Python modules, functions, and variables; `PascalCase` for classes and Pydantic/ORM models. React components use `PascalCase.tsx`; hooks use `useSomething.ts`.
+Use CPython 3.12 with 4-space indentation and typed public interfaces. Ruff targets Python 3.10 syntax and handles imports, pyupgrade, bugbear, and simplification rules with a 120-character line length. Prefer `snake_case` for Python modules, functions, and variables and `PascalCase` for classes and Pydantic/ORM models. React components use `PascalCase.tsx` and hooks use `useSomething.ts`.
 
 ## Testing Guidelines
 

@@ -1,6 +1,6 @@
 # QuantGPT API 完整文档
 
-新增 `/api/v1/research` 项目、评价、artifact、v2策略运行、signal_ref优化与持久任务接口，见 [共享研究 API](RESEARCH_API.md)。旧 `/api/v1/strategy/export` 的调用者结果字典不再构成授权，返回 `SERVER_STRATEGY_RUN_REQUIRED`；新导出按项目内 strategy_run_id 核验服务端证据。
+多代理共享研究统一从[多代理研究操作指南](agent_safe_workflow.md)开始。项目、评价、制品、v2 策略与持久任务的请求和响应见[共享研究 API](RESEARCH_API.md)。
 
 > API 文档版本: v1 | 应用版本: 2.8.0 | 基础路径: `/api/v1` | REST 认证: Bearer Token (JWT/API Key)
 
@@ -33,16 +33,20 @@
 
 ### 启动命令
 
+按[快速开始](QUICKSTART.md)检出含多代理工具的分支，安装 CPython 3.12 锁定依赖并配置本机 `.env`。
+
 ```bash
-# HTTP 服务 (含前端)
-bash restart.sh   # 默认端口 8003
+# Linux HTTP 服务，默认 127.0.0.1:8003
+make dev
 
-# MCP 服务 (stdio)
-.venv/bin/python -m quantgpt
+# Linux MCP stdio 服务
+.venv312/bin/python -m quantgpt --transport stdio
 
-# 数据预热
-.venv/bin/python -m quantgpt --prefetch hs300 csi500
+# 需要下载行情时单独执行预热
+.venv312/bin/python -m quantgpt --prefetch hs300 csi500
 ```
+
+Windows PowerShell 使用 `.\scripts\dev.ps1` 启动 HTTP 服务，stdio 使用 `.\.venv312\Scripts\python.exe -m quantgpt --transport stdio`。使用浏览器工作台时先构建 `frontend/dist`。
 
 ### 环境变量
 
@@ -55,7 +59,7 @@ bash restart.sh   # 默认端口 8003
 | `AUTH_DISABLED` | 否 | `false` | 仅本地开发可设为 `true`；生产必须保持 `false` |
 | `QUANTGPT_ALLOW_GUEST_BACKTEST` | 否 | `false` | 是否允许未登录/guest 提交回测任务；公网或共享环境保持 `false` |
 | `JWT_SECRET_KEY` | 是 | — | JWT 签名密钥；生产使用 `openssl rand -hex 32` 生成 |
-| `QUANTGPT_MCP_HTTP_TOKEN` | 条件必填 | — | `AUTH_DISABLED=false` 且暴露 `/mcp/` 或 `/mcp-sse/` 时必填 |
+| `QUANTGPT_MCP_HTTP_TOKEN` | 否 | — | HTTP MCP 使用部署身份时，客户端与服务端配置同一个令牌 |
 | `QUANTGPT_CORS_ORIGINS` | 否 | 本机开发源 | CORS 允许源,逗号分隔；建议只配置内网或可信前端域名 |
 | `QUANTGPT_ALLOWED_HOSTS` | 否 | `localhost,127.0.0.1,test,testserver` | FastAPI Host header allowlist；填写 host 名，不带端口 |
 | `QUANTGPT_ADMIN_PASSWORD` | 是 | — | 管理后台密码；生产必须使用强随机密码 |
@@ -80,7 +84,7 @@ REST API 默认需要 Bearer Token（JWT access token 或 `qgpt_` API Key）。�
 Authorization: Bearer <access_token>
 ```
 
-HTTP MCP 端点不复用用户 JWT。认证开启时，`/mcp/` 和 `/mcp-sse/` 需要独立的 `Authorization: Bearer <QUANTGPT_MCP_HTTP_TOKEN>`；未配置该变量时 HTTP MCP 返回 503。stdio MCP 不经过 HTTP 暴露面，按本机进程权限控制。`/mcp` 会被重写到 `/mcp/`，但文档和客户端配置优先使用带尾斜杠路径。
+认证开启时，访问 HTTP MCP 的 `/mcp/` 或 `/mcp-sse/` 使用 `Authorization: Bearer <token>`。用户的 JWT 或 `qgpt_` API key 解析为该用户的身份。使用部署令牌时，`QUANTGPT_MCP_HTTP_USER_ID` 指定其身份，缺省使用 MCP 系统身份。stdio 使用服务端进程的 `QUANTGPT_MCP_STDIO_USER_ID` 或默认 MCP 系统身份。[MCP 配置指南](MCP_GUIDE.md)
 
 ### POST /api/v1/auth/send-code
 
@@ -566,13 +570,11 @@ pending → iterating → iteration_completed / failed
 
 策略框架 API 兼容 `StrategySpecV0` 和 `StrategySpecV1`。`StrategySpecV0`
 保留 MVP 的 `a_share + single factor + rank_threshold + equal_weight + risk v0`
-基线；当前仓库还包含 Post-MVP 能力：`StrategySpecV1`、多因子、top N、候选
-SignalExport、策略持久化、模板、优化器和前端策略工作台。所有策略能力仍不提供
-券商、账户、下单、API key 执行或实盘交易能力。
+基线。`StrategySpecV1` 支持多因子、top N、策略持久化、模板和候选权重优化。项目内的 v2 策略按已保存的运行记录申请候选信号导出。
 
 ### GET /api/v1/strategy/markets
 
-列出可用策略市场。无需认证。
+列出可用策略市场及其能力。无需认证。以下摘录展示 `a_share` 的三个字段。
 
 **响应 200:**
 
@@ -596,7 +598,7 @@ SignalExport、策略持久化、模板、优化器和前端策略工作台。�
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `market` | `a_share` | 市场标识；MVP 只支持 `a_share` |
+| `market` | `a_share` | 市场标识，可通过 `GET /api/v1/strategy/markets` 查询 |
 
 **响应 200:**
 
@@ -670,7 +672,7 @@ SignalExport、策略持久化、模板、优化器和前端策略工作台。�
         "code": "MARKET_UNSUPPORTED",
         "path": "market",
         "message": "Input should be 'a_share'",
-        "hint": "MVP only supports market='a_share'."
+        "hint": "Call list_markets and choose a registered strategy market."
       }
     ]
   }
@@ -756,7 +758,7 @@ boundary.
 | `GET /api/v1/strategy/templates` | List template summaries and governance bounds |
 | `GET /api/v1/strategy/templates/{template_id}` | Read one template |
 | `POST /api/v1/strategy/templates/{template_id}/instantiate` | Create a StrategySpec from a template |
-| `POST /api/v1/strategy/export` | Export candidate rebalance signals from a strategy result; requires login/API key |
+| `POST /api/v1/strategy/export` | Authenticated legacy endpoint. Submitted result payloads return HTTP 400 with `SERVER_STRATEGY_RUN_REQUIRED` |
 | `POST /api/v1/strategy/diagnose` | Return diagnosis taxonomy and suggested spec changes |
 | `POST /api/v1/strategy/anti-overfit` | Run strategy-level anti-overfit summary checks |
 | `POST /api/v1/strategy/rolling-validation` | Run strategy-level rolling validation summary |
@@ -786,13 +788,8 @@ Example optimizer input:
 }
 ```
 
-Signal export requires promotion-ready `validation_provenance`; missing or
-research-only provenance returns 400. Successful responses use
-`schema_version="strategy_signal.v1"` and include `experiment_id`,
-`factor_hash`, `validation_summary.data_snapshot_id`, candidate `target_weight`
-or `rank` rows, and the exact non-execution notice:
-`Candidate signal only. Not an order or automated trading instruction.` They do
-not contain `broker`, `account`, `order`, `api_key`, or execution instructions.
+For a v2 strategy, use `POST /api/v1/research/projects/{project_id}/strategy-runs/{run_id}/export`.
+The server checks its stored validation evidence and returns the candidate signal or reasons the export is blocked. [Research API](RESEARCH_API.md)
 
 ---
 
@@ -1102,10 +1099,7 @@ preflight/override 允许时触发正式提交。`alt` 账号只能用于模拟�
 
 ## MCP Tools
 
-QuantGPT 提供 49 个 MCP (Model Context Protocol) 工具，覆盖因子研究、因子池、StrategySpec v0/v1
-策略工具和 WQ BRAIN 工作流。推荐本机 stdio 模式；如果暴露 HTTP MCP (`/mcp/`, `/mcp-sse/`)，
-认证开启时必须设置 `QUANTGPT_MCP_HTTP_TOKEN` 并由客户端发送 `Authorization: Bearer <token>`。
-直接用浏览器或普通 `curl` 访问 `/mcp/` 可能返回 `406 Not Acceptable`；功能验证应使用 MCP streamable-http 客户端，并发送 `Accept: application/json, text/event-stream`。
+通过 `tools/list` 可查看当前注册的 MCP 工具。本机客户端可直接使用 stdio。HTTP MCP 使用上文的 Bearer 认证。验证 `/mcp/` 时，用 streamable-http 客户端发送 `Accept: application/json, text/event-stream` 并完成 `initialize`。下表列出单因子、传统策略和 WQ 工具，共享项目工具见[研究 API](RESEARCH_API.md)。
 
 | Tool | 说明 |
 |------|------|
@@ -1147,7 +1141,7 @@ QuantGPT 提供 49 个 MCP (Model Context Protocol) 工具，覆盖因子研究�
 | `run_strategy_backtest` | 运行策略级回测，返回收益、目标权重和风控日志 |
 | `score_strategy` | 根据策略回测结果计算策略评分 |
 | `generate_strategy_report` | 根据策略回测结果生成 HTML 报告和 summary JSON |
-| `export_strategy_candidate` | 导出候选调仓信号，不包含执行字段 |
+| `export_strategy_candidate` | 历史接口，返回 `STRATEGY_EXPORT_FAILED`。按提示使用项目内的 v2 策略运行申请导出 |
 | `diagnose_strategy` | 输出策略诊断 taxonomy 和 spec 调整建议 |
 | `run_strategy_anti_overfit` | 基于策略回测结果执行策略级反过拟合摘要 |
 | `run_strategy_rolling_validation` | 基于策略收益执行 rolling validation 摘要 |
@@ -1210,7 +1204,7 @@ check_market_cache(universe="csi500", start_date="2026-05-01", end_date="2026-05
   "mcpServers": {
     "quantgpt": {
       "type": "stdio",
-      "command": "/path/to/QuantGPT_o/.venv/bin/python",
+      "command": "/path/to/QuantGPT_o/.venv312/bin/python",
       "args": ["-m", "quantgpt"],
       "cwd": "/path/to/QuantGPT_o"
     }
@@ -1323,14 +1317,16 @@ check_market_cache(universe="csi500", start_date="2026-05-01", end_date="2026-05
 
 ## 典型调用流程
 
-### 因子研究流程
+### 单会话因子回测
+
+下列路径相对于 `/api/v1`。
 
 ```
 1. POST /auth/send-code          → 发送验证码
 2. POST /auth/verify-code        → 获取 Token
 3. POST /sessions                → 创建会话
 4. POST /auto_backtest           → 提交回测
-5. GET  /tasks/{id}/stream       → SSE 监听进度
+5. POST /tasks/{id}/sse-ticket   → 取得一次性 ticket，再用 GET /tasks/{id}/stream?ticket=<ticket> 监听进度
 6. GET  /tasks/{id}              → 获取完整结果
 7. GET  /reports/{filename}      → 下载报告
 8. POST /tasks/{id}/iterate      → AI 迭代优化

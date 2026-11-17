@@ -1,8 +1,6 @@
 # 研究契约 v1
 
-日期：2026-10-05。对应执行计划 P01。实现：`quantgpt/research/contracts.py`。
-本文件冻结新研究请求及后续实现的语义；它本身不证明既有回测、数据库、远程平台或真实美股数据已经遵守这些契约。
-测试使用手算合成输入，`external_integration=not_run`。旧 `factor_hash`、v0/v1 策略与报告含义不改变，修复后的计算结果需要新 evaluation；旧净值不可升级成新证据。
+本文说明 `quantgpt/research/contracts.py` 的研究请求、身份和状态约定。契约测试使用手算合成输入，每次真实行情验收由对应的验证任务记录。修复后的计算使用新的评价身份，历史报告保留原始含义。[多代理操作指南](agent_safe_workflow.md)
 
 ## 版本与身份
 
@@ -13,8 +11,8 @@
 | 定义 | `factor_definition/v1` / `FactorDefinitionV1` |
 | 评价配置 | `evaluation_config/v1` / `EvaluationConfigV1` |
 | 本地模拟配置 | `simulation_config/v1` / `SimulationConfigV1` |
-| 离线验证报告 | `offline_validation/v1`，服务器重放生成的独立不可变 artifact |
-| 外部数据验收待办 | `offline_data_acceptance/v1`，快照完整性与供应商覆盖分开记录 |
+| 离线验证报告 | `offline_validation/v4`，服务器重放生成的不可变 artifact，含冻结的验证政策与试验身份 |
+| 数据契约与外部行情验收 | 报告的 `data_contract` 使用 `offline_data_acceptance/v2`，`external_acceptance` 使用 `external_market_acceptance/v1` 并记录各项供应商证据 |
 | 引用 | `artifact_ref/v1`、`evaluation_ref/v1`、`signal_ref/v1`、`strategy_run_ref/v1` |
 | WQ | `backend=wq`、`scope=platform`，使用实际平台语义版本；未知时明确 `wq_platform/unknown` |
 
@@ -25,7 +23,7 @@
 
 哈希使用带域前缀的 SHA-256，JSON key 排序、紧凑 UTF-8 编码，拒绝 NaN/Infinity；不声称字符串日期/数字类型的任意表达形式等价。
 DTO 的 frozen 限制不代替数据库不可变存储；服务端必须保存完整规范化配置和 manifest，不能原地修改已完成 evaluation。
-离线验证绑定 evaluation、来源收益 artifact、可选 selection、政策版本和实际观察试验数。selection 的收益证据必须在 final 暴露记录之前生成；事后补跑过去日期不能变成独立样本外证明。缺少独立 placebo、预登记对照库或外部数据验收时继续阻断，即使数值重放一致。完整入口和证据范围见 [研究 API](RESEARCH_API.md#离线验证闭环2026-10-18)。
+离线验证绑定 evaluation、来源收益 artifact、可选 selection、政策版本和实际观察试验数。selection 的收益证据须早于 final 暴露记录。服务按验证 profile 检查独立统计证据、比较库和外部行情覆盖，报告缺失项及其阻断原因。[研究 API 的离线验证任务](RESEARCH_API.md#离线验证任务)
 project 权限不是 hash 的替代品，跨项目同内容缓存仍需当前成员授权。evaluation/strategy 的最终可信状态只由服务端登记产生。
 
 ## 字段单位、行身份和可用性
@@ -114,7 +112,7 @@ EMA/MACD 等递归算子没有有限精确截断，必须另记初始状态、�
 
 手算事件样例：`tests/fixtures/research/simulation_golden.json`。其中从1000现金以110买5股、10bps费用、收盘121，现金449.45、净值1054.45；不享有买入前每股2美元分红。
 carry_forward 的5股在100→98除息时确认10应收，现金500+股票490+应收10保持NAV1000。
-这些是后续账本的同一组 oracle，不是已连接的回测证据。
+账本回归直接使用这些手算样例核对净值和现金流。
 
 ## 日历、数据与后端能力
 
@@ -137,7 +135,7 @@ WQ 只返回 platform_only，底层版本未知仍可保存真实 remote_run_ref
 HTTP principal 从认证凭据解析，stdio 从服务器受控连接配置解析，worker 从任务冻结的 actor/project 解析；project_id 只是上下文选择。
 `PrincipalContext` 校验结构与 transport 对应，但不能代替认证，禁止从 HTTP 请求正文实例化后直接信任。
 `authorize_reference()` 先校验项目一致，再通过 `ProjectAuthorizer.require_current_membership()` 每次重查当前权限；成员被移除后不能继续通过老 token、任务快照或缓存读取。
-创建任务冻结 actor/project；读取任务/产物/缓存和最终写入仍重查权限。P07/P08 将此协议接入数据库；当前授权测试使用最小内存 authorizer，只证明调用契约。
+创建任务时冻结 actor/project。持久任务、研究评价和产物服务通过数据库中的当前成员关系校验读写权限，原任务或产物的作者在权限撤销后也须重新取得授权。
 
 `TASK_TRANSITIONS` / `validate_task_transition()` 冻结后续持久任务的状态规则：
 
@@ -157,6 +155,5 @@ HTTP principal 从认证凭据解析，stdio 从服务器受控连接配置解�
 ## 集成和验证边界
 
 契约测试：`python -m pytest tests/test_research_contracts.py -q`。覆盖定义/evaluation/strategy identity、fresh/carry 拒绝规则、禁止实盘字段、v0/v1 兼容读取、unknown 数据、WQ scope、purge、缺真实中性化字段、引用/权限重查、状态终态。
-operator golden 由实际解析器测试消费；simulation golden 必须由实际账本测试消费，不能用读取 JSON 本身冒充执行验收。
-`models.py`/迁移、adapter DataField 增量字段、StrategySpec v2/运行请求和 API/MCP 接入由集成负责人统一修改。
+手算算子和账本样例分别由 `tests/test_operator_correctness.py` 和 `tests/test_research_ledger.py` 调用对应的计算实现核验。服务层的项目权限与策略记录隔离由 `tests/test_strategy_project_isolation.py` 覆盖。
 后续若修改冻结语义或缺失政策，需要升级 semantics/config version 并保留旧报告及重算关联。

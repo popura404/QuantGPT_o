@@ -7,8 +7,10 @@
 
 ## 1. Clone & Setup
 
+Use the branch that contains the shared research round tools and daily window planner.
+
 ```bash
-git clone https://github.com/popura404/QuantGPT_o.git
+git clone --branch codex/review-fixes-offline-validation https://github.com/popura404/QuantGPT_o.git
 cd QuantGPT_o
 ```
 
@@ -69,20 +71,9 @@ Add MCP configuration to Claude Code or Claude Desktop:
 On Windows, use the absolute path to `.venv312/Scripts/python.exe` instead. The client launches the
 stdio process directly. To verify the connection, ask it to list the tools or call `list_operators`.
 
-When you want to begin research, give the agent a direction.
-```
-在沪深300上挖掘高 fitness 的因子，目标 WQ BRAIN 可提交
-```
-
-单股问题（例如 `600487`）先让 Agent 调用 `get_stock_history`，需要检查股票池月份或 parquet 覆盖时再调用
-`check_market_cache`。不要把单股问题直接升级为 `compute_factor_values(csi500)` 或 `score_factor(csi500)`。
-
-长任务优先走异步 MCP：对 `run_backtest`、`score_factor`、`compute_factor_values`、`run_anti_overfit`、
-`run_rolling_validation` 传入 `submit_only=true`，拿到 `task_id` 后用 `get_mcp_task_status` 查询阶段、进度、
-错误和结果；如果研究方向需要中止，用 `cancel_mcp_task` 请求协作式取消。
-
-这里的“可提交”应理解为生成可模拟/可候选的 WQ BRAIN 表达式；正式 submit 仍需要本地
-preflight 通过，或显式提供 `submission_override_reason` 记录豁免理由。
+For a shared project, give the coordinator the project, authorized scope and research directions.
+The coordinator and each direction agent follow the [multi-agent research operating guide](agent_safe_workflow.md).
+For a question about one stock, first read its local cache with `get_stock_history` or inspect coverage with `check_market_cache`.
 
 ## 4. Expression Mode (No LLM Required)
 
@@ -174,16 +165,10 @@ curl -X POST http://localhost:8003/api/v1/strategy/backtest \
   }'
 ```
 
-`StrategySpecV0` strategy mode is intentionally narrow: A-share only, one factor,
-top quantile, equal weight, an HTML report, and server-side summary artifact.
-`StrategySpecV1` adds implemented Post-MVP capabilities such as templates,
-multi-factor/top-N specs, strategy persistence, OOS/data-quality validation,
-strategy-level diagnostics, rolling/anti-overfit summaries, candidate export,
-optimization, and a browser workbench. Open the `策略工作台` tab after starting
-the server to instantiate a template, edit JSON, validate it, submit a strategy
-backtest, track task status, view score/metrics/holdings, open the generated
-report, and run candidate export for signals. The same workflow is available
-through:
+The example uses a single factor, a top quantile and equal weights. StrategySpec v1 adds
+multi-factor and top-N specs, persistence and diagnostic options. In the `策略工作台` tab,
+instantiate a template, edit the spec, submit the backtest, track task status and open its
+report. The API also exposes the template catalog.
 
 ```bash
 curl http://localhost:8003/api/v1/strategy/templates
@@ -192,8 +177,8 @@ curl -X POST http://localhost:8003/api/v1/strategy/templates/momentum_top_n_v1/i
   -d '{"overrides": {"signal_rules.top_n": 10}}'
 ```
 
-The Post-MVP signal export and optimizer still produce research candidates only;
-they do not create broker/account/order instructions.
+For candidate export, use the project-scoped v2 strategy run and its server-owned validation evidence.
+The export decision and reasons are returned by `export_research_strategy`. See the [research API](RESEARCH_API.md).
 
 ## 6. Try More Expressions
 
@@ -223,5 +208,4 @@ rank(-1 * pe)
 - Read [STRATEGY_SPEC.md](STRATEGY_SPEC.md) for StrategySpec v0/v1 and non-trading boundaries
 - Read [ARCHITECTURE.md](ARCHITECTURE.md) for system design
 - Check [MCP_GUIDE.md](MCP_GUIDE.md) for MCP tool details
-- Read [FACTOR_MINING.md](FACTOR_MINING.md) for the autonomous research loop
-- Use the [shared research workflow](agent_safe_workflow.md) to coordinate multiple research directions.
+- Read [FACTOR_MINING.md](FACTOR_MINING.md) for factor design and analysis methods.

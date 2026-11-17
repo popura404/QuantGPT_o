@@ -203,19 +203,20 @@ async def _research_mcp_lifespan(server):
     finally:
         await stop_task_dispatcher()
 
+_SHARED_RESEARCH_GUIDE = (
+    "共享项目研究的主代理与子代理均按 docs/agent_safe_workflow.md 操作。"
+    "可在本版仓库中阅读该文件，或打开 "
+    "https://github.com/popura404/QuantGPT_o/blob/codex/review-fixes-offline-validation/docs/agent_safe_workflow.md"
+)
+
+
 mcp = FastMCP(
     "quantgpt",
     lifespan=_research_mcp_lifespan,
     instructions=(
-        "QuantGPT — A 股因子回测服务。先用 list_operators 了解可用算子。"
-        "单股研究先用 get_stock_history/check_market_cache 读本地缓存，"
-        "不要直接把单股问题升级为全 CSI500 因子回测。"
-        "用于研究结论或候选选择时，score_factor/run_backtest 默认走 OOS selection："
-        "train 定方向，valid 选候选。新的共享研究使用 list_research_projects/evaluate_factors，"
-        "日频研究先用 plan_research_windows 检查选择期和最终留出期的历史覆盖。"
-        "多代理使用 create_research_round 冻结研究口径。挖新因子时先用 check_research_factor_novelty 查询已有公式，"
-        "向 submit_research_direction 传 only_new=true；若返回 known_candidates，改用 new_indices 中的新候选。"
-        "有意复验已知公式时可用默认提交模式复用计算。协调者汇总选择后冻结组合并运行最终窗口。"
+        f"{_SHARED_RESEARCH_GUIDE}\n"
+        "独立公式诊断可用 list_operators、score_factor 或 run_backtest，评分与回测默认使用 OOS selection。"
+        "单股问题先用 get_stock_history 和 check_market_cache 读取本地缓存。"
     ),
     streamable_http_path="/",
     stateless_http=True,
@@ -226,6 +227,12 @@ mcp = FastMCP(
 
 register_preparation_tools(mcp)
 register_round_tools(mcp)
+
+
+@mcp.prompt()
+def shared_research_workflow() -> str:
+    """Locate the operating guide for the coordinator and direction agents."""
+    return _SHARED_RESEARCH_GUIDE
 
 
 def _enrich_with_fundamentals(
@@ -369,8 +376,9 @@ def _remote_fetch_stock_limit() -> int:
 
 
 def _suggest_prewarm_command(universe: str, start_date: str, end_date: str) -> str:
+    python = "./.venv312/Scripts/python.exe" if os.name == "nt" else "./.venv312/bin/python"
     return (
-        f".venv/bin/python scripts/prewarm.py --universe {universe} --start {start_date} --end {end_date} "
+        f"{python} scripts/prewarm.py --universe {universe} --start {start_date} --end {end_date} "
         "--skip-fundamentals --skip-dividends --skip-factors"
     )
 
@@ -3932,7 +3940,7 @@ async def run_research_strategy(project_id: str, spec: dict, config: dict,
 async def validate_research_evaluation(project_id: str, evaluation_id: str,
                                        selection_evaluation_id: str | None = None,
                                        idempotency_key: str | None = None) -> str:
-    """Queue immutable offline replay/validation; external data acceptance remains blocked."""
+    """Queue validation of a stored evaluation. Read result.external_acceptance.checks for external market evidence."""
     import uuid
 
     from .db import _get_session_factory

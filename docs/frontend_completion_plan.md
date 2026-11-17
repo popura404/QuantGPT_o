@@ -407,7 +407,7 @@ cd frontend && npm run build
 Run backend route regressions if any frontend work required backend contract changes:
 
 ```bash
-.venv/bin/python -m pytest tests/test_routes_backtest.py tests/test_wq_brain.py tests/test_wq_brain_batch.py tests/test_routes_strategy.py -q
+.venv312/bin/python -m pytest tests/test_routes_backtest.py tests/test_wq_brain.py tests/test_wq_brain_batch.py tests/test_routes_strategy.py -q
 ```
 
 Run static whitespace validation:

@@ -42,9 +42,9 @@ repository; use the table below as the current scope reference:
 Run the following gates after each substantial package or package group:
 
 ```bash
-.venv/bin/python -m pytest tests/test_strategy_spec.py tests/test_strategy_adapters.py tests/test_strategy_validator.py tests/test_strategy_portfolio.py tests/test_strategy_backtest.py tests/test_strategy_score.py tests/test_strategy_report.py tests/test_strategy_docs.py
-.venv/bin/python -m pytest tests/test_mcp_strategy_tools.py tests/test_routes_strategy.py
-.venv/bin/python -m pytest tests/test_backtest.py tests/test_market_data.py tests/test_iteration.py tests/test_routes_backtest.py
+.venv312/bin/python -m pytest tests/test_strategy_spec.py tests/test_strategy_adapters.py tests/test_strategy_validator.py tests/test_strategy_portfolio.py tests/test_strategy_backtest.py tests/test_strategy_score.py tests/test_strategy_report.py tests/test_strategy_docs.py
+.venv312/bin/python -m pytest tests/test_mcp_strategy_tools.py tests/test_routes_strategy.py
+.venv312/bin/python -m pytest tests/test_backtest.py tests/test_market_data.py tests/test_iteration.py tests/test_routes_backtest.py
 ```
 
 For frontend PMVP8:

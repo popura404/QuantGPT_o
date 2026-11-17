@@ -2,7 +2,16 @@
 
 QuantGPT 是供主代理和子代理共同使用的日频因子研究工具。它通过 MCP 和 HTTP 提供公式查重、因子评价、组合回测和样本外验证。新检出的仓库从空研究项目起步，真实行情、试验记录和策略报告由各部署自行保存。
 
+**主代理和子代理共用一份操作指南**，其中写明各自负责的步骤和交接条件。[多代理研究操作指南](docs/agent_safe_workflow.md) · [可复制的 Agent 提示词](PROMPT.md)
+
 ## 本地启动
+
+本版的项目轮次和默认窗口工具位于 `codex/review-fixes-offline-validation` 分支。
+
+```sh
+git clone --branch codex/review-fixes-offline-validation https://github.com/popura404/QuantGPT_o.git
+cd QuantGPT_o
+```
 
 项目使用 **CPython 3.12**。在仓库根目录安装后，编辑生成的 `.env`。默认启用认证，首次运行 HTTP 服务前设置 `JWT_SECRET_KEY` 和 `QUANTGPT_ADMIN_PASSWORD`。已有的 `.env` 会继续使用。
 
@@ -15,14 +24,7 @@ QuantGPT 是供主代理和子代理共同使用的日频因子研究工具。�
 
 MCP 客户端可以直接启动 stdio 服务。工作目录设为仓库根目录，Windows 选择 `.venv312/Scripts/python.exe`，Linux 选择 `.venv312/bin/python`，参数为 `-m quantgpt --transport stdio`。连接后用 `tools/list` 查看当前工具。[MCP 配置指南](docs/MCP_GUIDE.md)
 
-## 从空项目到组合终验
-
-1. **主代理登记数据。** 用 `create_research_project` 创建共享项目。从已发布的行情面板中选择快照，调用 `register_research_snapshot`，再用 `get_research_preparation` 核对证券、字段和日期覆盖。离线演练可以显式调用 `prepare_research_demo` 生成合成数据。[行情来源与接入](docs/market_data_sources.md)
-2. **主代理固定窗口和分工。** 调用 `plan_research_windows` 预览日期，再用 `create_research_round` 登记各方向的假设。各子代理共用冻结的行情和开发窗口，每个子代理领取自己的方向凭据。
-3. **子代理并行研究。** 提交前用 `check_research_factor_novelty` 查询已有公式。开发新因子时向 `submit_research_direction` 传入 `only_new=true`，服务端入队时再查一次。项目统一统计已观察的试验，方向完成后调用 `finish_research_direction`。
-4. **主代理选择组合并终验。** 用 `get_research_round` 汇总候选，在开发窗口通过 `submit_round_strategy` 比较组合。选定后调用 `finalize_research_round`，冻结组合和试验清单，在预先保留的窗口读取验证结果及导出决定。[多代理工作流程](docs/agent_safe_workflow.md)
-
-### 默认日频窗口
+## 默认日频窗口
 
 | 阶段 | 交易日数 |
 | --- | --- |

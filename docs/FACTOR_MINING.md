@@ -1,224 +1,35 @@
 # Factor Mining Methodology
 
-AI-driven autonomous factor research loop: read notes → design factors → backtest → analyze → update knowledge base → iterate.
+Use the [multi-agent research guide](agent_safe_workflow.md) to open a project round, submit candidates, count trials, select a combination and evaluate the frozen holdout. This document covers how to design hypotheses and interpret measurements during development.
 
----
+## Design a hypothesis
 
-## Overview
+Describe the proposed economic mechanism, the universe in which it should apply, and the horizon over which it can be tested. Record the expected direction before observing the candidate's performance. Check the frozen panel for the required fields, their units, when they became available and how much prior history the expression needs.
 
-QuantGPT includes a systematic factor mining framework that combines LLM-based factor design with rigorous statistical validation. The process is structured into 6 phases, with built-in research discipline and cross-review mechanisms.
+Choose a baseline and vary one feature at a time, such as the lookback, scaling or grouping. A parameter change on an existing structure can be a useful comparison. Record its relationship to the original candidate so the project can account for both observed trials.
 
-The core tooling lives in [`scripts/factor_miner.py`](../scripts/factor_miner.py) — a stateless utility library for batch-submitting factor expressions to the QuantGPT server and parsing results.
+## Expression syntax
 
----
+Use `list_operators` for the installed parser and `validate_expression` to check syntax. The following examples illustrate cross-sectional ranking, time-series averaging and conditional selection.
 
-## Research Loop (6 Phases)
-
-### Phase 0: Environment Check & Context Loading
-
-1. Verify the backtest server is healthy
-2. Load the target research notebook (for example, a project-local or external note for the current direction)
-3. Review: current baseline (expression + metrics), key findings, completed experiments (avoid repeats), next directions
-4. Use the [knowledge note template](knowledge/INDEX.md). When local notes exist, review rules, findings and previous failures for the current direction.
-5. Identify starting point: first uncompleted direction
-
-### Phase 1: Factor Design
-
-Design 1–3 factor expressions based on research context and knowledge base:
-
-- **State hypothesis** (one sentence)
-- **Use valid operators** — 50+ available (see [Operator Reference](#operator-reference) below)
-- **Research discipline**: prefer expressions under 300 characters and 8 nesting levels, with no forbidden
-  variable names. The parser hard limit is higher (`MAX_EXPRESSION_LENGTH=1000`, `MAX_DEPTH=100`), but
-  deeper expressions require extra justification.
-- **Design principles**:
-  - Ratio > multiplication > addition: `rank(A/(B+eps))` > `rank(A)*rank(B)`
-  - Nonlinear compression: `sign_power`, `tanh`, `sigmoid` for extreme values
-  - Conditional gating: `where()`, `trade_when()` for regime-dependent behavior
-  - Simplicity: >4 nesting levels usually degrades performance
-
-### Phase 2: Batch Backtest Submission
-
-```python
-from scripts.factor_miner import batch_evaluate
-
-results = batch_evaluate(
-    server="http://localhost:8003",
-    expressions=[
-        "rank(ts_delta(close, 5) / ts_shift(close, 5))",
-        "rank(close / ts_mean(close, 10))",
-        # ... 10-20 expressions per batch
-    ],
-    params={
-        "universe": "hs300",
-        "holding_period": 5,
-        "n_groups": 5,
-        "benchmark": "hs300",
-        "start_date": "2021-01-01",
-        "end_date": "2024-12-31",
-    },
-    max_concurrent=10,
-)
-```
-
-- Two-phase concurrency: submit all (with 3-wave retry), then poll all
-- Results sorted by fitness descending
-- If hs300 fitness < 0.1, skip csi500 validation
-
-### Phase 3: Four-Step Analysis
-
-**Every conclusion must pass all four steps — no exceptions.**
-
-**Step 1 — Fact Collection**: Extract metrics, compare against baseline, no conclusions yet.
-
-| Metric | Baseline | Current | Delta |
-|--------|----------|---------|-------|
-| Fitness | — | — | — |
-| Sharpe | — | — | — |
-| Returns | — | — | — |
-| Turnover | — | — | — |
-| IC | — | — | — |
-| Rating | — | — | — |
-
-**Step 2 — Independent Judgment**: Form conclusions based on facts. Was the hypothesis validated? If fitness is low, diagnose: is Sharpe insufficient, returns too low, or turnover too high?
-
-**Step 3 — Cross-Review**: Submit facts + judgment to a second LLM (DeepSeek Reasoner) for independent assessment. This is mandatory for any conclusion that includes actionable words: adopt, reject, recommend, next step, kill direction.
-
-**Step 4 — Consensus**: If both agree → output consensus conclusion. If they disagree → present both positions with evidence, adopt the more conservative conclusion.
-
-### Phase 4: Update Research Notes
-
-1. Append experiment record (expression, parameters, metrics, analysis, conclusion)
-2. Update baseline if a new best is found
-3. Update key findings if cross-experiment insights emerge
-4. Mark completed directions (strikethrough)
-5. Update knowledge base for cross-session insights:
-   - Stable rules → `docs/knowledge/rules/`
-   - Empirical findings → `docs/knowledge/findings/`
-   - Disproven paths → `docs/knowledge/failures/`
-6. Save pool-worthy factors into the factor pool with `status`, `category`, and searchable `tags`; keep rejected or
-   watchlist factors tagged as evidence instead of losing them in free-form notes.
-
-### Phase 5: Continue or Stop
-
-Stop conditions (any one triggers stop):
-1. Round limit reached
-2. Time limit reached
-3. Convergence: N consecutive rounds with no improvement (default: 5)
-4. All directions exhausted + 2 rounds of auto-generated directions explored
-
-### Phase 6: Summary Report
-
-Output all A/B-rated factors, key findings, new knowledge base entries, and suggested future directions.
-
----
-
-## Research Discipline
-
-1. **Control variables**: change only one dimension per experiment
-2. **No repeated experiments**: check notes and knowledge base first
-3. **Label uncertainty**: mark analysis conclusions as "hypothesis, data-driven"
-4. **Record failures**: failed experiments are equally valuable — document why
-5. **Simplicity over complexity**: a clean expression beats 6-layer nesting
-6. **Knowledge base is an asset**: every meaningful finding should be persisted
-
----
-
-## Operator Reference
-
-### WQ BRAIN Compatible Operators
-
-These operators produce expressions that can be sent to WorldQuant BRAIN for remote simulation and independent validation.
-Formal submission still follows the local preflight/override policy described in the WQ BRAIN tools and API docs.
-
-| Category | Operators |
-|----------|-----------|
-| Cross-sectional | `rank(x)`, `zscore(x)`, `scale(x)`, `group_rank(x, group)`, `group_zscore(x, group)` |
-| Unary math | `abs(x)`, `sign(x)`, `log(x)`, `sqrt(x)` |
-| Power | `power(x, e)`, `sign_power(x, e)` |
-| Time-series | `ts_mean`, `ts_std`, `ts_max`, `ts_min`, `ts_sum`, `ts_shift`, `ts_delta`, `ts_rank`, `ts_argmax`, `ts_argmin`, `ts_av_diff`, `ts_corr`, `ts_cov`, `decay_linear`, `product` |
-| Conditional | `where(cond, t, f)`, `trade_when(cond, alpha, hold)` |
-| Binary | `max(a, b)`, `min(a, b)` |
-| Special | `adv20`, `returns`, `vwap`, `cap` |
-| Variables | `open`, `high`, `low`, `close`, `volume`, `market_cap` |
-
-### Local-Only Operators
-
-Available for local research but not accepted by BRAIN. Use the WQ substitution when preparing for BRAIN submission.
-
-| Operator | WQ Substitute |
-|----------|--------------|
-| `tanh(x)` | `sign_power(x, 0.5)` |
-| `sigmoid(x)` | `rank(x)` |
-| `exp(x)` | `power(2.718, x)` |
-| `clip(x, lo, hi)` | `max(lo, min(hi, x))` |
-| `ts_zscore(x, N)` | `(x - ts_mean(x,N)) / ts_std(x,N)` |
-| `ema/sma/wma` | `decay_linear(x,N)` / `ts_mean(x,N)` |
-| `rsi/macd/obv/atr` | Hand-write with base operators |
-
-### Expression Syntax Examples
-
-These expressions illustrate ranking, smoothing and conditional operators.
-
-```
+```text
 rank(ts_delta(close, 5) / ts_shift(close, 5))
 rank(close / ts_mean(close, 10))
-rank(ts_corr(rank(close), rank(volume), 10))
-rank(decay_linear(ts_delta(close, 5) / ts_shift(close, 5), 10))
-where(volume > ts_mean(volume, 20),
-      rank(close / vwap),
-      rank(ts_delta(close, 5) / ts_shift(close, 5)))
+where(volume > ts_mean(volume, 20), rank(close / vwap), rank(ts_delta(close, 5)))
 ```
 
----
+In the local parser, `adv20` calculates the 20-observation rolling mean of `volume` for each security. Its unit follows the volume field. For a value traded in currency, check whether the snapshot provides a compatible traded-amount field. Remote WQ BRAIN simulation uses the platform's own field and operator conventions.
 
-## Fitness Formula
+## Compare results
 
-```
-Fitness = Sharpe × sqrt(|Returns| / max(Turnover, 0.125))
-```
+Compare the candidate and baseline on the same snapshot, window, horizon, costs and rebalance schedule. Record net returns, turnover, Sharpe, IC, coverage and the change from baseline where those measurements are available. A large score with few observations or sparse coverage merits examination before choosing a combination.
 
-### WQ BRAIN A-Rating Thresholds (CN D1 Quintile)
+For the standalone `score_factor` tool's default OOS mode, A starts at 80, B at 65 and C at 50. These grades describe local diagnostic results. Formal WQ BRAIN submission uses the submission preflight decision, which also supports an explicitly recorded override. The shared project's final validation and export decisions come from its frozen run.
 
-| Metric | Threshold |
-|--------|-----------|
-| Sharpe | ≥ 1.625 |
-| \|Returns\| | ≥ 6.3% |
-| Fitness | ≥ 1.0 |
-| Turnover | 1% – 70% |
-| Sub-Universe Sharpe | Both halves ≥ 1.19 |
+A second reviewer can examine the evidence and assumptions. The project's trial ledger and validation report supply the outcomes used for final selection and export.
 
----
+## Record observations
 
-## File Structure
+Keep the hypothesis, configuration, evaluation references, baseline comparison and the reason for advancing or rejecting each candidate. An interrupted or unauthenticated request needs a task or transport diagnosis before drawing a conclusion about the formula. Local notes can use the [knowledge note template](knowledge/INDEX.md).
 
-| Path | Purpose |
-|------|---------|
-| `scripts/factor_miner.py` | Submission/polling/parsing utility library |
-| `docs/knowledge/` | Cross-session knowledge base (rules, findings, failures) |
-| project/external research notes | Per-direction research notebooks; keep them linked to `docs/knowledge/` updates |
-
----
-
-## Batch Evaluation API
-
-```python
-from scripts.factor_miner import batch_evaluate, evaluate
-
-# Single factor evaluation
-result = evaluate(
-    server="http://localhost:8003",
-    expression="rank(ts_delta(close, 5) / ts_shift(close, 5))",
-    params={"universe": "hs300", "holding_period": 5, "n_groups": 5},
-)
-# Returns: {"expression": "...", "fitness": 0.xxx, "sharpe": ..., "rating": "B", ...}
-
-# Batch evaluation (10-20 expressions, concurrent)
-results = batch_evaluate(
-    server="http://localhost:8003",
-    expressions=["rank(...)", "rank(...)", ...],
-    params={...},
-    max_concurrent=10,
-)
-# Returns: list of factor dicts, sorted by fitness descending
-```
+The legacy `scripts/factor_miner.py` helper sends HTTP requests without authentication headers. Under the default authenticated deployment, its batch submission can receive HTTP 401 and yield no result. For shared research, submit through the authenticated project workflow and inspect the returned task state. [Multi-agent research guide](agent_safe_workflow.md)

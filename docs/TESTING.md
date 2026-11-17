@@ -11,6 +11,7 @@ Windows PowerShell, with CPython 3.12 installed:
 
 ```powershell
 ./scripts/setup.ps1
+# Configure JWT_SECRET_KEY and QUANTGPT_ADMIN_PASSWORD in .env before the first HTTP start.
 ./scripts/dev.ps1
 ```
 
@@ -25,6 +26,7 @@ Linux:
 
 ```bash
 make setup
+# Configure the local .env before the first HTTP start.
 make dev
 ```
 
@@ -136,7 +138,7 @@ browser suite with Playwright Chromium:
 ```bash
 cd frontend
 npx playwright install chromium
-PLAYWRIGHT_PYTHON=../.venv/bin/python npm run test:e2e
+PLAYWRIGHT_PYTHON=../.venv312/bin/python npm run test:e2e
 ```
 
 `PLAYWRIGHT_PYTHON` names one Python executable, not a command with extra flags.

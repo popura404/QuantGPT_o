@@ -1,19 +1,8 @@
 # QuantGPT MCP 配置指南
 
-主代理通过 MCP 建立共享项目和研究轮次，子代理在同一冻结快照和选择窗口上并行探索不同假设。可通过 Claude Code、Claude Desktop 等 MCP 客户端调用。连接后用 `tools/list` 查询当前服务注册的工具。服务使用 MCP 1.x。
+多代理共享研究统一按[多代理研究操作指南](agent_safe_workflow.md)执行。主代理和子代理都从该指南取得角色分工、查重、组合终验及留出期异常处理步骤。工具参数、返回值及对应 HTTP 路由见[研究 API](RESEARCH_API.md)。
 
-## 主代理与子代理的研究流程
-
-1. 主代理通过 `create_research_project` 或 `list_research_projects` 选择项目。用 `list_research_snapshot_imports` 查找已发布的面板，调用 `register_research_snapshot` 登记，再用 `get_research_preparation` 核对实际字段、日期和证券覆盖。离线演练可用 `prepare_research_demo` 准备合成面板。
-2. 普通本地日频项目先调用 `plan_research_windows`。传入省略选择期起止日期的配置模板。工具只读取已登记快照的交易日历，默认安排 756 个选择期交易日和 252 个最终留出交易日。选择期前至少预热 30 个交易日，声明了更长预热期时采用声明值。两个窗口之间保留完整交易日，数量取 5、标签周期和声明的 `purge_sessions` 三者最大值。历史不足时返回 `insufficient_data`，保留请求的长度。已有研究设计可显式给出选择期和留出期的全部起止日期。
-3. 规划返回 `status=ready` 后，把 `round_setup` 中的 `config`、`holdout_start` 和 `holdout_end` 连同项目和方向假设传给 `create_research_round`。也可直接向创建接口传入日期留空的配置模板，并省略两个留出日期，采用同样的默认规划。要比较现有组合的增量时，先用 `register_research_holdout` 登记规划好的留出窗口，在选择期跑基线，再把基线的 `strategy_run_id` 传给 `create_research_round`。每个子代理只领取自己的方向凭据。
-4. 子代理构思公式后，先用 `check_research_factor_novelty(project_id, expressions)` 查询已有公式及相同结构的参数变体。挖新因子时调用 `submit_research_direction` 并传 `only_new=true`。服务器在入队时再次查重；出现 `known_candidates` 时读 `new_indices`，只提交这些新候选，或改换表达式。需要有意复验或共享相同评价时，用默认提交方式。通过 `get_mcp_task_status` 读取结果，用 `parent_evaluation_id` 记录上游候选，用 `finish_research_direction` 结束提交。
-5. 主代理用 `get_research_round` 取回各方向的候选评价引用，调用 `submit_round_strategy` 回测组合。有预登记基线时用 `compare_research_strategies_to_baseline` 比较净收益、换手与信号相关性。
-6. 主代理用 `finalize_research_round` 冻结入选组合，轮询该任务取得 `validation` 和 `validation_artifact`。`export_research_strategy` 按服务端验证结果处理导出。项目成员可随时凭引用读取有权访问的历史产物。
-
-同一 MCP 身份可以持不同方向凭据同时工作。各代理以独立身份登录时，应先加入同一项目，并在创建轮次时指定相应方向的 `actor_id`。参数和返回值详见[研究 API/MCP](RESEARCH_API.md)。
-
-离线演练时，`prepare_research_demo` 返回可直接传给 `create_research_round` 的 `round_setup`（选择配置、留出起止日）。再传入项目 ID 和方向列表即可。读到 `LEGACY_HOLDOUT_EXPOSED` 时，检查导入的历史试验并选择未经使用的留出期。正式导出以服务端证据门槛为准。
+本页说明 MCP 连接与工具参数。客户端连接后，可通过 `prompts/get` 获取名为 `shared_research_workflow` 的提示以定位操作指南，通过 `tools/list` 查看当前服务注册的工具。
 
 ## 快速开始（推荐）
 
@@ -88,8 +77,7 @@ Windows 配置中的路径可使用正斜杠。将以下示例目录替换为本
 ### 从 GitHub 安装
 
 ```bash
-# 克隆项目
-git clone https://github.com/popura404/QuantGPT_o.git
+git clone --branch codex/review-fixes-offline-validation https://github.com/popura404/QuantGPT_o.git
 cd QuantGPT_o
 ```
 
@@ -158,13 +146,13 @@ v0/v1 工具用于历史策略回测与诊断。共享项目的候选信号导�
 
 | 工具 | 说明 |
 |------|------|
-| `list_markets` | 返回策略框架支持的市场；MVP 仅 `a_share` |
+| `list_markets` | 返回当前注册的市场及其能力 |
 | `list_data_fields` | 返回指定市场可用于策略因子表达式的数据字段 |
 | `validate_strategy_spec` | 校验 `StrategySpecV0` / `StrategySpecV1`，失败时返回 `error_code` 和 `hint` |
 | `run_strategy_backtest` | 运行单因子 top quantile 等权策略回测 |
 | `score_strategy` | 根据策略回测结果计算策略级评分 |
 | `generate_strategy_report` | 根据策略回测结果生成 HTML 报告和 summary JSON |
-| `export_strategy_candidate` | 历史接口，返回 `SERVER_STRATEGY_RUN_REQUIRED` 并提示按项目重新计算 |
+| `export_strategy_candidate` | 历史接口，返回 `STRATEGY_EXPORT_FAILED`，其 `hint` 说明 `SERVER_STRATEGY_RUN_REQUIRED` |
 | `diagnose_strategy` | 输出策略诊断 taxonomy 和 spec 调整建议 |
 | `run_strategy_anti_overfit` | 基于策略回测结果执行策略级反过拟合摘要 |
 | `run_strategy_rolling_validation` | 基于策略收益执行 rolling validation 摘要 |
@@ -190,25 +178,24 @@ metrics 作为权威结论。
 | `wq_brain_check_alphas` | 批量检查 alpha 状态 |
 | `wq_brain_finalize_submissions` | 对 pending alpha 做最终状态确认 |
 
-### 通用参数
+### 单因子诊断参数
 
-以下参数在 `run_backtest`、`score_factor`、`run_anti_overfit`、`run_rolling_validation` 中通用：
+以下参数适用于 `run_backtest`、`score_factor`、`run_anti_overfit` 与 `run_rolling_validation`。
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `expression` | str | 必填 | 因子表达式 |
 | `universe` | str | `hs300` | 股票池：`hs300` / `csi500` / `csi1000` / `csi2000` / `small_scale` |
-| `start_date` | str | `2023-01-01` | 回测起始日期 |
+| `start_date` | str | 滚动验证 `2020-01-01`，其余三项 `2023-01-01` | 滚动验证默认使用 3 年训练、1 年验证及 1 年测试，传入日期需覆盖完整窗口 |
 | `end_date` | str | `2025-12-31` | 回测结束日期 |
 | `universe_date` | str \| null | `start_date` | 股票池成分股基准日期；用于命中 `data/universe/<universe>_YYYY-MM.txt` |
-| `n_groups` | int | `5` | 分组数量 |
 | `holding_period` | int | `5` | 持仓周期（交易日） |
-| `benchmark` | str | `hs300` | 基准指数：`hs300` / `zz500` / `sz50` / `csi1000` |
 | `neutralize_industry` | bool | `true` | 行业中性化 |
 | `neutralize_cap` | bool | `true` | 市值中性化 |
+| `allow_remote_fetch` | bool | `false` | 允许缓存缺失时远程补数，超过阈值会返回 `REMOTE_PREFETCH_REQUIRED` |
 | `submit_only` | bool | `false` | 异步提交并立即返回 `task_id`；默认同步返回完整结果 |
 
-`run_backtest` 与 `score_factor` 额外支持 OOS/data-quality 参数。面向 Agent 的默认结论路径为
+`run_backtest` 与 `score_factor` 还支持分组数、基准及下表的 OOS/data-quality 参数。这两个工具默认使用
 `oos_enabled=true`、`validation_stage="selection"`：train 只用于确定方向/参数，valid 用于候选选择，
 test 指标会被 withheld。只有显式传 `validation_stage="final"` 时才运行并暴露 test，作为 frozen
 candidate 的最终验收。显式传 `oos_enabled=false` 会回到 legacy 单窗口兼容路径，但该路径仅用于
@@ -218,6 +205,8 @@ candidate 的最终验收。显式传 `oos_enabled=false` 会回到 legacy 单�
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
+| `n_groups` | int | `5` | 分组数量 |
+| `benchmark` | str | `hs300` | 基准指数 |
 | `rebalance_anchor` | str \| null | `null` | 换仓网格锚定日期；为空时使用数据起始日 |
 | `oos_enabled` | bool | `true` | 是否启用 train/valid/test 样本外评估；Agent 结论默认开启 |
 | `validation_stage` | str | `selection` | `selection` 只用 train+valid 选候选；`final` 才运行并暴露 test |
@@ -226,7 +215,6 @@ candidate 的最终验收。显式传 `oos_enabled=false` 会回到 legacy 单�
 | `max_abs_daily_ret` | float | `0.25` | 单股最大绝对日收益阈值 |
 | `max_missing_ratio_per_stock` | float | `0.2` | 单股最大缺失交易日比例 |
 | `adjustment` | str | `unknown` | 复权模式：`qfq` / `hfq` / `none` / `unknown` |
-| `allow_remote_fetch` | bool | `false` | 是否允许缓存缺失时阻塞式远程补数；超过阈值会返回 `REMOTE_PREFETCH_REQUIRED` |
 
 data-quality 会优先使用免费行情源可取得的 A 股元数据：`is_st`、`trade_status` / `suspended`、
 `pre_close`、`limit_up` / `limit_down`。可用时默认过滤 ST/*ST、停牌、新股窗口和一字涨跌停，
@@ -370,47 +358,42 @@ A 股 `a_share` / `hs300` 代理检查，不能直接授权 WQ `USA` / `TOP3000`
 7. diagnose_strategy            → 获取诊断与修改建议
 ```
 
-最小 `validate_strategy_spec` 输入：
+`validate_strategy_spec` 的 MCP 工具参数示例。
 
 ```json
 {
-  "schema_version": "strategy_spec/v0",
-  "name": "simple_momentum_top_quantile",
-  "asset_class": "equity",
-  "market": "a_share",
-  "frequency": "daily",
-  "universe": "hs300",
-  "factors": [
-    {
-      "id": "momentum_20d",
-      "expression": "rank(close / ts_mean(close, 20))",
-      "direction": "higher_is_better",
-      "weight": 1.0
-    }
-  ],
-  "signal_rules": { "type": "rank_threshold", "long_quantile": 0.2 },
-  "portfolio_rule": { "weighting": "equal_weight", "rebalance_period": 5 },
-  "risk_rules": { "allow_short": false, "max_asset_weight": 0.05, "max_turnover": 0.8 },
-  "cost_model": { "type": "fixed_bps", "bps": 30 },
-  "validation": {
-    "min_history_days": 252,
-    "run_strategy_anti_overfit": false,
-    "run_strategy_rolling_validation": false
-  },
-  "outputs": { "report": true, "signal_export": false }
+  "spec": {
+    "schema_version": "strategy_spec/v0",
+    "name": "simple_momentum_top_quantile",
+    "asset_class": "equity",
+    "market": "a_share",
+    "frequency": "daily",
+    "universe": "hs300",
+    "factors": [
+      {
+        "id": "momentum_20d",
+        "expression": "rank(close / ts_mean(close, 20))",
+        "direction": "higher_is_better",
+        "weight": 1.0
+      }
+    ],
+    "signal_rules": { "type": "rank_threshold", "long_quantile": 0.2 },
+    "portfolio_rule": { "weighting": "equal_weight", "rebalance_period": 5 },
+    "risk_rules": { "allow_short": false, "max_asset_weight": 0.05, "max_turnover": 0.8 },
+    "cost_model": { "type": "fixed_bps", "bps": 30 },
+    "validation": {
+      "min_history_days": 252,
+      "run_strategy_anti_overfit": false,
+      "run_strategy_rolling_validation": false
+    },
+    "outputs": { "report": true, "signal_export": false }
+  }
 }
 ```
 
-错误示例：
+`is_valid=false` 时读取 `issues` 中的 `code`、`path` 和 `hint`。例如 `MARKET_UNSUPPORTED` 可通过 `list_markets` 核对已注册的市场与股票池。
 
-```json
-{
-  "error_code": "MARKET_UNSUPPORTED",
-  "hint": "MVP only supports market=a_share through AShareAdapter."
-}
-```
-
-Post-MVP 已提供 StrategySpec v1、多因子、top N、独立 SignalExport、策略级 rolling/anti-overfit、模板和候选权重优化。所有策略工具仍只输出研究候选、目标权重、报告和审计信息，不提供券商账户、真实订单或自动下单能力。
+StrategySpec v1 支持多因子、top N、策略级 rolling/anti-overfit、模板和候选权重优化。项目内 v2 策略的信号导出由服务端核验已保存的验证证据。
 
 ### 常用因子表达式
 

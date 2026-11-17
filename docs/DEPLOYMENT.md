@@ -6,7 +6,7 @@
 
 | 场景 | 推荐方式 | 说明 |
 |:---|:---|:---|
-| 本机体验、Agent 调试 | 裸机 `make setup` + `bash restart.sh` | 自动生成本地开发 `.env`，默认关闭认证，只适合单用户本机 |
+| 本机体验、Agent 调试 | 裸机安装后运行 `make dev` 或 `./scripts/dev.ps1` | 监听回环地址，首次启动前配置认证密钥 |
 | 单台服务器、长期运行 | Docker Compose | 镜像内构建前端，数据落到 Docker volume，升级和回滚更可控 |
 | 小团队内网/VPN | Docker Compose + PostgreSQL | 保持认证开启，CORS 只允许可信域名或内网地址 |
 | 公网域名访问 | 不建议直接暴露 | 必须放在 VPN、零信任隧道或带认证的反向代理之后 |
@@ -16,18 +16,18 @@
 - FastAPI REST API：`/api/v1/*`
 - React 前端：由后端服务 `frontend/dist`
 - 报告和图表静态资源：`/api/v1/reports/*`、`/charts/*`
-- HTTP MCP：`/mcp/`、`/mcp-sse/`，生产环境需要独立 Bearer Token
+- HTTP MCP 位于 `/mcp/`、`/mcp-sse/`。开启认证时支持用户 JWT、用户 API key 或部署令牌。
 
 ## 1. 部署前检查
 
 | 项目 | 最低要求 | 推荐 |
 |:---|:---|:---|
-| OS | Ubuntu 22.04 / Debian 12 / macOS / WSL2 | Ubuntu 22.04 LTS |
+| OS | 裸机安装提供 Windows x64 和 Linux x64 依赖锁 | Docker 部署使用 Linux 容器 |
 | CPU | 2 核 | 4 核以上 |
 | 内存 | 4 GB | 8 GB以上 |
 | 磁盘 | 20 GB | 50 GB以上，行情缓存会增长 |
-| Python | 3.10+ | 3.11 或 3.12 |
-| Node.js | 20+ | 20 LTS |
+| Python | CPython 3.12 | 后端开发和运行均使用 3.12 |
+| Node.js | 构建浏览器工作台时需要 | 仓库 CI 使用 Node 24 |
 | Docker | 24+，仅 Docker 部署需要 | Docker Compose v2 |
 
 对外访问建议放在 localhost、VPN 或可信内网。QuantGPT 包含管理后台、任务执行、报告读取、HTTP MCP 和 WQ BRAIN 提交能力，不建议直接暴露在公网。
@@ -45,7 +45,7 @@ docs/DEPLOYMENT.md
 ## 2. 推荐部署：Docker
 
 ```bash
-git clone https://github.com/popura404/QuantGPT_o.git
+git clone --branch codex/review-fixes-offline-validation https://github.com/popura404/QuantGPT_o.git
 cd QuantGPT_o
 
 cp .env.example .env
@@ -59,11 +59,14 @@ JWT_SECRET_KEY=<openssl rand -hex 32 生成>
 QUANTGPT_ADMIN_PASSWORD=<使用密码管理器生成的长随机密码>
 ```
 
-启动服务：
+`docker-compose.yml` 中的 `8003:8003` 默认在宿主机所有接口发布端口。若从本机使用，或同机 Nginx 负责对外访问，在首次启动前将 `services.quantgpt.ports` 中的这一条改成 `"127.0.0.1:8003:8003"`。用 `docker compose port quantgpt 8003` 核对实际发布地址。
+
+启动服务后检查端口和健康状态。
 
 ```bash
 docker compose up -d --build
 docker compose ps
+docker compose port quantgpt 8003
 docker compose logs -f quantgpt
 ```
 
@@ -106,25 +109,16 @@ docker compose pull               # 仅在使用远程镜像时需要
 ## 3. 裸机部署
 
 ```bash
-git clone https://github.com/popura404/QuantGPT_o.git
+git clone --branch codex/review-fixes-offline-validation https://github.com/popura404/QuantGPT_o.git
 cd QuantGPT_o
 
 make setup
-bash restart.sh
+# 编辑 .env，设置 JWT_SECRET_KEY 和 QUANTGPT_ADMIN_PASSWORD
+# 如需浏览器工作台，执行 make frontend
+make dev
 ```
 
-`make setup` 会创建 `.venv`、安装开发依赖，并在本地没有 `.env` 时从 `.env.example` 生成 `.env`。为了便于本机单用户启动，它会把生成的 `.env` 中 `AUTH_DISABLED` 改为 `true`。
-
-裸机生产或共享环境不要使用本地开发配置，改为：
-
-```bash
-cp .env.example .env
-# 编辑 .env，保持 AUTH_DISABLED=false，并配置 JWT_SECRET_KEY / QUANTGPT_ADMIN_PASSWORD
-make setup
-bash restart.sh
-```
-
-如果已经误用 `make setup` 生成了开发 `.env`，先手动把 `AUTH_DISABLED=true` 改回 `AUTH_DISABLED=false`，再配置生产密钥。
+`make setup` 使用 CPython 3.12 创建 `.venv312`，安装锁定的开发依赖，并在本地缺少 `.env` 时复制 `.env.example`。默认 `AUTH_DISABLED=false`。已有 `.env` 会继续使用。Windows 使用 `./scripts/setup.ps1` 安装，配置密钥后运行 `./scripts/dev.ps1`，两种启动方式均绑定 `127.0.0.1:8003`。
 
 常用命令：
 
@@ -132,16 +126,6 @@ bash restart.sh
 make run              # 前台启动后端，默认 http://localhost:8003
 make dev              # 显式使用 8003 端口
 cd frontend && npm run dev
-```
-
-`bash restart.sh` 会构建前端并把服务放到后台，日志写入 `logs/server.log`。
-
-### 裸机运行命令速查
-
-```bash
-tail -f logs/server.log                  # 查看后台服务日志
-lsof -i :8003                            # 检查端口占用
-.venv/bin/python -m quantgpt --prefetch hs300 csi500
 ```
 
 ## 4. 配置矩阵
@@ -186,12 +170,12 @@ PostgreSQL 示例：
 DATABASE_URL=postgresql+asyncpg://quantgpt:<password>@<host>:5432/quantgpt
 ```
 
-当前服务启动时会通过 SQLAlchemy `create_all` 确保表存在；已有生产数据库升级时再使用 Alembic，并先备份数据库。
+空数据库可在启动时由 SQLAlchemy 创建。已有数据库先停写、备份并核对 Alembic 版本，再按[迁移说明](RESEARCH_MIGRATION.md)操作。
 
 裸机执行迁移：
 
 ```bash
-.venv/bin/alembic -c alembic.deploy.ini upgrade head
+.venv312/bin/python -m alembic -c alembic.deploy.ini upgrade head
 ```
 
 Docker 执行迁移：
@@ -236,7 +220,7 @@ QUANTGPT_WORKER_PROCESSES=4
 QUANTGPT_RUST_ENGINE=1
 ```
 
-`quantgpt_engine` 安装成功时会自动启用 Rust 表达式计算；未安装时会回退到 Python 实现。Docker 镜像默认不强制安装 Rust 引擎，因此生产部署不应依赖它作为必需组件。
+`QUANTGPT_RUST_ENGINE=1` 允许加载已安装的扩展。受信任的研究计算还检查 Rust 构建的数值一致性和表达式支持范围。当前一致性标记尚未验证，受信任表达式沿用 Python。Docker 镜像默认使用 Python 后端。
 
 ## 5. MCP 集成
 
@@ -247,15 +231,17 @@ QUANTGPT_RUST_ENGINE=1
   "mcpServers": {
     "quantgpt": {
       "type": "stdio",
-      "command": "/absolute/path/to/QuantGPT_o/.venv/bin/python",
-      "args": ["-m", "quantgpt"],
+      "command": "/absolute/path/to/QuantGPT_o/.venv312/bin/python",
+      "args": ["-m", "quantgpt", "--transport", "stdio"],
       "cwd": "/absolute/path/to/QuantGPT_o"
     }
   }
 }
 ```
 
-HTTP 服务也挂载 `/mcp/` 和 `/mcp-sse/`。生产环境不要直接公网暴露；如需反向代理访问，保持 `AUTH_DISABLED=false`，配置独立 token：
+Windows stdio 的解释器路径为项目内 `.venv312/Scripts/python.exe`。多代理共享研究统一按[主代理和子代理操作指南](agent_safe_workflow.md)分配方向和凭据。
+
+HTTP 服务在开启认证时，从 `Authorization: Bearer <凭据>` 解析身份。使用用户 JWT 或用户 API key 会以该用户的项目权限访问。若服务间共用部署令牌，则设置以下变量，把令牌仅交给可信客户端。部署令牌映射到服务器配置的 `QUANTGPT_MCP_HTTP_USER_ID`，省略时使用 MCP 系统身份。
 
 ```bash
 QUANTGPT_MCP_HTTP_TOKEN=<openssl rand -hex 32>
@@ -299,6 +285,18 @@ server {
 
     client_max_body_size 20m;
 
+    if ($host != quantgpt.example.com) { return 421; }
+
+    location ~ ^/(mcp|mcp-sse)(/|$) {
+        proxy_pass http://127.0.0.1:8003;
+        proxy_http_version 1.1;
+        proxy_set_header Host 127.0.0.1:8003;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+    }
+
     location / {
         proxy_pass http://127.0.0.1:8003;
         proxy_http_version 1.1;
@@ -316,7 +314,7 @@ server {
 
 - `AUTH_DISABLED=false`
 - `QUANTGPT_CORS_ORIGINS=https://quantgpt.example.com`
-- `QUANTGPT_ALLOWED_HOSTS` 包含反向代理传入的 Host，例如 `quantgpt.example.com`
+- `QUANTGPT_ALLOWED_HOSTS` 包含普通 Web 请求的域名和 MCP 上游的 `127.0.0.1`。FastMCP 独立校验 Host，示例代理为 MCP 路径转发已获准的回环 Host。此配置面向不发送 `Origin` 的 MCP 客户端。浏览器跨源 MCP 还需要在 FastMCP 的传输配置中显式允许所需 Origin。
 - `/mcp/` 和 `/mcp-sse/` 不对公网匿名开放
 - 管理后台密码、JWT 密钥、WQ BRAIN 凭证不进入前端代码或截图
 - 长任务需要较长 `proxy_read_timeout`，否则 SSE 或任务状态连接可能被中断
@@ -334,53 +332,121 @@ docker compose logs -f quantgpt
 裸机更新：
 
 ```bash
-git pull
-.venv/bin/pip install -e ".[dev]"
-cd frontend && npm ci && npm run build && cd ..
-bash restart.sh
+git pull --ff-only
+make setup
+make frontend
+make dev
 ```
 
-SQLite 备份：
+### 在线备份默认 SQLite 数据库
+
+SQLite 使用 WAL。以下命令通过 SQLite 在线备份接口生成包含已提交事务的独立副本，在宿主机的专用目录保存。确认使用的是 Compose 默认 SQLite 路径。数据库文件来自容器，宿主机命令使用 Bash。
 
 ```bash
-docker compose exec quantgpt python - <<'PY'
+set -eu
+umask 077
+backup_dir=$(mktemp -d "$HOME/quantgpt-backup.XXXXXXXX")
+docker compose exec -T quantgpt python - > "$backup_dir/database.sqlite.partial" <<'PY'
 import shutil
-from datetime import datetime
-src = "/app/data/quantgpt.db"
-dst = f"/app/data/quantgpt-{datetime.now():%Y%m%d-%H%M%S}.db.bak"
-shutil.copy2(src, dst)
-print(dst)
+import sqlite3
+import sys
+import tempfile
+from contextlib import closing
+from pathlib import Path
+
+with tempfile.TemporaryDirectory() as tmp:
+    dest = Path(tmp) / "backup.db"
+    with closing(sqlite3.connect("file:/app/data/quantgpt.db?mode=ro", uri=True)) as src:
+        with closing(sqlite3.connect(dest)) as db:
+            src.backup(db)
+            if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+                raise RuntimeError("SQLite backup failed integrity_check")
+            if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                raise RuntimeError("SQLite backup failed foreign_key_check")
+    with dest.open("rb") as f:
+        shutil.copyfileobj(f, sys.stdout.buffer)
 PY
+mv "$backup_dir/database.sqlite.partial" "$backup_dir/database.sqlite"
+(cd "$backup_dir" && sha256sum database.sqlite > SHA256SUMS)
+printf 'SQLite backup: %s\n' "$backup_dir/database.sqlite"
 ```
 
-Docker volume 导出：
+单独恢复这份副本时，把 `database.sqlite` 和 `SHA256SUMS` 复制到目标机器的同一目录，在相同版本的新 Compose 部署中执行以下命令。它只恢复数据库。对应的行情快照、外部证据和 HTML 报告需从同一时期的文件备份另行恢复。
 
 ```bash
-docker run --rm \
-  -v quantgpt_quantgpt-data:/data \
-  -v "$PWD":/backup \
-  alpine tar czf /backup/quantgpt-data.tgz -C /data .
+set -eu
+backup_dir=/absolute/path/to/quantgpt-backup
+(cd "$backup_dir" && sha256sum -c SHA256SUMS)
+test -z "$(docker compose ps -a -q quantgpt)"
+docker compose create --build quantgpt
+service_id=$(docker compose ps -a -q quantgpt)
+test -n "$service_id"
+docker run --rm --volumes-from "$service_id" \
+  --mount "type=bind,source=$backup_dir,target=/backup,readonly" alpine sh -ec '
+  test -d /app/data && test -z "$(ls -A /app/data)" || exit 1
+  cp /backup/database.sqlite /app/data/quantgpt.db.partial
+  chmod 600 /app/data/quantgpt.db.partial
+  mv /app/data/quantgpt.db.partial /app/data/quantgpt.db
+'
+docker compose run --rm -T --no-deps quantgpt python - <<'PY'
+import sqlite3
+from contextlib import closing
+
+with closing(sqlite3.connect("file:/app/data/quantgpt.db?mode=ro", uri=True)) as db:
+    if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)] or db.execute("PRAGMA foreign_key_check").fetchone():
+        raise SystemExit("Restored database failed integrity checks")
+PY
+docker compose start quantgpt
+curl --fail --retry 10 --retry-connrefused http://127.0.0.1:8003/api/v1/health
 ```
 
-Docker volume 恢复到新机器：
+### 完整备份数据卷与报告卷
+
+需要一起恢复数据库、行情快照和报告时，先停止所有写入这些卷的进程。示例在停机前取得正在运行的服务容器 ID，用 `docker inspect` 核对 `/app/data`、`/app/reports` 的挂载。归档工具直接继承该容器的卷，可用于自定义 Compose 项目名。另有挂载的输入或证据目录时，应将其纳入同一次备份。
 
 ```bash
-docker volume create quantgpt_quantgpt-data
-docker run --rm \
-  -v quantgpt_quantgpt-data:/data \
-  -v "$PWD":/backup \
-  alpine sh -c 'cd /data && tar xzf /backup/quantgpt-data.tgz'
+set -eu
+umask 077
+archive_dir=$(mktemp -d "$HOME/quantgpt-volumes.XXXXXXXX")
+service_id=$(docker compose ps -q quantgpt)
+test -n "$service_id"
+docker inspect --format '{{range .Mounts}}{{println .Destination .Name .Source}}{{end}}' "$service_id"
+docker compose stop quantgpt
+trap 'docker compose start quantgpt' EXIT
+docker run --rm --volumes-from "$service_id:ro" alpine \
+  tar czf - -C /app data reports > "$archive_dir/volumes.tgz.partial"
+gzip -t "$archive_dir/volumes.tgz.partial"
+mv "$archive_dir/volumes.tgz.partial" "$archive_dir/volumes.tgz"
+(cd "$archive_dir" && sha256sum volumes.tgz > SHA256SUMS)
+docker compose start quantgpt
+trap - EXIT
+printf 'Volume backup: %s\n' "$archive_dir"
 ```
 
-回滚代码版本：
+### 恢复到新机器的空卷
+
+在新机器准备相同版本、Compose 配置和自己的 `.env`，将受信任的归档及校验文件复制过去。在项目根目录执行以下命令，设置 `archive_dir` 为该备份的绝对路径。新建服务容器时只创建挂载，恢复完成后再启动。示例在解包前检查两个目标目录均为空。
 
 ```bash
-git log --oneline -5
-git checkout <last-good-commit>
-docker compose up -d --build
+set -eu
+archive_dir=/absolute/path/to/quantgpt-volumes-backup
+(cd "$archive_dir" && sha256sum -c SHA256SUMS)
+test -z "$(docker compose ps -a -q quantgpt)"
+docker compose create --build quantgpt
+service_id=$(docker compose ps -a -q quantgpt)
+test -n "$service_id"
+test "$(docker inspect --format '{{.State.Running}}' "$service_id")" = false
+docker inspect --format '{{range .Mounts}}{{println .Destination .Name .Source}}{{end}}' "$service_id"
+docker run --rm -i --volumes-from "$service_id" alpine sh -ec '
+  test -d /app/data && test -d /app/reports || exit 1
+  test -z "$(ls -A /app/data)" && test -z "$(ls -A /app/reports)" || exit 1
+  tar xzf - -C /app
+' < "$archive_dir/volumes.tgz"
+docker compose start quantgpt
+curl --fail --retry 10 --retry-connrefused http://127.0.0.1:8003/api/v1/health
 ```
 
-如果使用 PostgreSQL，升级前先用数据库原生工具备份；SQLite 备份只覆盖容器内默认 SQLite 场景。
+登录后核对备份时的项目、任务及报告。使用 PostgreSQL 时需另用数据库原生备份工具，并将数据库与本次停写期间的文件归档配对。回滚代码前核对其能否读取当前数据库布局。结构回退条件见[研究数据库迁移与恢复](RESEARCH_MIGRATION.md)。
 
 ## 8. 验收清单
 
@@ -418,17 +484,16 @@ Docker 部署会在镜像构建阶段自动构建前端。
 
 ### `.env` 修改后不生效
 
-Docker 部署需要重启容器：
+Docker 部署用更新后的配置重新创建容器。
 
 ```bash
-docker compose up -d
-docker compose restart quantgpt
+docker compose up -d --force-recreate quantgpt
 ```
 
-裸机部署需要重新启动后台服务：
+裸机部署停止旧服务后重新启动。
 
 ```bash
-bash restart.sh
+make dev
 ```
 
 ### Docker 中连接不上宿主机 PostgreSQL
@@ -444,10 +509,10 @@ DATABASE_URL=postgresql+asyncpg://quantgpt:password@host.docker.internal:5432/qu
 确认 `cwd` 是绝对路径，并在项目目录手动运行：
 
 ```bash
-.venv/bin/python -m quantgpt
+.venv312/bin/python -m quantgpt --transport stdio
 ```
 
-HTTP MCP 还需确认 `QUANTGPT_MCP_HTTP_TOKEN` 与请求头一致。
+HTTP MCP 使用对应用户的有效 JWT/API key，或与服务端一致的部署令牌。经反向代理访问时检查 MCP 专用 Host 转发配置。
 直接用浏览器或普通 `curl` 打开 `/mcp/` 可能返回 `406 Not Acceptable`；这不等于 MCP 不可用。用支持 streamable-http 的 MCP 客户端，并带上 `Accept: application/json, text/event-stream`。
 
 ### Windows 中文系统启动报 UnicodeDecodeError

@@ -1,18 +1,31 @@
 # 研究数据库迁移与恢复
 
-本轮使用扩展迁移 `017`。旧 `factor_hash`、收藏和原始报告不重新解释，新研究使用独立 definition/evaluation/strategy 哈希。现有 SQLite 文件、凭据和行情缓存没有纳入 Git；本轮迁移演练使用临时 SQLite，没有修改用户数据库。
+当前 Alembic head 为 `018`。`017` 引入项目、评价及持久任务字段，`018` 增加研究轮次、方向和评价执行租约。原有收藏和报告保留旧标识，新评价与策略使用独立哈希。
 
-启动会先检查旧表缺列。发现旧布局时返回 `DATABASE_MIGRATION_REQUIRED`，在修改任何表前停止，避免 `create_all` 留下半套新表。空数据库仍可正常创建完整布局。
+启动会检查已有 Alembic 版本及研究表字段。带版本记录的数据库低于 `018`，或旧表缺少必需字段时，会返回 `DATABASE_MIGRATION_REQUIRED`。全新数据库可由服务创建完整布局。
 
-升级步骤：
+## 升级已有数据库
 
-1. 停止 API、MCP 和后台 worker，备份数据库及不可变 snapshot 目录。SQLite 使用数据库 backup API 或停机后复制完整数据库；不要在写入时仅复制 `.db` 忽略 WAL。
-2. 使用项目 Python 3.12 环境，设置 `DATABASE_URL`，检查当前 Alembic revision。带 Alembic 历史的数据库执行 `alembic upgrade head`。
-3. 若数据库过去由 `create_all` 建立、没有 Alembic 版本，先核对其表/列与 `016` 布局一致，再 stamp `016` 后 upgrade。不能直接对未知旧库自动 stamp，也不能对已是新布局的库再次运行 `017`。
-4. 重启服务，检查项目、旧收藏、任务和报告。个人收藏迁移通过 `POST /api/v1/research/projects/{id}/favorites-migration?dry_run=true` 预览；移除 dry-run 后只复制当前认证用户的收藏，原行保留，重复运行幂等。
+1. 停止写入的 API、MCP 和 worker，备份数据库、不可变快照及报告。SQLite 使用在线 backup API，或在停写后归档包含 WAL 的完整数据目录。[备份与恢复](DEPLOYMENT.md)
+2. 在项目根目录使用 CPython 3.12 环境，确认 `DATABASE_URL` 指向目标库。仓库提供的配置文件是 `alembic.deploy.ini`。先执行下列前两条命令，分别查看源码 head 和目标库当前版本。
+3. 已有 Alembic 历史的数据库可以升级到 head。若旧库由 `create_all` 建立且没有版本记录，先核对表、列、索引、外键和唯一约束与哪个迁移版本一致。仅在布局确认后对该版本执行 `stamp`，再升级。例如，完整匹配 `016` 时使用 `stamp 016`。布局不明时在备份副本上排查。
 
-本地 `alembic.ini` 可能包含数据库 URL，已忽略。需要从无配置环境运行时可使用 Alembic `Config()` 设置 `script_location=quantgpt/migrations` 并由 `DATABASE_URL` 提供连接配置。切勿将实际连接串写进提交或验收日志。
+```bash
+.venv312/bin/python -m alembic -c alembic.deploy.ini heads
+.venv312/bin/python -m alembic -c alembic.deploy.ini current
+.venv312/bin/python -m alembic -c alembic.deploy.ini upgrade head
+.venv312/bin/python -m alembic -c alembic.deploy.ini current
+```
 
-回退：迁移 `017` 仅在没有新项目或新持久任务写入时允许结构 downgrade；否则拒绝删除新字段。保留扩展数据库和产物，停机恢复到已备份的版本，或使用经验证的兼容代码读取旧记录。数据库结构回退不是丢弃新研究数据的快捷方式。
+Windows 将解释器替换为 `./.venv312/Scripts/python.exe`。升级后确认输出 `018 (head)`，重启服务，核对项目、任务和报告。
 
-已执行：SQLite 从 `001` 到 `017`、无新写入 downgrade/upgrade、新写入后拒绝破坏性 downgrade。PostgreSQL 真实升级/回退尚未执行，不能把 SQLite 通过视为 PostgreSQL 通过。
+## 个人收藏导入项目
+
+持有项目写权限的用户先调用 `POST /api/v1/research/projects/{id}/favorites-migration?dry_run=true` 预览，核对后显式传 `?dry_run=false` 执行。缺省为预览。导入只复制当前用户的收藏，保留原行，重复运行幂等。
+
+## 回退条件
+
+- 从 `018` 退至 `017` 前，迁移会检查轮次、方向和执行租约三张表。任一表有记录就拒绝删除这些表。
+- 从 `017` 退至 `016` 前，迁移会检查研究项目和带请求哈希、执行尝试或远端引用的持久任务；存在相关记录时拒绝结构回退。
+
+需要回到旧版本时，先验证旧代码能否读取现有数据库。若必须恢复旧布局，在停写后使用升级前的备份和配套文件，并核对备份时间之后的业务记录。

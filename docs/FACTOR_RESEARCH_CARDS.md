@@ -54,11 +54,11 @@ not pre-registered experiments or observed effects. The book-value template is
 blocked for the free IBM demonstration because equivalent PIT book equity and
 market-cap fields are not yet supplied there.
 
-Current status: **in_review / partial P15**. The card and comparison contracts
-have offline coverage, including an actual Python backtest/ledger path; the test
-data are synthetic. Full P15 acceptance still requires project service audit
-integration for comparison execution, PIT risk exposures, and complete real frozen price/financial
-samples. This does not establish G3 or a validated investment result.
+The project-level `compare_research_strategies_to_baseline` tool compares an
+augmented selection strategy with the baseline registered for its round. The
+service stores the comparison as an artifact. Point-in-time risk exposures and
+real price and financial coverage depend on the registered dataset.
+[Project research API](RESEARCH_API.md)
 
 The pre-registration service is now implemented in `research/hypotheses.py`.
 `register_hypothesis` uses a project revision compare-and-swap, appends one
@@ -69,15 +69,11 @@ references must belong to the same project, match the stored immutable evaluatio
 and have an observed result. Evaluation registration uses the same revision lock
 so concurrent uncommitted trials cannot bypass the pre-registration order.
 Cards consume this server-resolved audit record through `hypothesis_registration`.
-This covers hypothesis/baseline registration; comparison execution, PIT risk
-exposures and complete real-market samples remain separate missing requirements.
 
-Validation on Windows CPython 3.12.14:
+Run the card and pre-registration checks from the repository root on Windows with CPython 3.12.
 
 ```powershell
-.venv312/Scripts/python.exe -m pytest tests/test_research_cards.py tests/test_research_hypotheses.py -q --basetemp=test-results/p15hypotheses -o cache_dir=test-results/pytest-cache
-# 19 passed, including concurrent registration and audit tamper/revocation
+.venv312/Scripts/python.exe -m pytest tests/test_research_cards.py tests/test_research_hypotheses.py -q
 .venv312/Scripts/python.exe -m ruff check quantgpt/research/cards.py tests/test_research_cards.py
 .venv312/Scripts/python.exe -m pyright quantgpt/research/cards.py
-# Ruff passed; Pyright 0 errors
 ```

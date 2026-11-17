@@ -1,5 +1,7 @@
 # 共享研究 API 与 MCP
 
+执行多方向研究时，从[多代理共享因子研究操作指南](agent_safe_workflow.md)进入。本文供查询接口参数、返回字段、权限和数据契约。
+
 所有新 HTTP 路径以 `/api/v1/research` 开头，需要现有登录令牌。项目 ID 选择上下文，不能替代认证。成员撤销、viewer 写入、跨项目产物和未注册快照均由服务端检查。MCP HTTP 支持现有部署 token 的服务端身份映射，以及 JWT/API key 解析 principal；stdio 使用服务端 `QUANTGPT_MCP_STDIO_USER_ID`，未配置时为专用系统用户。须由项目管理员显式邀请系统身份，不能共享所有用户的私人收藏。
 
 | 方法/路径 | 输入与结果 |
@@ -31,7 +33,7 @@ MCP 新工具：`list_research_projects`、`evaluate_factors`、`run_research_st
 
 本轮本地完整验证 profile 仍有未实现/未获得的独立证据，合法导出默认受阻。PIT 风险暴露、完整真实公司行动/退市终值、正式历史证券库和充分独立验证没有被合成测试代替。
 
-## 离线验证闭环（2026-10-18）
+## 离线验证任务
 
 网页、HTTP 和 MCP `validate_research_evaluation` 共用持久任务服务。输入只引用已有成功本地 evaluation，可选引用在 final 之前完成的同一冻结候选 selection。服务端核验当前权限、真实引擎身份、数据快照、收益 artifact 哈希、final 预留记录后，用冻结方向、费用、窗口和实际回测入口重放。部署代码变化必须先重算评价。
 
@@ -50,7 +52,14 @@ MCP 新工具：`list_research_projects`、`evaluate_factors`、`run_research_st
 | `corporate_actions` | 逐证券核对分拆、现金分红、支付日、退市终值及整个窗口的事件覆盖 |
 | `benchmark` | 核对预登记总回报基准、币种和股息再投资口径，逐日重算收益并核对连续指数点位 |
 
-对已登记的评价运行 `validate_research_evaluation`，或完成 `finalize_research_round`。查看 `validation.external_acceptance.checks` 中的分项状态、原因、记录数和来源。`not_run` 表示缺少该项证据，`insufficient_data` 表示提供了证据但覆盖或授权不足，`failed` 标识矛盾或无效输入。全部核对通过及来源可用时，外部状态才为 `passed`。策略导出还会核对独立策略验证与引擎状态。
+对已登记的评价运行 `validate_research_evaluation`，或由协调者完成 `finalize_research_round`。轮询 `get_mcp_task_status(task_id, include_result=true)` 后，从下列位置读取已完成任务的结果。
+
+| 任务 | 外部验收总状态 | 分项状态、原因、记录数和来源 |
+| --- | --- | --- |
+| 独立评价验证 | `result.external_acceptance.status` | `result.external_acceptance.checks` |
+| 轮次组合终验 | `result.validation.external_acceptance.status` | `result.validation.external_acceptance.checks` |
+
+`not_run` 表示服务尚无该项证据，`insufficient_data` 表示证据的覆盖或授权不足，`failed` 标识矛盾或无效输入。缺少返回字段时应核对任务类型、状态及结果，保留缺失信息。全部核对通过及来源可用时，外部状态才为 `passed`。快照登记响应中的 `external_data_acceptance` 描述验证前的状态。策略导出还会核对独立策略验证与引擎状态。
 
 部署方原子替换证据文件后可对原评价重新运行验证。报告、验证任务及导出判断均绑定文件字节的 SHA-256。过期报告保留原内容与摘要，新证据可以复用原始收益和冻结试验分母。研究期与留出期的原始收益和行情不会写入外部证据摘要。
 
@@ -70,7 +79,7 @@ MCP 新工具：`list_research_projects`、`evaluate_factors`、`run_research_st
 
 管理员用 `QUANTGPT_RESEARCH_IMPORT_ROOT` 指定可向项目公开的冻结面板目录。该目录与 `QUANTGPT_RESEARCH_SNAPSHOT_ROOT` 各自独立。共享目录包含 `freeze_market_frame` 生成的 `ds_…/manifest.json` 与 `market.parquet`。项目写成员可以按清单 ID 导入，共用目录的内容应已获准向所有项目研究成员共享。服务端校验文件字节和逻辑内容哈希后，保存一份可重放的私有副本。已有授权可随时重新核验。返回的 `asof_basis=server_snapshot_registration` 指服务器登记版本的时刻。价格基准、历史股票池、公司行动和总回报基准的外部证据仍需单独验收。
 
-准备基线时，先登记项目最终窗口，在 selection 窗口运行基线策略，然后在创建研究轮次时绑定该 `baseline_run_id`。由研究方向提出新增组件，在相同冻结快照、selection 窗口、费用和调仓规则上运行增强组合。比较要求保留基线全部组件及它们之间的相对权重。结果包含两组复合净收益、配对日收益差、移动块重抽样区间、按证券交集计算的日截面秩相关及覆盖量。区间需要足够的交易日。每日换手取买卖成交额之和的一半，再除以该日的期初净值，最后按交易日取平均。这些度量描述选择期的增量表现，独立终验在轮次冻结后单独运行。
+`compare_research_strategies_to_baseline` 使用开轮时登记的 `baseline_run_id`。基线与增强策略共用冻结快照、选择窗口、费用和调仓规则。比较要求保留基线全部组件及它们之间的相对权重。结果包含两组复合净收益、配对日收益差、移动块重抽样区间、按证券交集计算的日截面秩相关及覆盖量。区间需要足够的交易日。每日换手取买卖成交额之和的一半，再除以该日的期初净值，最后按交易日取平均。
 
 ### 日频研究窗口规划
 
@@ -92,7 +101,7 @@ MCP 新工具：`list_research_projects`、`evaluate_factors`、`run_research_st
 
 使用 Alembic 管理的数据库先执行 `alembic -c alembic.deploy.ini upgrade head` 升级到 018，再启动 MCP 服务。
 
-一轮研究共享项目、选择期、快照、模拟配置和一次最终留出窗口。项目所有者或管理员创建轮次，保存 `coordinator_key`，将每个方向的 `direction_id` 和对应的 `direction_key` 交给负责该方向的子代理。共用一个 MCP 身份时可省略方向的 `actor_id`。使用不同登录身份时，创建轮次时指定相应项目成员的 `actor_id`。同一项目有一个受管轮次，项目成员可以查询进度。若需要恢复创建请求，首次创建时传入自行生成并保存的随机 `coordinator_key`，长度至少 32 个字符。
+每个项目最多有一个受管轮次。一次开轮登记共享的快照、选择期、模拟配置、最终留出窗口和各方向。方向的 `actor_id` 默认为开轮者，显式指定时对应账号必须是项目写成员。协调者凭据同时绑定开轮身份。可重试的创建请求接受协调者提前生成并保存的随机 `coordinator_key`，至少 32 个字符。
 
 | MCP 工具 | 调用者与输入 | 结果 |
 |---|---|---|
@@ -106,10 +115,10 @@ MCP 新工具：`list_research_projects`、`evaluate_factors`、`run_research_st
 | `submit_round_strategy` | 协调者提交组合的 v2 `spec`、组件引用和协调者凭据 | 选择期策略回测任务，完成后取得 `strategy_run_id` |
 | `finalize_research_round` | 协调者传入 `selection_run_id` 和协调者凭据 | 冻结入选策略及试验集合，提交单次 final 任务 |
 
-对每个后台任务使用 `get_mcp_task_status(task_id, include_result=true)` 取回结果。选择阶段可以运行多个候选组合。存在预登记基线时，在终验前用 `compare_research_strategies_to_baseline` 查看新增因子的配对净收益差、区间与换手，再决定冻结哪一份选择期结果。最终任务的 `validation` 包含 OOS、滚动窗口、试验校正和数据验收状态。用 `get_research_artifact` 及 `validation_artifact.artifact_id` 可再次读取同一份报告。
+终验任务成功后，轮询响应的 `result.validation` 包含 OOS、滚动窗口、试验校正和数据验收状态。`result.trial_manifest.observed_trials` 是冻结时按身份去重的已观察试验数。将 `result.validation_artifact.artifact_id` 与项目 ID 传给 `get_research_artifact` 可再次读取同一份报告。
 
 查重涵盖当前项目待运行与执行中的本地因子任务、已导入的迭代记录，以及当前身份可访问的因子池、本地选择期评价、已完成的平台评价、成功的历史尝试、个人收藏和本人已提交的平台因子。空格、已支持的算子别名归一；改窗口参数会提示同族，仍可作为新变体提交。它衡量公式重复程度，经济暴露相关性需另行比较。只读查询不登记试验。若一批中已有公式或批内重复，`only_new=true` 返回 `known_candidates`，整批不建任务，按结果中的下标重提新表达式即可。两个方向同时提交时重新检查，同一请求重试返回原任务。
 
-创建轮次会检查标签周期与持有周期、初始资金模式，以及两个窗口需要的交易日。已在项目运行的选择任务需先结清。导入旧迭代时保存有成绩的父回测和候选（含取消前的成功观察），并按身份去重。如果旧研究已看过留出期，或缺少判断独立性所需的历史范围，终验在使用留出窗口前返回原因；已有来源补齐后可重复导入。
+创建轮次会检查标签周期与持有周期、初始资金模式，以及两个窗口需要的交易日。已在项目运行的选择任务需先结清。导入旧迭代时按身份保存有成绩的父回测和候选，包括取消前的成功观察。`LEGACY_HOLDOUT_EVIDENCE_INCOMPLETE` 可在原项目补齐历史范围并重新导入。`LEGACY_HOLDOUT_EXPOSED` 表示已使用留出期，当前项目的窗口固定，需要在新项目中预登记独立窗口。
 
 带可用时间的行情按信号时刻检查，使用需历史版本的字段时也要提供字段级可用时间与版本。组合按登记的交易日历对齐基线和增强策略，预热不足时保留现金。最终报告在留出期内核对仓位，区间内无可验证的投资仓位会返回证据不足。原始价格、历史成员、公司行动及总回报基准的外部验收状态仍由报告单列。
