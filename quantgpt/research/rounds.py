@@ -137,12 +137,31 @@ async def guard_round_execution(session: AsyncSession, project_id: uuid.UUID, co
         raise ValueError("ROUND_CLOSED")
 
 
-async def create_round(session: AsyncSession, actor_id: uuid.UUID, project_id: uuid.UUID, *, config: dict, holdout_start: str,
-                       holdout_end: str, directions: list[dict], baseline_run_id: uuid.UUID | None = None,
-                       coordinator_key: str | None = None) -> dict:
+async def create_round(session: AsyncSession, actor_id: uuid.UUID, project_id: uuid.UUID, *, config: dict,
+                       directions: list[dict], holdout_start: str | None = None, holdout_end: str | None = None,
+                       baseline_run_id: uuid.UUID | None = None, coordinator_key: str | None = None,
+                       as_of: str | None = None) -> dict:
     member = await require_project_member(session, actor_id, project_id, write=True)
     if member.role not in {"owner", "admin"}:
         raise ProjectAccessError("Project owner or administrator must open the research round")
+    window = config.get("window", {})
+    if not isinstance(window, dict):
+        raise ValueError("ROUND_WINDOW_TEMPLATE_REQUIRED")
+    dates = (window.get("start_session"), window.get("end_session"), holdout_start, holdout_end)
+    plan = None
+    if all(value is None for value in dates):
+        from quantgpt.research.window_policy import plan_project_windows
+
+        plan = await plan_project_windows(session, actor_id, project_id, config=config, as_of=as_of)
+        if plan["status"] != "ready":
+            return plan
+        setup = plan["round_setup"]
+        config, holdout_start, holdout_end = setup["config"], setup["holdout_start"], setup["holdout_end"]
+    elif any(value is None for value in dates):
+        raise ValueError("ROUND_WINDOW_DATES_INCOMPLETE: supply all four selection and holdout dates or omit all four")
+    elif as_of is not None:
+        raise ValueError("AS_OF_WITH_EXPLICIT_WINDOWS: use as_of only when planning dates automatically")
+    assert holdout_start is not None and holdout_end is not None
     effective = normalize_local_config(EvaluationConfigV1.model_validate(config))
     if effective.backend != "local" or effective.window.phase != "selection":
         raise ValueError("LOCAL_SELECTION_CONFIG_REQUIRED")
@@ -171,7 +190,11 @@ async def create_round(session: AsyncSession, actor_id: uuid.UUID, project_id: u
     if row is not None:
         require_coordinator(row, actor_id, key)
         branches = await round_directions(session, row.id)
-        if (row.selection_config != effective.model_dump(mode="json") or row.baseline_run_id != baseline_run_id
+        replay_config = effective.model_dump(mode="json")
+        if plan is None:
+            # An explicit replay returns existing credentials for the configuration frozen by the original server.
+            replay_config["engine"] = row.selection_config["engine"]
+        if (row.selection_config != replay_config or row.baseline_run_id != baseline_run_id
                 or {(b.name, b.hypothesis, b.actor_id) for b in branches}
                 != {(d.name, d.hypothesis, d.actor_id or actor_id) for d in requested}):
             raise ValueError("ROUND_ALREADY_CONFIGURED")
@@ -202,6 +225,7 @@ async def create_round(session: AsyncSession, actor_id: uuid.UUID, project_id: u
             branches.append(branch)
         await session.flush()
     return {"project_id": str(project_id), "round_id": str(row.id), "coordinator_key": key,
+            **({"window_plan": plan} if plan is not None else {}),
             "discovery_tool": "check_research_factor_novelty", "new_factor_submission": {"only_new": True},
             "directions": [{"direction_id": str(b.id), "name": b.name, "direction_key": _direction_key(key, b.id)}
                            for b in branches]}

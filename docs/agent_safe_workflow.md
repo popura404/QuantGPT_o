@@ -4,6 +4,8 @@
 
 使用 `create_research_project` 或 `list_research_projects` 确认项目。真实数据来自 `list_research_snapshot_imports` 列出的共享清单，按 ID 用 `register_research_snapshot` 导入。用 `get_research_preparation` 检查字段、股票数量和日期，将返回的 `data_input` 写入选择期配置。合成演练可通过 `prepare_research_demo` 取得面板、示例定义和策略模板。
 
+普通本地日频研究先用 `plan_research_windows` 做只读日期规划。按顺序预留至少 30 日预热（声明更长时采用声明值）、756 日选择、`max(5, label_horizon_sessions, purge_sessions)` 个完整交易日隔离，以及 252 日最终留出。标签周期和隔离声明均为 5 日且预热为 30 日时，共需 1,043 个交易日。`status=ready` 时记录返回的 `round_setup`。收到 `insufficient_data` 时核对 `required_sessions` 与 `available_sessions`。若研究设计确需自定义窗口，明确给出两个窗口的全部起止日期。首次运行研究任务前即可完成这一步。
+
 在第一次评价前用 `register_research_holdout` 固定最终窗口。若需量化增量，在选择期用 `evaluate_factors` 与 `run_research_strategy` 保存基线，再向 `create_research_round` 传入 `baseline_run_id`。为每个子代理登记不同的 `name` 和 `hypothesis`，保存主代理的 `coordinator_key`，向各子代理分别提供 `project_id`、`round_id`、对应的 `direction_id` 和 `direction_key`。
 
 ## 子代理同时探索各自方向

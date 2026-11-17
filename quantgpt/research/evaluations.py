@@ -26,6 +26,7 @@ from quantgpt.models import (
     Task,
 )
 from quantgpt.research.contracts import (
+    DataInputRef,
     EvaluationConfigV1,
     FactorDefinitionV1,
     SimulationConfigV1,
@@ -50,12 +51,16 @@ async def get_evaluation(session: AsyncSession, actor_id: uuid.UUID, project_id:
 
 
 async def authorize_data_inputs(session: AsyncSession, project_id: uuid.UUID, config: EvaluationConfigV1) -> None:
+    await authorize_snapshot_refs(session, project_id, config.data_inputs)
+
+
+async def authorize_snapshot_refs(session: AsyncSession, project_id: uuid.UUID, refs: tuple[DataInputRef, ...]) -> None:
     """A manifest hash is an identity, never authorization to another project's data."""
     grants = (await session.scalars(select(ResearchAuditEvent.payload).where(
         ResearchAuditEvent.project_id == project_id, ResearchAuditEvent.action == "snapshot_registered",
-        ResearchAuditEvent.payload["snapshot_id"].as_string().in_([ref.manifest_id for ref in config.data_inputs]),
+        ResearchAuditEvent.payload["snapshot_id"].as_string().in_([ref.manifest_id for ref in refs]),
     ))).all()
-    for ref in config.data_inputs:
+    for ref in refs:
         matching = [grant for grant in grants if grant.get("snapshot_id") == ref.manifest_id]
         if not matching:
             raise ProjectAccessError("Snapshot not registered in this project")

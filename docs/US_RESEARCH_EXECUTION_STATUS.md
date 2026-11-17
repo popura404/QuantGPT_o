@@ -105,7 +105,9 @@ npm.cmd --prefix frontend run test:e2e
 
 ## 2026-11-17 真实多证券及外部证据验收
 
-在两个独立 SQLite 项目中，主代理先登记基线与 4 个方向。每个方向用独立 stdio MCP 连接查重并提交。75 个交易日的选择期为 2025-06-05 至 2025-09-22。按事先固定的最高分组扣费后净收益选择两个方向，保留基线，跳过 5 个交易日后在 2025-09-30 至 2025-12-31 的 65 个交易日终验。两个项目均观察到 4 个同时运行的方向，试验分母各冻结 7 项。
+本次短窗口技术验收在两个独立 SQLite 项目中进行。主代理先登记基线与 4 个方向，每个方向用独立 stdio MCP 连接查重并提交。75 个交易日的选择期为 2025-06-05 至 2025-09-22。按事先固定的最高分组扣费后净收益选择两个方向，保留基线，跳过 5 个交易日后在 2025-09-30 至 2025-12-31 的 65 个交易日终验。两个项目均观察到 4 个同时运行的方向，试验分母各冻结 7 项。
+
+普通本地日频研究的默认规划为选择期 756 个交易日、留出期 252 个交易日。在预热 30 日、隔离 5 日的设置下需要 1,043 个交易日。下表的两份冻结面板各覆盖 752 个交易日，使用默认规划会得到 `insufficient_data`。复现本次短协议时，显式指定 `--selection-sessions 75 --holdout-sessions 65`。
 
 | 固定股票池和冻结清单 | 行情覆盖 | 选择期组合 / 基线净收益 | 留出净收益 | 留出最大回撤 |
 |---|---|---|---:|---:|
@@ -122,5 +124,5 @@ npm.cmd --prefix frontend run test:e2e
 python -m scripts.freeze_us_benchmark --root data/us_public_benchmark --start 2023-01-03 --end 2025-12-31 --fetch
 python -m scripts.freeze_us_public_sample --root data/us_public_eodhd_2025 --end 2025-12-31 --benchmark NASDAQXNDX --benchmark-source-root data/us_public_benchmark --fetch
 python -m scripts.freeze_kibot_us_sample --root data/us_public_kibot_2025 --action-root data/us_public_eodhd_2025 --benchmark NASDAQXNDX --benchmark-source-root data/us_public_benchmark --fetch
-python -m scripts.verify_multisecurity_round --manifest-id ds_98ac585dc7b96ef10e971080870da4a1 --import-root data/us_public_kibot_2025/imports --evidence-root data/us_public_kibot_2025/evidence --universe kibot_guest_us_equities --universe-version kibot-guest-fixed/v1 --calendar-version exchange-calendars/4.13.2:XNYS --benchmark NASDAQXNDX --work-dir data/us_public_kibot_2025/round-replay
+python -m scripts.verify_multisecurity_round --manifest-id ds_98ac585dc7b96ef10e971080870da4a1 --import-root data/us_public_kibot_2025/imports --evidence-root data/us_public_kibot_2025/evidence --universe kibot_guest_us_equities --universe-version kibot-guest-fixed/v1 --calendar-version exchange-calendars/4.13.2:XNYS --benchmark NASDAQXNDX --selection-sessions 75 --holdout-sessions 65 --work-dir data/us_public_kibot_2025/round-replay
 ```

@@ -35,7 +35,7 @@ MCP 新工具：`list_research_projects`、`evaluate_factors`、`run_research_st
 
 网页、HTTP 和 MCP `validate_research_evaluation` 共用持久任务服务。输入只引用已有成功本地 evaluation，可选引用在 final 之前完成的同一冻结候选 selection。服务端核验当前权限、真实引擎身份、数据快照、收益 artifact 哈希、final 预留记录后，用冻结方向、费用、窗口和实际回测入口重放。部署代码变化必须先重算评价。
 
-结果独立保存为 `offline_validation` artifact。当前报告策略为 `offline_validation/v3`，报告身份包含来源哈希、selection 引用、验证政策和试验清单。已冻结轮次始终使用其封存清单。普通项目增加已观察试验后，旧报告可能返回 `OFFLINE_VALIDATION_STALE_TRIAL_COUNT`。旧版本报告保留原始内容及哈希，读取时附带历史状态。GET validation 返回当前适用的检查、阻断及报告引用。
+结果独立保存为 `offline_validation` artifact。当前报告策略为 `offline_validation/v4`，报告身份包含来源哈希、selection 引用、验证政策和试验清单。已冻结轮次始终使用其封存清单。普通项目增加已观察试验后，旧报告可能返回 `OFFLINE_VALIDATION_STALE_TRIAL_COUNT`。旧版本报告保留原始内容及哈希，读取时附带历史状态。GET validation 返回当前适用的检查、阻断及报告引用。
 
 检查包括收益重放、OHLCV、标签边界、成本配置、策略目标权重约束与组件血缘。至少60会话的已预留 final、fresh_cash 情形会分三段重新运行固定候选，报告明确不是滚动重新训练。净收益块符号随机化只作零假设诊断，Bonferroni 使用服务端完整观察试验数；它不代替截面因子 placebo 或基准超额收益验证。没有预登记比较库的 similarity、短样本 walk-forward 等保留 `insufficient_data`，不补造 passed。
 
@@ -63,6 +63,7 @@ MCP 新工具：`list_research_projects`、`evaluate_factors`、`run_research_st
 | `list_research_snapshot_imports` | GET `/projects/{id}/snapshot-imports` | 分页发现管理员共享的面板清单与字段，`next_cursor` 作为下一页的 `after` |
 | `register_research_snapshot` | POST `/projects/{id}/snapshots/{manifest_id}` | 导入服务器共享目录内的冻结面板，返回可用于 evaluation 配置的 `data_input` |
 | `prepare_research_demo` | POST `/projects/{id}/offline-demo` | 生成合成面板与示例配置以验证工程流程 |
+| `plan_research_windows` | POST `/projects/{id}/window-plan` | 读取已授权冻结快照的交易日历，预览选择期和最终留出期 |
 | `register_research_holdout` | POST `/projects/{id}/holdout` | 在项目第一次评价前登记终验区间 |
 | `register_research_hypothesis` | POST `/projects/{id}/hypotheses` | 在该因子第一次评价前冻结经济假设 |
 | `compare_research_strategies_to_baseline` | POST `/projects/{id}/rounds/{round_id}/comparisons/{augmented_run_id}` | 比较已保存的增强策略和该轮预登记基线，返回证据与 artifact 引用 |
@@ -70,6 +71,14 @@ MCP 新工具：`list_research_projects`、`evaluate_factors`、`run_research_st
 管理员用 `QUANTGPT_RESEARCH_IMPORT_ROOT` 指定可向项目公开的冻结面板目录。该目录与 `QUANTGPT_RESEARCH_SNAPSHOT_ROOT` 各自独立。共享目录包含 `freeze_market_frame` 生成的 `ds_…/manifest.json` 与 `market.parquet`。项目写成员可以按清单 ID 导入，共用目录的内容应已获准向所有项目研究成员共享。服务端校验文件字节和逻辑内容哈希后，保存一份可重放的私有副本。已有授权可随时重新核验。返回的 `asof_basis=server_snapshot_registration` 指服务器登记版本的时刻。价格基准、历史股票池、公司行动和总回报基准的外部证据仍需单独验收。
 
 准备基线时，先登记项目最终窗口，在 selection 窗口运行基线策略，然后在创建研究轮次时绑定该 `baseline_run_id`。由研究方向提出新增组件，在相同冻结快照、selection 窗口、费用和调仓规则上运行增强组合。比较要求保留基线全部组件及它们之间的相对权重。结果包含两组复合净收益、配对日收益差、移动块重抽样区间、按证券交集计算的日截面秩相关及覆盖量。区间需要足够的交易日。每日换手取买卖成交额之和的一半，再除以该日的期初净值，最后按交易日取平均。这些度量描述选择期的增量表现，独立终验在轮次冻结后单独运行。
+
+### 日频研究窗口规划
+
+`plan_research_windows(project_id, config, as_of?)` 按已登记快照的交易日历规划普通本地日频研究。`config.window` 模板省略 `start_session` 和 `end_session`。HTTP 请求体传同一 `config` 和可选的 `as_of`。`as_of` 是可用日历的截止日期，包含该日。默认使用 756 个交易日进行选择，随后保留 `max(5, label_horizon_sessions, purge_sessions)` 个完整隔离交易日，再用 252 个交易日进行最终验证。选择期前的预热长度为 30 个交易日与声明预热长度中的较大值。四段分别计数，周末和交易所休市日不占用窗口。
+
+服务先验证冻结快照的完整性，再核对交易日期。若快照记录了查询起止日，以该范围裁剪交易日历。省略的边界取已发布日历的首日或末日。四段中任何一个预期交易日整日缺行情，都会返回 `reason=SNAPSHOT_SESSION_GAP` 和具体缺失日期，包括最后一个交易日。
+
+查看响应的 `required_sessions` 与 `available_sessions`。覆盖充分时，`status=ready`，`round_setup` 给出可直接用于建轮次的 `config`、`holdout_start` 和 `holdout_end`。覆盖不足时，`status=insufficient_data`，`round_setup` 为 `null`，保留原请求的窗口长度。调用 `create_research_round` 时也可传上述无日期模板，并省略两个留出日期，服务端按同一规则规划。自定义日期要完整提供选择期和留出期的起止日。窗口规划只读取日期。正式放行还需核验验证 profile、外部证据和引擎一致性。
 
 ## 冻结行情、信号时点与成交口径
 
@@ -87,7 +96,7 @@ MCP 新工具：`list_research_projects`、`evaluate_factors`、`run_research_st
 
 | MCP 工具 | 调用者与输入 | 结果 |
 |---|---|---|
-| `create_research_round` | 协调者传入项目、`config`、`holdout_start`、`holdout_end`、各方向的 `name` 和 `hypothesis`，可指定已回测的 `baseline_run_id` | `round_id`、协调者凭据和各方向凭据 |
+| `create_research_round` | 协调者传入项目、`config` 和各方向的 `name`、`hypothesis`。默认规划时使用无日期模板并省略 `holdout_start`、`holdout_end`，显式设计时传两个完整窗口，可指定已回测的 `baseline_run_id` | 创建成功返回 `round_id`、协调者凭据和各方向凭据 |
 | `check_research_factor_novelty` | 传入 `project_id` 和 1–100 个候选 `expressions` | 每项返回完全匹配及同族参数变体的数量、来源示例和 ID，以及可开发的 `new_indices` |
 | `submit_research_direction` | 各子代理传入轮次、方向凭据和 `definitions`，可指定 `idempotency_key`、`direction`、上游 `parent_evaluation_id` 和 `only_new` | 新意筛选模式 `only_new=true` 在同项目的提交事务内查重；默认模式对相同定义及配置复用计算、各方向分别署名 |
 | `import_research_iteration` | 子代理传入方向凭据和已有迭代任务的 `task_id` | 将整批已观察候选登记为该方向的研究历史 |

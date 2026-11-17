@@ -23,20 +23,31 @@ async def _run(operation, project_id: uuid.UUID, *, dispatch: bool = False, **pa
         return json.dumps(result, ensure_ascii=False, allow_nan=False)
     except ProjectAccessError:
         return json.dumps({"error_code": "ROUND_OR_CREDENTIAL_UNAVAILABLE"})
+    except FileNotFoundError:
+        return json.dumps({"error_code": "RESEARCH_ROUND_BLOCKED", "message": "RESEARCH_INPUT_FILE_UNAVAILABLE"})
     except ValueError as exc:
         return json.dumps({"error_code": "RESEARCH_ROUND_BLOCKED", "message": str(exc)}, ensure_ascii=False)
 
 
 def register_round_tools(mcp: FastMCP) -> None:
     @mcp.tool()
-    async def create_research_round(project_id: uuid.UUID, config: dict, holdout_start: str, holdout_end: str,
-                                    directions: list[dict], baseline_run_id: uuid.UUID | None = None,
-                                    coordinator_key: str | None = None) -> str:
-        """Freeze selection inputs, final dates and research directions. Returns one credential per direction and a coordinator key."""
+    async def plan_research_windows(project_id: uuid.UUID, config: dict, as_of: str | None = None) -> str:
+        """Preview 756 selection and 252 holdout sessions on the registered snapshot. Omit dates from the config template. as_of caps the last eligible session. Returns coverage shortfalls when history is insufficient."""
+        from quantgpt.research.window_policy import plan_project_windows
+
+        return await _run(plan_project_windows, project_id, config=config, as_of=as_of)
+
+    @mcp.tool()
+    async def create_research_round(project_id: uuid.UUID, config: dict, directions: list[dict],
+                                    holdout_start: str | None = None, holdout_end: str | None = None,
+                                    baseline_run_id: uuid.UUID | None = None, coordinator_key: str | None = None,
+                                    as_of: str | None = None) -> str:
+        """Freeze inputs, windows and directions. Supply both selection and holdout dates, or omit all four to use the default window plan. as_of limits automatic planning."""
         from quantgpt.research.rounds import create_round
 
         return await _run(create_round, project_id, config=config, holdout_start=holdout_start, holdout_end=holdout_end,
-                          directions=directions, baseline_run_id=baseline_run_id, coordinator_key=coordinator_key)
+                          directions=directions, baseline_run_id=baseline_run_id, coordinator_key=coordinator_key,
+                          as_of=as_of)
 
     @mcp.tool()
     async def get_research_round(project_id: uuid.UUID, round_id: uuid.UUID) -> str:

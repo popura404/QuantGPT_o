@@ -17,6 +17,19 @@ VINTAGE_FIELDS = {f.name for f in US_RESEARCH_FIELDS if f.requires_vintage} | AL
 RAW_PRICE_BASES = {"raw", "none", "unadjusted"}
 
 
+def expected_sessions(calendar_id: str, start: date, end: date, declared: set[date], *, phase: str) -> list[date]:
+    """Resolve scoring sessions with the same calendar for planning and preflight."""
+    if calendar_id == "synthetic_weekdays":
+        return [day.date() for day in pd.bdate_range(start, end).tolist()]
+    if calendar_id in exchange_calendars.get_calendar_names():
+        calendar = exchange_calendars.get_calendar(calendar_id, start=start - timedelta(days=14),
+                                                   end=end + timedelta(days=14))
+        return [day.date() for day in calendar.sessions_in_range(start, end).tolist()]
+    if not declared or start < min(declared) or end > max(declared):
+        raise ValueError(f"{phase}_WINDOW_OUTSIDE_PUBLISHED_CALENDAR")
+    return sorted(day for day in declared if start <= day <= end)
+
+
 def price_basis(frame: pd.DataFrame) -> str:
     """Reconcile vendor, manifest and row-level price declarations."""
     snapshot = frame.attrs.get("data_snapshot") or {}

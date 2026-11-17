@@ -20,6 +20,9 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 ROOT = Path(__file__).resolve().parents[1]
+SHORT_SELECTION_SESSIONS = 75
+SHORT_HOLDOUT_SESSIONS = 65
+SHORT_WARMUP_SESSIONS = 25
 
 
 @dataclass(frozen=True)
@@ -103,28 +106,49 @@ def factor(proposal: Proposal, currency: str) -> dict:
     return {"expression": proposal.expression, "fields": fields}
 
 
-def study_config(args, snapshot, calendar):
-    from quantgpt.research.contracts import EvaluationConfigV1, SimulationConfigV1, content_hash
+def study_config(args, snapshot, calendar, *, snapshot_root: Path | None = None):
+    from quantgpt.research.contracts import (
+        DataInputRef,
+        EvaluationConfigV1,
+        ResearchScope,
+        SimulationConfigV1,
+        content_hash,
+    )
     from quantgpt.research.runtime import local_engine_identity
+    from quantgpt.research.window_policy import DEFAULT_WARMUP_SESSIONS, plan_session_windows, plan_snapshot_windows
 
-    days = sorted({str(day)[:10] for day in calendar if snapshot["start_session"] <= str(day)[:10] <= snapshot["end_session"]})
-    selection = args.selection_sessions
-    holdout = args.holdout_sessions
-    need = 25 + selection + 5 + holdout
-    require(len(days) >= need, f"Need {need} declared sessions, found {len(days)}")
-    start, end = days[-(holdout + 5 + selection)], days[-(holdout + 6)]
-    dates = [start, end, days[-holdout], days[-1]]
-    simulation = SimulationConfigV1(rebalance_anchor_session=days[-need], rebalance_every_sessions=5,
-                                    currency=args.currency, fees_bps=10)
+    days = [str(day)[:10] for day in calendar]
+    days = [day for day in days if snapshot["start_session"] <= day <= snapshot["end_session"]]
+    warmup = (SHORT_WARMUP_SESSIONS if args.window_profile in {"synthetic_demo", "legacy_short"}
+              else DEFAULT_WARMUP_SESSIONS)
+    counts = {"selection_sessions": args.selection_sessions, "holdout_sessions": args.holdout_sessions, "warmup_sessions": warmup}
     scope = {"market": args.market, "currency": args.currency, "timezone": args.timezone, "universe_id": args.universe,
-             "universe_mode": "fixed_cohort", "universe_version": args.universe_version or snapshot["manifest_id"], "benchmark": args.benchmark,
-             "calendar_id": args.calendar, "calendar_version": args.calendar_version}
+             "universe_mode": "fixed_cohort", "universe_version": args.universe_version or snapshot["manifest_id"],
+             "benchmark": args.benchmark, "calendar_id": args.calendar, "calendar_version": args.calendar_version}
+    if snapshot_root is None:
+        plan = plan_session_windows(days, **counts)
+    else:
+        plan = plan_snapshot_windows(DataInputRef.model_validate(snapshot["data_input"]), ResearchScope.model_validate(scope),
+                                     snapshot_root, **counts)
+    if plan["status"] != "ready":
+        message = (f"{plan['status']}: {args.window_profile} needs {plan['required_sessions']} declared sessions, "
+                   f"found {plan['available_sessions']}")
+        if gaps := plan.get("missing_calendar_sessions"):
+            message += f" ({plan['reason']}: {', '.join(gaps[:5])})"
+        raise ValueError(message)
+    start, end = plan["selection_start"], plan["selection_end"]
+    dates = [start, end, plan["holdout_start"], plan["holdout_end"]]
+    simulation = SimulationConfigV1(rebalance_anchor_session=plan["warmup_start"], rebalance_every_sessions=5,
+                                    currency=args.currency, fees_bps=10)
     config = EvaluationConfigV1.model_validate({"backend": "local", "scope": scope, "direction": "higher_is_better",
-        "window": {"start_session": start, "end_session": end, "warmup_observations": 25, "split_id": "four-direction-study",
+        "window": {"start_session": start, "end_session": end, "warmup_observations": plan["warmup_sessions"],
+                   "split_id": "four-direction-study",
                    "split_hash": content_hash("quantgpt.multisecurity_study/v2", [snapshot["manifest_id"], dates, SELECTION_RULE]),
-                   "label_horizon_sessions": 5, "purge_sessions": 5}, "simulation_config": simulation.model_dump(mode="json"),
+                   "label_horizon_sessions": plan["label_horizon_sessions"], "purge_sessions": plan["purge_sessions"]},
+        "simulation_config": simulation.model_dump(mode="json"),
         "data_inputs": [snapshot["data_input"]], "engine": local_engine_identity()})
-    return config.model_dump(mode="json"), dates, [day for day in days if start <= day <= end]
+    return config.model_dump(mode="json"), dates, sorted(day for day in days if start <= day <= end), {
+        **plan, "profile": args.window_profile}
 
 
 def specification(config, components, top_n):
@@ -204,8 +228,11 @@ async def verify(args):
         snapshot = await call(client, "register_research_snapshot", project_id=project_id, manifest_id=manifest_id)
         require(snapshot["declared_synthetic"] == args.demo, "Snapshot classification disagrees with requested input mode")
         require(snapshot["securities"] >= 5, "Five distinct securities are required by the factor quantile evaluator")
-        manifest = json.loads((run_dir / "snapshots" / manifest_id / "manifest.json").read_text(encoding="utf-8"))
-        config, dates, scored_days = study_config(args, snapshot, manifest["source_metadata"]["input_attributes"]["calendar_sessions"])
+        snapshot_root = run_dir / "snapshots"
+        manifest = json.loads((snapshot_root / manifest_id / "manifest.json").read_text(encoding="utf-8"))
+        config, dates, scored_days, window_plan = await asyncio.to_thread(
+            study_config, args, snapshot, manifest["source_metadata"]["input_attributes"]["calendar_sessions"],
+            snapshot_root=snapshot_root)
         top_n = min(5, max(2, snapshot["securities"] // 3))
         await call(client, "register_research_holdout", project_id=project_id, start=dates[2], end=dates[3])
         await call(client, "register_research_hypothesis", project_id=project_id, definition=factor(BASELINE, args.currency),
@@ -265,7 +292,7 @@ async def verify(args):
         return {"technical_acceptance": "completed", "project_id": project_id, "round_id": created["round_id"],
             "data": {key: snapshot[key] for key in ("manifest_id", "content_sha256", "source", "feed", "rows", "sessions",
                 "securities", "start_session", "end_session", "adjustment", "declared_synthetic")}, "scope": config["scope"],
-            "selection": dates[:2], "holdout": dates[2:], "baseline_run_id": baseline["strategy_run_id"],
+            "selection": dates[:2], "holdout": dates[2:], "window_plan": window_plan, "baseline_run_id": baseline["strategy_run_id"],
             "baseline_identified_as_known": True, "independent_direction_connections": len(jobs),
             "peak_concurrently_running_direction_tasks": peak,
             "engine": config["engine"], "selection_rule": SELECTION_RULE, "split_hash": config["window"]["split_hash"],
@@ -285,10 +312,12 @@ async def verify(args):
             "export_blockers": decision["validation"].get("blockers", [])}
 
 
-def main():
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    from quantgpt.research.window_policy import DEFAULT_HOLDOUT_SESSIONS, DEFAULT_SELECTION_SESSIONS
+
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--demo", action="store_true", help="Use the explicitly synthetic 20-security fixture")
+    mode.add_argument("--demo", action="store_true", help="Run the short synthetic 20-security exercise")
     mode.add_argument("--manifest-id", help="Frozen real-equity snapshot in --import-root")
     parser.add_argument("--import-root", type=Path)
     parser.add_argument("--evidence-root", type=Path)
@@ -301,18 +330,37 @@ def main():
     parser.add_argument("--timezone", default="America/New_York")
     parser.add_argument("--currency", default="USD")
     parser.add_argument("--benchmark", default="unprovided_total_return_benchmark")
-    parser.add_argument("--selection-sessions", type=int, default=75)
-    parser.add_argument("--holdout-sessions", type=int, default=65)
+    parser.add_argument("--selection-sessions", type=int,
+                        help=f"Selection sessions (default {DEFAULT_SELECTION_SESSIONS}, demo {SHORT_SELECTION_SESSIONS})")
+    parser.add_argument("--holdout-sessions", type=int,
+                        help=f"Final holdout sessions (default {DEFAULT_HOLDOUT_SESSIONS}, demo {SHORT_HOLDOUT_SESSIONS}). "
+                             f"Explicit {SHORT_SELECTION_SESSIONS}/{SHORT_HOLDOUT_SESSIONS} also restores the "
+                             f"{SHORT_WARMUP_SESSIONS}-session warmup and historical rebalance anchor.")
     parser.add_argument("--timeout-seconds", type=int, default=900)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.manifest_id and not args.import_root:
         parser.error("--manifest-id requires --import-root")
+    explicit = args.selection_sessions is not None or args.holdout_sessions is not None
+    if args.demo:
+        args.window_profile = "synthetic_demo"
+        args.market, args.calendar, args.universe = "demo_global_equity", "synthetic_weekdays", "demo_large"
+    elif (args.selection_sessions, args.holdout_sessions) == (SHORT_SELECTION_SESSIONS, SHORT_HOLDOUT_SESSIONS):
+        args.window_profile = "legacy_short"
+    else:
+        args.window_profile = "explicit_sessions" if explicit else "daily_default"
+    if args.selection_sessions is None:
+        args.selection_sessions = SHORT_SELECTION_SESSIONS if args.demo else DEFAULT_SELECTION_SESSIONS
+    if args.holdout_sessions is None:
+        args.holdout_sessions = SHORT_HOLDOUT_SESSIONS if args.demo else DEFAULT_HOLDOUT_SESSIONS
     if args.selection_sessions < 30 or args.holdout_sessions < 60 or args.timeout_seconds < 1:
         parser.error("Specify at least 30 selection sessions, 60 final sessions and a positive timeout")
-    if args.demo:
-        args.market, args.calendar, args.universe = "demo_global_equity", "synthetic_weekdays", "demo_large"
+    return args
+
+
+def main():
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
+    args = parse_args()
     started = time.monotonic()
     result = asyncio.run(asyncio.wait_for(verify(args), timeout=args.timeout_seconds))
     result["elapsed_seconds"] = round(time.monotonic() - started, 2)

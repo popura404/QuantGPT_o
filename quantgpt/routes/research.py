@@ -36,6 +36,7 @@ from quantgpt.research.projects import (
 from quantgpt.research.runtime import snapshot_root
 from quantgpt.research.strategies import export_strategy_run, get_strategy_run
 from quantgpt.research.validation import evaluate_profile
+from quantgpt.research.window_policy import plan_project_windows
 from quantgpt.strategy.spec import StrategySpecV2
 
 router = APIRouter(prefix="/api/v1/research", tags=["research"])
@@ -72,6 +73,23 @@ class HoldoutRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     start: str
     end: str
+
+
+class WindowPlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    config: dict
+    as_of: str | None = None
+
+
+@router.post("/projects/{project_id}/window-plan")
+async def post_window_plan(project_id: uuid.UUID, req: WindowPlanRequest,
+                           user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    try:
+        return await plan_project_windows(db, uuid.UUID(str(user.id)), project_id, config=req.config, as_of=req.as_of)
+    except ProjectAccessError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 class HypothesisRequest(BaseModel):

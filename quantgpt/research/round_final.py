@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import cast
 
-import pandas as pd
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +22,7 @@ from quantgpt.models import (
 from quantgpt.research.contracts import EvaluationConfigV1, content_hash, strategy_hash
 from quantgpt.research.evaluations import assert_publication_attempt, authorize_data_inputs, load_evaluation_panel
 from quantgpt.research.legacy_history import legacy_window_blocker, review_legacy_windows, round_legacy_trials
+from quantgpt.research.market_inputs import expected_sessions
 from quantgpt.research.runtime import local_engine_identity
 from quantgpt.research.runtime import snapshot_root as default_snapshot_root
 from quantgpt.research.strategies import get_strategy_run, run_strategy_evaluation
@@ -69,20 +69,7 @@ def _window_coverage(config: EvaluationConfigV1, observed: set[date], declared: 
     window = config.window
     phase = window.phase.upper()
     start, end = window.start_session, window.end_session
-    if config.scope.calendar_id == "synthetic_weekdays":
-        expected = [value.date() for value in pd.bdate_range(start, end).tolist()]
-    else:
-        import exchange_calendars
-
-        name = config.scope.calendar_id
-        if name in exchange_calendars.get_calendar_names():
-            calendar = exchange_calendars.get_calendar(name, start=start - timedelta(days=14),
-                                                       end=end + timedelta(days=14))
-            expected = [value.date() for value in calendar.sessions_in_range(start, end).tolist()]
-        else:
-            if start < min(declared) or end > max(declared):
-                raise ValueError(f"{phase}_WINDOW_OUTSIDE_PUBLISHED_CALENDAR")
-            expected = sorted(day for day in declared if start <= day <= end)
+    expected = expected_sessions(config.scope.calendar_id, start, end, declared, phase=phase)
     if not declared.issuperset(expected) or not observed.issuperset(expected):
         raise ValueError(f"{phase}_SNAPSHOT_SESSION_GAP")
     required = window.label_horizon_sessions + 1

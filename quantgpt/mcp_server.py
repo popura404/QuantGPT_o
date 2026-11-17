@@ -212,6 +212,7 @@ mcp = FastMCP(
         "不要直接把单股问题升级为全 CSI500 因子回测。"
         "用于研究结论或候选选择时，score_factor/run_backtest 默认走 OOS selection："
         "train 定方向，valid 选候选。新的共享研究使用 list_research_projects/evaluate_factors，"
+        "日频研究先用 plan_research_windows 检查选择期和最终留出期的历史覆盖。"
         "多代理使用 create_research_round 冻结研究口径。挖新因子时先用 check_research_factor_novelty 查询已有公式，"
         "向 submit_research_direction 传 only_new=true；若返回 known_candidates，改用 new_indices 中的新候选。"
         "有意复验已知公式时可用默认提交模式复用计算。协调者汇总选择后冻结组合并运行最终窗口。"
