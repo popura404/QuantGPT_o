@@ -51,41 +51,20 @@ function CopyButton({ text }: { text: string }) {
 }
 
 function McpGuideModal({ onClose }: { onClose: () => void }) {
-  const [tab, setTab] = useState<"claude" | "openclaw">("claude");
+  const [tab, setTab] = useState<"claude" | "http">("http");
   const { isDark } = useColorMode();
 
+  const endpoint = new URL("/mcp/", import.meta.env.DEV ? "http://localhost:8003" : window.location.origin).href;
+  const listCommand = `python scripts/mcp_bridge.py --url "${endpoint}" --bearer-token-env RESEARCH_TOKEN --timeout-seconds 30 list`;
   const mcpConfig = `{
   "mcpServers": {
     "quantgpt": {
       "type": "stdio",
-      "command": "python3",
-      "args": ["-m", "quantgpt"],
-      "env": {
-        "PYTHONPATH": "/path/to/QuantGPT"
-      }
+      "command": "/absolute/path/to/QuantGPT_o/.venv312/bin/python",
+      "args": ["-m", "quantgpt", "--transport", "stdio"]
     }
   }
 }`;
-
-  const openclawNativeCode = `from openclaw.tools.mcp import MCPClient
-
-client = MCPClient(
-    server_url="http://localhost:8002/mcp"
-)
-
-agent = Agent(
-    tools=client.get_tools()
-)`;
-
-  const openclawManualCode = `import requests
-
-def backtest_tool(expression: str, **kwargs):
-    return requests.post(
-        "http://localhost:8002/mcp",
-        json={"expression": expression, **kwargs}
-    ).json()
-
-agent.register_tool(backtest_tool)`;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
@@ -124,12 +103,12 @@ agent.register_tool(backtest_tool)`;
                   : "text-gray-500 hover:text-gray-700 hover:bg-gray-50"
             }`}
           >
-            Claude Code
+            本机 stdio
           </button>
           <button
-            onClick={() => setTab("openclaw")}
+            onClick={() => setTab("http")}
             className={`px-3 py-2 text-sm font-medium rounded-t-lg transition-colors ${
-              tab === "openclaw"
+              tab === "http"
                 ? isDark
                   ? "text-amber-400 border-b-2 border-amber-500 bg-amber-500/10"
                   : "text-blue-600 border-b-2 border-blue-500 bg-blue-50/50"
@@ -138,19 +117,17 @@ agent.register_tool(backtest_tool)`;
                   : "text-gray-500 hover:text-gray-700 hover:bg-gray-50"
             }`}
           >
-            OpenClaw / Agent
+            Streamable HTTP
           </button>
         </div>
 
         <div className="overflow-y-auto px-5 py-4 space-y-5">
           {tab === "claude" ? (
             <>
-              {/* What is MCP */}
+              {/* Local stdio */}
               <div className={`${isDark ? "bg-amber-500/10" : "bg-blue-50"} rounded-lg p-3.5`}>
                 <p className={`text-sm ${isDark ? "text-amber-300" : "text-blue-800"}`}>
-                  <span className="font-medium">什么是 MCP？</span>{" "}
-                  MCP (Model Context Protocol) 让 Claude 直接调用 QuantGPT 的回测工具。
-                  配置后，Claude 可以直接调用回测、评分、诊断等研究工具。
+                  本机客户端可启动项目虚拟环境中的 Python，通过标准输入输出连接 QuantGPT。以下为 Claude Code 的项目配置示例。
                 </p>
               </div>
 
@@ -161,8 +138,8 @@ agent.register_tool(backtest_tool)`;
                   <h3 className={`text-sm font-medium ${isDark ? "text-gray-100" : "text-gray-900"}`}>克隆项目并安装</h3>
                 </div>
                 <div className="relative bg-gray-900 rounded-lg p-3 font-mono text-xs text-gray-100 leading-relaxed">
-                  <CopyButton text={"git clone https://github.com/popura404/QuantGPT_o.git\ncd QuantGPT_o\npip install -e ."} />
-                  <pre className="whitespace-pre-wrap"><span className="text-green-400">$</span> git clone https://github.com/popura404/QuantGPT_o.git{"\n"}<span className="text-green-400">$</span> cd QuantGPT_o{"\n"}<span className="text-green-400">$</span> pip install -e .</pre>
+                  <CopyButton text={"git clone https://github.com/popura404/QuantGPT_o.git\ncd QuantGPT_o\nmake setup"} />
+                  <pre className="whitespace-pre-wrap"><span className="text-green-400">$</span> git clone https://github.com/popura404/QuantGPT_o.git{"\n"}<span className="text-green-400">$</span> cd QuantGPT_o{"\n"}<span className="text-green-400">$</span> make setup</pre>
                 </div>
               </div>
 
@@ -178,7 +155,7 @@ agent.register_tool(backtest_tool)`;
                   <pre className="whitespace-pre-wrap">{mcpConfig}</pre>
                 </div>
                 <p className="text-xs text-gray-400 mt-1.5">
-                  将 <code className={`${isDark ? "bg-gray-800 text-gray-300" : "bg-gray-100 text-gray-600"} px-1 rounded`}>PYTHONPATH</code> 替换为实际项目路径。需配置米筐数据源，详见项目 README。
+                  将 command 替换为项目虚拟环境中 Python 的绝对路径，从仓库根目录启动客户端。Windows 请使用 scripts/setup.ps1 安装，并选择 .venv312/Scripts/python.exe。
                 </p>
               </div>
 
@@ -202,69 +179,32 @@ agent.register_tool(backtest_tool)`;
             </>
           ) : (
             <>
-              {/* OpenClaw intro */}
-              <div className={`${isDark ? "bg-amber-500/10" : "bg-blue-50"} rounded-lg p-3.5`}>
-                <p className={`text-sm ${isDark ? "text-amber-300" : "text-blue-800"}`}>
-                  <span className="font-medium">架构说明</span>{" "}
-                  OpenClaw 是 Agent 调度框架，通过 MCP 协议动态调用 QuantGPT 的回测能力。
-                  QuantGPT 作为 MCP Server 暴露标准化工具接口。
+              <div>
+                <h3 className="text-sm font-medium mb-2">服务地址</h3>
+                <p className={`text-xs ${isDark ? "text-gray-400" : "text-gray-600"} mb-2`}>
+                  在 MCP 客户端选择 Streamable HTTP 并填写以下地址。
+                </p>
+                <div className="relative bg-gray-900 rounded-lg p-3 pr-9 font-mono text-xs text-gray-100">
+                  <CopyButton text={endpoint} />
+                  <code className="break-all">{endpoint}</code>
+                </div>
+              </div>
+              <div>
+                <h3 className="text-sm font-medium mb-2">请求认证</h3>
+                <p className={`text-xs ${isDark ? "text-gray-400" : "text-gray-600"}`}>
+                  启用认证时，在客户端添加 <code>Authorization: Bearer &lt;token&gt;</code> 请求头。
+                  使用自己的 QuantGPT API key 或登录 JWT。管理员也可以提供与运行中服务的 <code>QUANTGPT_MCP_HTTP_TOKEN</code> 一致的部署令牌。
                 </p>
               </div>
-
-              {/* Architecture diagram */}
-              <div className={`${isDark ? "bg-gray-800" : "bg-gray-50"} rounded-lg p-3`}>
-                <pre className={`text-xs ${isDark ? "text-gray-400" : "text-gray-600"} leading-relaxed font-mono`}>{`[OpenClaw Agent]
-      ↓
-[MCP Client]
-      ↓  Streamable HTTP
-[QuantGPT MCP Server (localhost:8002)]
-      ↓
-[回测 / 评分 / 诊断 / 验证]`}</pre>
-              </div>
-
-              {/* Step 1: Connect */}
               <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className={`h-5 w-5 rounded-full ${isDark ? "bg-gray-100" : "bg-gray-900"} ${isDark ? "text-gray-900" : "text-white"} text-xs flex items-center justify-center font-medium`}>1</span>
-                  <h3 className={`text-sm font-medium ${isDark ? "text-gray-100" : "text-gray-900"}`}>在 Agent 中接入</h3>
-                </div>
-                <p className={`text-xs ${isDark ? "text-gray-400" : "text-gray-500"} mb-1.5`}>MCP 端点地址：<code className={`${isDark ? "bg-gray-800" : "bg-gray-100"} px-1 rounded`}>http://localhost:8002/mcp</code></p>
-                <div className="space-y-3">
-                  <div>
-                    <p className={`text-xs ${isDark ? "text-gray-400" : "text-gray-500"} mb-1.5 font-medium`}>方式 A：原生 MCP Client（推荐）</p>
-                    <div className="relative bg-gray-900 rounded-lg p-3 font-mono text-xs text-gray-100 leading-relaxed">
-                      <CopyButton text={openclawNativeCode} />
-                      <pre className="whitespace-pre-wrap">{openclawNativeCode}</pre>
-                    </div>
-                  </div>
-                  <div>
-                    <p className={`text-xs ${isDark ? "text-gray-400" : "text-gray-500"} mb-1.5 font-medium`}>方式 B：手动封装（兼容旧版本）</p>
-                    <div className="relative bg-gray-900 rounded-lg p-3 font-mono text-xs text-gray-100 leading-relaxed">
-                      <CopyButton text={openclawManualCode} />
-                      <pre className="whitespace-pre-wrap">{openclawManualCode}</pre>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Tips */}
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className={`h-5 w-5 rounded-full ${isDark ? "bg-gray-100" : "bg-gray-900"} ${isDark ? "text-gray-900" : "text-white"} text-xs flex items-center justify-center font-medium`}>2</span>
-                  <h3 className={`text-sm font-medium ${isDark ? "text-gray-100" : "text-gray-900"}`}>注意事项</h3>
-                </div>
-                <div className="space-y-1.5">
-                  {[
-                    "Tool 描述必须清晰，LLM 依赖描述决定是否调用",
-                    "输入参数要结构化（expression, start_date, end_date）",
-                    "返回值保持精简，避免大 JSON",
-                    "工具数量建议 ≤ 10 个，过多会导致调用混乱",
-                  ].map((tip, i) => (
-                    <div key={i} className={`flex items-start gap-2 text-xs ${isDark ? "text-gray-400" : "text-gray-600"}`}>
-                      <span className="mt-0.5 h-1.5 w-1.5 rounded-full bg-amber-400 shrink-0" />
-                      {tip}
-                    </div>
-                  ))}
+                <h3 className="text-sm font-medium mb-2">验证连接</h3>
+                <p className={`text-xs ${isDark ? "text-gray-400" : "text-gray-600"} mb-2`}>
+                  在本机环境变量 RESEARCH_TOKEN 中设置令牌，再从仓库根目录用项目虚拟环境运行以下命令。
+                  它会初始化 MCP 会话并列出工具。若服务已关闭认证，可省略 <code>--bearer-token-env RESEARCH_TOKEN</code>。
+                </p>
+                <div className="relative bg-gray-900 rounded-lg p-3 pr-9 font-mono text-xs text-gray-100">
+                  <CopyButton text={listCommand} />
+                  <pre className="whitespace-pre-wrap break-all">{listCommand}</pre>
                 </div>
               </div>
             </>
@@ -272,7 +212,7 @@ agent.register_tool(backtest_tool)`;
 
           {/* Available tools - shared */}
           <div>
-            <h3 className={`text-sm font-medium ${isDark ? "text-gray-100" : "text-gray-900"} mb-2`}>可用工具（8 个）</h3>
+            <h3 className={`text-sm font-medium ${isDark ? "text-gray-100" : "text-gray-900"} mb-2`}>工具示例</h3>
             <div className="grid grid-cols-2 gap-1.5">
               {[
                 { name: "list_operators", desc: "查看算子列表" },
@@ -296,13 +236,13 @@ agent.register_tool(backtest_tool)`;
         {/* Footer */}
         <div className={`px-5 py-3 border-t ${isDark ? "border-gray-700" : "border-gray-100"} flex items-center justify-between`}>
           <a
-            href="https://github.com/popura404/QuantGPT_o"
+            href="https://github.com/popura404/QuantGPT_o/blob/main/docs/agent_safe_workflow.md"
             target="_blank"
             rel="noopener noreferrer"
             className={`flex items-center gap-1.5 text-sm ${isDark ? "text-gray-400 hover:text-gray-300" : "text-gray-500 hover:text-gray-700"} transition-colors`}
           >
             <ExternalLink className="h-3.5 w-3.5" />
-            GitHub
+            多代理研究操作指南
           </a>
           <button
             onClick={onClose}
