@@ -2,7 +2,9 @@
 
 ## US research adapter
 
-`market=us` 提供使用固定股票池的 Alpha Vantage OHLCV 演示，许可供应商可接入 `USDataProvider`。XNYS 交易日历与 SEC companyfacts 的时点数据容器有离线契约测试。缺少证券主数据、完整公司行动和退市记录、历史成员或可验证基准时，适配器返回 `research_only` 和具体缺项。快照覆盖计算使用的列、公司行动和日历属性，并校验清单身份和文件内容。使用原始价格的现金账本拒绝显式前复权或后复权价格，避免重复计算公司行动。[数据接口与验证边界](US_FREE_DATA_DECISION.md)
+`market=us` / `us_equity` 默认使用 Alpaca 历史 SIP 原始日线，SEC Company Facts 提供按决策时刻对齐的发行人财务数据。证券身份、ticker 生效区间和发行人 CIK 来自显式清单。通过 `python -m scripts.freeze_us_research` 将行情及所选基本面冻结，再沿用共享研究的快照发现、登记和窗口规划入口。配置及操作统一见[多代理研究指南](agent_safe_workflow.md#美股行情与基本面准备)。Alpha Vantage compact 保留为显式选择的探索入口。
+
+XNYS 交易日历、Alpaca 和 SEC 数据契约使用模拟请求验收。缺少证券主数据、完整公司行动和退市记录、历史成员或可验证基准时，适配器返回 `research_only` 和具体缺项。快照覆盖计算使用的列、财务版本和日历属性，并校验清单身份和文件内容。使用原始价格的现金账本拒绝显式前复权或后复权价格，避免重复计算公司行动。[数据接口与验证边界](US_FREE_DATA_DECISION.md)
 
 Purpose: describe the source order and provenance fields used by market data.
 

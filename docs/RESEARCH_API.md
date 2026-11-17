@@ -79,6 +79,8 @@ MCP 新工具：`list_research_projects`、`evaluate_factors`、`run_research_st
 
 管理员用 `QUANTGPT_RESEARCH_IMPORT_ROOT` 指定可向项目公开的冻结面板目录。该目录与 `QUANTGPT_RESEARCH_SNAPSHOT_ROOT` 各自独立。共享目录包含 `freeze_market_frame` 生成的 `ds_…/manifest.json` 与 `market.parquet`。项目写成员可以按清单 ID 导入，共用目录的内容应已获准向所有项目研究成员共享。服务端校验文件字节和逻辑内容哈希后，保存一份可重放的私有副本。已有授权可随时重新核验。返回的 `asof_basis=server_snapshot_registration` 指服务器登记版本的时刻。价格基准、历史股票池、公司行动和总回报基准的外部证据仍需单独验收。
 
+美股默认使用 Alpaca 历史 SIP 原始日线和 SEC Company Facts。部署方运行 `scripts/freeze_us_research.py` 生成共享面板，随后使用上表中的快照发现和登记接口。SEC 字段按每个决策时刻可见的披露版本对齐，快照保存字段级可用时间、修订标识和财务期间，`source_metadata` 保留两类来源的采集信息。证券映射、CIK、命令及缓存恢复步骤见[多代理操作指南](agent_safe_workflow.md#美股行情与基本面准备)。
+
 `compare_research_strategies_to_baseline` 使用开轮时登记的 `baseline_run_id`。基线与增强策略共用冻结快照、选择窗口、费用和调仓规则。比较要求保留基线全部组件及它们之间的相对权重。结果包含两组复合净收益、配对日收益差、移动块重抽样区间、按证券交集计算的日截面秩相关及覆盖量。区间需要足够的交易日。每日换手取买卖成交额之和的一半，再除以该日的期初净值，最后按交易日取平均。
 
 ### 日频研究窗口规划
@@ -93,7 +95,7 @@ MCP 新工具：`list_research_projects`、`evaluate_factors`、`run_research_st
 
 本地因子、组合和验证重放使用项目登记的面板。固定池使用面板内的证券，支持自建 `universe_id`。美股市场支持 `us_equity` 和 `us`。动态池须提供稳定的 `security_id` 和冻结的 `universe_membership` 记录，每条包含 `security_id`、`valid_from`、`valid_to`、带时区的 `available_at`。成员区间左闭右开。本地执行器校验每个决策日面板内的证券与当时已知的成员集合完全一致。只有固定证券样本时，填写 `universe_mode=fixed_cohort`。
 
-日频信号默认在登记交易所当日实际收盘时刻计算，包括提前收盘日。自定义时点可在面板中提供带时区、同一会话收盘后或收盘时的 `decision_at`。面板的 `available_at` 和所用字段各自的 `<field>_available_at` 必须不晚于决策时刻。使用财报或其他声明 `requires_vintage` 的字段时，每个非空观测还需提供 `<field>_revision_id` 和字段级可用时点。明确迟发的输入会使该次计算失败。无法核验一般字段发布时间时，报告通过 `signal_availability.unverified_fields` 列出字段，发布证据中的可见时间和授权会在 `external_acceptance.checks.prices` 中独立报告。
+日频信号默认在登记交易所当日实际收盘时刻计算，包括提前收盘日。自定义时点可在面板中提供带时区、同一会话收盘后或收盘时的 `decision_at`。Alpaca 自然日日线包含盘后成交量，准备入口显式将 `available_at` 和 `decision_at` 设为次日纽约时间 00:15。面板的 `available_at` 和所用字段各自的 `<field>_available_at` 必须不晚于决策时刻。使用财报或其他声明 `requires_vintage` 的字段时，每个非空观测还需提供 `<field>_revision_id` 和字段级可用时点。明确迟发的输入会使该次计算失败。无法核验一般字段发布时间时，报告通过 `signal_availability.unverified_fields` 列出字段，发布证据中的可见时间和授权会在 `external_acceptance.checks.prices` 中独立报告。
 
 快照准备从供应商声明、冻结元数据及行内 `adjustment` 核对价格口径。确认未复权时，优化器可以用普通 `open`、`close` 读取原始价格，并结合 `volume` 估计流动性。分红在除息日进入应收及净值，在支付日进入可用现金；持仓按已结算资金和可售资产执行。
 

@@ -71,9 +71,11 @@ def _decision_times(frame: pd.DataFrame, calendar_id: str, timezone: str) -> pd.
     if dates.dt.tz is not None:
         dates = dates.dt.tz_localize(None)
     decisions = _utc(cast(pd.Series, frame["decision_at"]), "decision_at") if "decision_at" in frame else None
-    if decisions is not None and not decisions.dt.tz_convert(timezone).dt.tz_localize(None).dt.normalize().eq(dates).all():
-        raise ValueError("PIT_DECISION_SESSION_MISMATCH")
+    same_session = (decisions is None or
+                    decisions.dt.tz_convert(timezone).dt.tz_localize(None).dt.normalize().eq(dates).all())
     if calendar_id == "synthetic_weekdays":
+        if not same_session:
+            raise ValueError("PIT_DECISION_SESSION_MISMATCH")
         closes = (dates + pd.Timedelta(hours=16)).dt.tz_localize(timezone).dt.tz_convert("UTC")
     elif calendar_id in exchange_calendars.get_calendar_names():
         days = pd.DatetimeIndex(dates.unique())
@@ -83,7 +85,14 @@ def _decision_times(frame: pd.DataFrame, calendar_id: str, timezone: str) -> pd.
         if any(not calendar.is_session(day) for day in days):
             raise ValueError("PIT_SESSION_OUTSIDE_EXCHANGE_CALENDAR")
         closes = dates.map({day: calendar.session_close(day) for day in days})
+        # Full natural-day bars can arrive after midnight. They must still be
+        # known strictly before the next session's opening execution.
+        next_opens = dates.map({day: calendar.session_open(calendar.next_session(day)) for day in days})
+        if decisions is not None and (decisions >= next_opens).any():
+            raise ValueError("PIT_DECISION_AT_OR_AFTER_NEXT_OPEN")
     elif decisions is not None:
+        if not same_session:
+            raise ValueError("PIT_DECISION_SESSION_MISMATCH")
         return decisions
     else:
         raise ValueError("PIT_DECISION_TIME_REQUIRED: supply timezone-aware decision_at for this calendar")

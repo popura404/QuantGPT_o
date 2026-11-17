@@ -24,6 +24,8 @@ cd QuantGPT_o
 
 MCP 客户端可以直接启动 stdio 服务。工作目录设为仓库根目录，Windows 选择 `.venv312/Scripts/python.exe`，Linux 选择 `.venv312/bin/python`，参数为 `-m quantgpt --transport stdio`。连接后用 `tools/list` 查看当前工具。[MCP 配置指南](docs/MCP_GUIDE.md)
 
+美股主行情来源为 Alpaca 历史 SIP 日线，基本面来源为 SEC Company Facts。在本机 `.env` 配置 `APCA_API_KEY_ID`、`APCA_API_SECRET_KEY` 和含联系邮箱的 `SEC_USER_AGENT`，按操作指南准备证券身份清单并冻结数据，各研究方向共用登记后的快照。[美股数据准备](docs/agent_safe_workflow.md#美股行情与基本面准备)
+
 ## 默认日频窗口
 
 | 阶段 | 交易日数 |

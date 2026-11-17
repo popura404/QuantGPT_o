@@ -39,6 +39,8 @@ class AlphaVantageDailyProvider:
 
     def fetch_prices(self, request: PriceRequest) -> PriceBatch:
         request.validate()
+        if request.feed != "TIME_SERIES_DAILY:compact":
+            raise DataCapabilityError("FEED_UNSUPPORTED", "Alpha Vantage supports the raw daily compact feed.")
         ticker = request.security.ticker.upper()
         if not re.fullmatch(r"[A-Z0-9.-]{1,20}", ticker):
             raise ValueError("unsupported US ticker syntax")

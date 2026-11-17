@@ -445,10 +445,16 @@ rank(ts_delta(roe, 60))
 
 ## 数据源
 
-- **akshare / baostock**：免费数据源，回测流程默认使用，自动缓存到 `data/stocks/*.parquet`
+- **akshare / baostock**：A 股免费数据源，A 股回测流程默认使用，自动缓存到 `data/stocks/*.parquet`
 - **rqdatac（米筐）**：仅手动触发（admin 端点 / prewarm 脚本），需在 `.env` 中配置 `RQDATAC_USERNAME` 和 `RQDATAC_PASSWORD`
-- REST/Web 回测在非缓存模式下可自动下载并缓存数据，后续直接读取
-- MCP 重工具默认只读本地缓存；需要远程补数时显式传 `allow_remote_fetch=true`
+- **Alpaca 历史 SIP** 提供美股原始日线，`QUANTGPT_US_PRICE_PROVIDER=alpaca_sip` 为 `us` / `us_equity` 行情适配器的默认来源。设置 `APCA_API_KEY_ID`、`APCA_API_SECRET_KEY`，用 `QUANTGPT_US_SECURITIES_FILE` 指向显式证券清单。
+- **SEC Company Facts** 提供美股发行人财务数据，设置带应用标识和联系邮箱的 `SEC_USER_AGENT`，在证券清单中填写 `issuer_cik`。`QUANTGPT_US_FUNDAMENTAL_FIELDS` 默认为 `total_assets,total_liabilities`，可配置逗号分隔的字段列表；设为空值时，普通美股适配器读取价格。
+- **Alpha Vantage** 保留探索入口，显式设置 `QUANTGPT_US_PRICE_PROVIDER=alpha_vantage` 后使用 `ALPHAVANTAGE_API_KEY`，省略密钥时沿用 IBM demo。
+
+- A 股 REST/Web 回测在非缓存模式下可自动下载并缓存数据，后续直接读取
+- A 股 MCP 回测重工具默认只读本地缓存；需要远程补数时显式传 `allow_remote_fetch=true`
+
+共享研究使用 `scripts/freeze_us_research.py` 将 Alpaca 与 SEC 数据冻结并发布到导入目录，再通过现有 MCP 快照发现、登记和窗口规划工具进入轮次。配置示例、命令、财报时间口径及失败后的操作统一见[美股数据准备](agent_safe_workflow.md#美股行情与基本面准备)。
 
 ---
 

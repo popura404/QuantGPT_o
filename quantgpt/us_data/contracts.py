@@ -56,8 +56,8 @@ class PriceRequest:
         if self.asof.tzinfo is None:
             raise ValueError("asof must be timezone-aware")
         self.security.validate_range(self.start, self.end)
-        if self.adjustment != "raw" or self.feed != "TIME_SERIES_DAILY:compact":
-            raise DataCapabilityError("FEED_UNSUPPORTED", "The free adapter supports raw daily compact data only.")
+        if self.adjustment != "raw":
+            raise DataCapabilityError("FEED_UNSUPPORTED", "Research price requests require raw daily observations.")
 
 
 @dataclass(frozen=True)

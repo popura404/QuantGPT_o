@@ -20,6 +20,11 @@ FIELD_CONTRACTS = {
     "reported_common_shares": ("dei", "EntityCommonStockSharesOutstanding", "shares"),
     "diluted_eps_period": ("us-gaap", "EarningsPerShareDiluted", "USD/shares"),
 }
+LIMITATIONS = (
+    "custom_taxonomies_not_in_aggregate", "entity_level_not_security_level",
+    "date_only_publication_is_conservative", "historical_feed_vintage_unknown",
+    "discrete_quarter_coverage_not_guaranteed", "reported_share_class_and_split_adjustment_unavailable",
+)
 
 
 @dataclass(frozen=True)
@@ -56,7 +61,7 @@ class SECCompanyFactsProvider:
     @staticmethod
     def normalize_cik(cik: str | int) -> str:
         text = str(cik)
-        if not re.fullmatch(r"\d{1,10}", text) or int(text) <= 0:
+        if not re.fullmatch(r"[0-9]{1,10}", text) or int(text) <= 0:
             raise ValueError("CIK must be a positive issuer number of at most 10 digits")
         return text.zfill(10)
 
@@ -64,36 +69,44 @@ class SECCompanyFactsProvider:
         return {"provider": self.name, "status": "research_only", "api_key_required": False,
                 "issuer_level": True, "companyfacts_pagination": "not_needed_single_document",
                 "submissions_pagination": "files_array", "financial_vintages": True,
-                "availability_policy": "filed_date_plus_one_calendar_day_ny_midnight",
+                "availability_policy": "filing_date_plus_one_calendar_day_ny_midnight",
                 "share_split_adjustment": "unknown", "historical_industry": False,
-                "limitations": ["custom_taxonomies_not_in_aggregate", "entity_level_not_security_level",
-                                "date_only_publication_is_conservative", "historical_feed_vintage_unknown"]}
+                "limitations": list(LIMITATIONS)}
 
     def fetch_facts(self, cik: str | int, *, fields: tuple[str, ...] | None = None) -> tuple[FactVintage, ...]:
         normalized = self.normalize_cik(cik)
-        wanted = fields or tuple(FIELD_CONTRACTS)
+        wanted = tuple(FIELD_CONTRACTS) if fields is None else fields
+        if not wanted:
+            return ()
         if any(field not in FIELD_CONTRACTS for field in wanted):
             raise DataCapabilityError("FIELD_NOT_EQUIVALENT", "Requested field has no exact SEC taxonomy/unit mapping.")
         response = self.http.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{normalized}.json", headers=self._headers)
-        if self.normalize_cik(response.data.get("cik", "")) != normalized:
+        if str(response.data.get("cik", "")).lstrip("0") != normalized.lstrip("0"):
             raise DataCapabilityError("PROVIDER_IDENTITY_MISMATCH", "SEC response CIK differs from the request.")
         facts = []
         for field_name in wanted:
             taxonomy, tag, unit = FIELD_CONTRACTS[field_name]
-            entries = response.data.get("facts", {}).get(taxonomy, {}).get(tag, {}).get("units", {}).get(unit)
+            try:
+                entries = response.data.get("facts", {}).get(taxonomy, {}).get(tag, {}).get("units", {}).get(unit)
+            except AttributeError:
+                raise DataCapabilityError("PROVIDER_SCHEMA_ERROR", "SEC facts must contain taxonomy and unit objects.") from None
             if not entries:
                 raise DataCapabilityError("FIELD_UNAVAILABLE", f"Exact field {field_name} ({taxonomy}:{tag}, {unit}) is absent.")
+            if not isinstance(entries, list):
+                raise DataCapabilityError("PROVIDER_SCHEMA_ERROR", "SEC field observations must be a list.")
             for entry in entries:
                 self.http.cancel_check()
                 try:
+                    if not isinstance(entry, dict) or isinstance(entry.get("val"), bool):
+                        raise ValueError("Invalid financial observation")
                     filed = date.fromisoformat(entry["filed"])
                     value = float(entry["val"])
                     end = date.fromisoformat(entry["end"])
                     start = date.fromisoformat(entry["start"]) if entry.get("start") else None
                     accession = str(entry["accn"])
                     form = str(entry["form"])
-                except (KeyError, ValueError, TypeError) as exc:
-                    raise DataCapabilityError("PROVIDER_SCHEMA_ERROR", "SEC fact is missing a required vintage/period field.") from exc
+                except (KeyError, ValueError, TypeError):
+                    raise DataCapabilityError("PROVIDER_SCHEMA_ERROR", "SEC fact is missing a required vintage/period field.") from None
                 if not math.isfinite(value) or (start is not None and start > end) or end > filed:
                     raise DataCapabilityError("INVALID_FINANCIAL_FACT", "SEC fact has an invalid numeric value or period.")
                 if not re.fullmatch(r"\d{10}-\d{2}-\d{6}", accession):
@@ -138,15 +151,18 @@ def select_asof(facts: tuple[FactVintage, ...], asof: datetime) -> tuple[FactVin
     if asof.tzinfo is None:
         raise ValueError("asof must be timezone-aware")
     selected: dict[tuple[str, str, str, str, date | None, date], FactVintage] = {}
+    observed: dict[tuple, float] = {}
     for fact in facts:
         if fact.available_at > asof:
             continue
         key = (fact.issuer_cik, fact.taxonomy, fact.tag, fact.unit, fact.period_start, fact.period_end)
+        identity = (*key, fact.accession)
+        if identity in observed and observed[identity] != fact.value:
+            raise DataCapabilityError("AMBIGUOUS_FINANCIAL_FACT", "One accession has conflicting values for the same period/unit.")
+        observed[identity] = fact.value
         previous = selected.get(key)
         if previous is None or (fact.available_at, fact.accession) > (previous.available_at, previous.accession):
             selected[key] = fact
-        elif (fact.available_at, fact.accession) == (previous.available_at, previous.accession) and fact.value != previous.value:
-            raise DataCapabilityError("AMBIGUOUS_FINANCIAL_FACT", "One accession has conflicting values for the same period/unit.")
     return tuple(sorted(selected.values(), key=lambda fact: (fact.tag, fact.period_end, fact.period_start or date.min)))
 
 

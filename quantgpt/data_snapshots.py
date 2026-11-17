@@ -22,7 +22,7 @@ from .models import DataSnapshot
 SNAPSHOT_ID_PREFIX = "ds"
 FRAME_HASH_COLUMNS = ("trade_date", "stock_code", "open", "high", "low", "close", "volume", "amount", "pct_change")
 INPUT_ATTRIBUTES = ("corporate_actions", "calendar_sessions", "calendar_version", "adjustment", "data_provenance",
-                    "research_only", "capability_blockers", "universe_membership")
+                    "research_only", "capability_blockers", "universe_membership", "fundamental_provenance")
 
 
 def build_cache_snapshot(

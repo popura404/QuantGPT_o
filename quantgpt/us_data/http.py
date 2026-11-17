@@ -20,6 +20,7 @@ class JSONResponse:
     data: dict[str, Any]
     sha256: str
     retrieved_at: datetime
+    raw: bytes | None = None
 
 
 class RequestGate:
@@ -41,7 +42,11 @@ class RequestGate:
             time.sleep(min(remaining, 0.1))
 
 
-GATES = {"www.alphavantage.co": RequestGate(12), "data.sec.gov": RequestGate(0.2)}
+GATES = {
+    "www.alphavantage.co": RequestGate(12),
+    "data.sec.gov": RequestGate(0.2),
+    "data.alpaca.markets": RequestGate(0.31),
+}
 
 
 class JSONClient:
@@ -76,8 +81,8 @@ class JSONClient:
                                       retryable=response.status_code >= 500, next_action="check_provider_access")
         try:
             data = response.json()
-        except ValueError as exc:
-            raise DataCapabilityError("PROVIDER_SCHEMA_ERROR", "Expected a JSON object from the provider.") from exc
+        except ValueError:
+            raise DataCapabilityError("PROVIDER_SCHEMA_ERROR", "Expected a JSON object from the provider.") from None
         if not isinstance(data, dict):
             raise DataCapabilityError("PROVIDER_SCHEMA_ERROR", "Expected a JSON object from the provider.")
-        return JSONResponse(data, hashlib.sha256(response.content).hexdigest(), datetime.now(timezone.utc))
+        return JSONResponse(data, hashlib.sha256(response.content).hexdigest(), datetime.now(timezone.utc), response.content)

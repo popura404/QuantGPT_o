@@ -1,0 +1,227 @@
+"""Mock-only US preparation, immutable replay, and project sharing; no factor runs."""
+
+import json
+from datetime import date, datetime, timezone
+
+import httpx
+import pandas as pd
+import pytest
+from sqlalchemy import func, select
+
+from quantgpt.data_snapshots import load_frozen_market_frame
+from quantgpt.models import Experiment, Task
+from quantgpt.research.market_inputs import check_signal_availability
+from quantgpt.research.preparation import get_project_preparation, list_project_imports, register_project_snapshot
+from quantgpt.research.projects import create_project
+from quantgpt.strategy.us_adapter import USResearchAdapter
+from quantgpt.us_data.alpaca import AlpacaDailyProvider
+from quantgpt.us_data.cache import CachedJSONClient
+from quantgpt.us_data.contracts import DataCapabilityError
+from quantgpt.us_data.http import RequestGate
+from quantgpt.us_data.preparation import prepare_us_snapshot
+from quantgpt.us_data.sec import SECCompanyFactsProvider
+
+
+@pytest.fixture
+def prepared(tmp_path):
+    path = tmp_path / "securities.json"
+    path.write_text(json.dumps({"universe_id": "test_cohort", "securities": [
+        {"security_id": f"common:{ticker}", "ticker": ticker, "valid_from": "2020-01-01",
+         "issuer_cik": "1", "identity_source": "test_verified"} for ticker in ("AAA", "BBB")
+    ]}), encoding="utf-8")
+    calls = []
+    state = {"close": 10.0, "sec_status": 200, "missing": False,
+             "first_filed": "2024-04-30", "unpublished_tags": ()}
+
+    def respond(request):
+        calls.append(request)
+        if request.url.host == "data.alpaca.markets":
+            assert request.url.params["feed"] == "sip" and request.url.params["asof"] == "-"
+            ticker = request.url.params["symbols"]
+            days = ("01", "03") if state["missing"] else ("01", "02", "03")
+            return httpx.Response(200, json={"bars": {ticker: [
+                {"t": f"2024-05-{day}T04:00:00Z", "o": 10, "h": 12, "l": 9, "c": state["close"], "v": 1000}
+                for day in days]}, "next_page_token": None})
+        assert request.url.host == "data.sec.gov"
+        facts = {tag: {"units": {"USD": [
+            {"end": "2024-03-31", "filed": "2024-05-10" if tag in state["unpublished_tags"] else filed,
+             "val": val, "accn": accession, "form": form}
+            for filed, val, accession, form in (
+                (state["first_filed"], base, "0000000001-24-000001", "10-Q"),
+                ("2024-05-02", base + 1, "0000000001-24-000002", "10-Q/A"),
+                ("2024-05-10", base + 99, "0000000001-24-000003", "10-Q/A"),
+            )]}} for tag, base in (("Assets", 100), ("Liabilities", 40))}
+        return httpx.Response(state["sec_status"], json={"cik": 1, "facts": {"us-gaap": facts}})
+
+    client = httpx.Client(transport=httpx.MockTransport(respond))
+
+    def run(*, refresh=False, fields=("total_assets", "total_liabilities")):
+        http = CachedJSONClient(tmp_path / "responses", refresh=refresh, client=client, gate=RequestGate(0))
+        prices = AlpacaDailyProvider("mock-key", "mock-secret", http=http,
+                                     now=lambda: datetime(2025, 1, 1, tzinfo=timezone.utc))
+        sec = SECCompanyFactsProvider("Test mock@example.org", http=http) if fields else None
+        return prepare_us_snapshot(path, date(2024, 5, 1), date(2024, 5, 3), tmp_path,
+                                   prices=prices, fundamentals=sec, fields=fields)
+
+    yield run, calls, state, path
+    client.close()
+
+
+def test_mock_freeze_replay_refresh_and_filing_times(prepared, tmp_path):
+    run, calls, state, _ = prepared
+    first = run()
+    assert len(calls) == 3  # two securities, one shared issuer
+    assert first["availability_check"]["status"] == "checked"
+    assert first["external_data_acceptance"] == "not_run"
+    assert first["scope"]["universe_mode"] == "fixed_cohort"
+    panel = load_frozen_market_frame(first["manifest_id"], tmp_path / "imports")
+    aaa = panel.loc[panel.security_id == "common:AAA"]
+    assert aaa.total_assets.tolist() == [100, 101, 101]
+    assert aaa.total_liabilities.tolist() == [40, 41, 41]
+    assert str(aaa.iloc[0].decision_at) == "2024-05-02T00:15:00-04:00"
+    assert aaa.iloc[0].total_assets_revision_id == "0000000001-24-000001"
+    assert panel.attrs["fundamental_provenance"]["issuer_ciks"] == {"common:AAA": "0000000001", "common:BBB": "0000000001"}
+    assert "upstream_vintages_unknown" in first["capability_blockers"]
+    assert run()["manifest_id"] == first["manifest_id"] and len(calls) == 3
+    state["close"] = 11.0
+    fresh = run(refresh=True)
+    assert len(calls) == 6 and fresh["manifest_id"] != first["manifest_id"]
+    assert load_frozen_market_frame(first["manifest_id"], tmp_path / "imports").close.eq(10).all()
+    assert run()["manifest_id"] == fresh["manifest_id"] and len(calls) == 6
+
+
+@pytest.mark.parametrize("problem", ["sec_permission", "missing_price", "missing_cik"])
+def test_incomplete_sources_never_publish_a_snapshot(prepared, tmp_path, problem):
+    run, calls, state, path = prepared
+    if problem == "sec_permission":
+        state["sec_status"] = 403
+    elif problem == "missing_price":
+        state["missing"] = True
+    else:
+        content = json.loads(path.read_text())
+        del content["securities"][0]["issuer_cik"]
+        path.write_text(json.dumps(content), encoding="utf-8")
+    with pytest.raises(DataCapabilityError):
+        run()
+    assert not list((tmp_path / "imports").glob("*/manifest.json"))
+    if problem == "missing_cik":
+        assert not calls
+
+
+def test_price_only_needs_no_sec_identity(prepared):
+    run, calls, _, path = prepared
+    content = json.loads(path.read_text())
+    for entry in content["securities"]:
+        del entry["issuer_cik"]
+    path.write_text(json.dumps(content), encoding="utf-8")
+    result = run(fields=())
+    assert len(calls) == 2 and result["source"] == "alpaca_sip"
+    assert {field["name"] for field in result["field_catalog"]} == {"open", "high", "low", "close", "volume"}
+
+
+def test_initial_unpublished_sec_values_remain_missing(prepared, tmp_path):
+    run, _, state, _ = prepared
+    state["first_filed"] = "2024-05-02"
+    partial = run()
+    panel = load_frozen_market_frame(partial["manifest_id"], tmp_path / "imports")
+    assert panel.loc[panel.session == "2024-05-01", "total_assets"].isna().all()
+    assert panel.loc[panel.session != "2024-05-01", "total_assets"].notna().all()
+
+
+@pytest.mark.parametrize("tags", [("Assets",), ("Assets", "Liabilities")])
+def test_completely_unpublished_requested_sec_fields_never_publish(prepared, tmp_path, tags):
+    run, _, state, _ = prepared
+    state["unpublished_tags"] = tags
+    with pytest.raises(DataCapabilityError) as absent:
+        run()
+    assert absent.value.error_code == "SEC_FIELD_COVERAGE_INCOMPLETE"
+    assert not list((tmp_path / "imports").glob("*/manifest.json"))
+
+
+@pytest.mark.asyncio
+async def test_frozen_inputs_register_into_shared_project_without_experiments(prepared, tmp_path, db_session, test_user, monkeypatch):
+    run, _, _, _ = prepared
+    result = run()
+    public, private = tmp_path / "imports", tmp_path / "private"
+    project = await create_project(db_session, test_user.id, name="Mock US input acceptance", market="us")
+    await db_session.commit()
+    monkeypatch.setenv("QUANTGPT_RESEARCH_IMPORT_ROOT", str(public))
+    catalog = await list_project_imports(db_session, test_user.id, project.id, snapshot_root=private)
+    assert catalog["snapshots"][0]["manifest_id"] == result["manifest_id"]
+    registered = await register_project_snapshot(db_session, test_user.id, project.id, result["manifest_id"],
+                                                  snapshot_root=private, import_root=public)
+    assert registered["data_input"]["version_status"] == "verified"
+    assert registered["external_data_acceptance"] == "not_run"
+    assert registered["scope"] == result["scope"] and registered["field_catalog"] == result["field_catalog"]
+    state = await get_project_preparation(db_session, test_user.id, project.id, snapshot_root=private)
+    assert state["snapshots"] == [registered]
+    for model in (Experiment, Task):
+        assert await db_session.scalar(select(func.count()).select_from(model)) == 0
+
+
+@pytest.mark.parametrize(("session", "decision"), [
+    ("2024-11-29", "2024-11-30T00:15:00-05:00"),  # half day, next open Monday
+    ("2024-03-08", "2024-03-09T00:15:00-05:00"),  # DST over weekend
+    ("2024-05-01", "2024-05-02T00:15:00-04:00"),
+])
+def test_daily_decisions_can_follow_midnight_before_next_open(session, decision):
+    frame = pd.DataFrame({"session": [session], "close": [10.0], "available_at": [decision], "decision_at": [decision]})
+    assert check_signal_availability(frame, ["close"], calendar_id="XNYS", timezone="America/New_York")["status"] == "checked"
+
+
+@pytest.mark.parametrize(("decision", "error"), [
+    ("2024-05-02T09:30:00-04:00", "PIT_DECISION_AT_OR_AFTER_NEXT_OPEN"),
+    ("2024-05-03T00:15:00-04:00", "PIT_DECISION_AT_OR_AFTER_NEXT_OPEN"),
+    ("2024-05-01T15:59:00-04:00", "PIT_DECISION_BEFORE_CLOSE"),
+])
+def test_daily_decisions_cannot_cross_execution_boundary(decision, error):
+    frame = pd.DataFrame({"session": ["2024-05-01"], "close": [10.0], "available_at": [decision], "decision_at": [decision]})
+    with pytest.raises(ValueError, match=error):
+        check_signal_availability(frame, ["close"], calendar_id="XNYS", timezone="America/New_York")
+
+
+def test_default_adapter_reports_sip_without_fetching(monkeypatch):
+    monkeypatch.delenv("QUANTGPT_US_PRICE_PROVIDER", raising=False)
+    monkeypatch.delenv("QUANTGPT_US_SECURITIES_FILE", raising=False)
+    monkeypatch.delenv("QUANTGPT_US_FUNDAMENTAL_FIELDS", raising=False)
+    capability = USResearchAdapter().capabilities()
+    assert capability.provider == "alpaca_sip" and not capability.universes
+    assert {"total_assets", "total_liabilities"} <= {field.name for field in capability.data_fields}
+    assert "entity_level_not_security_level" in capability.capability_blockers
+    assert "entity_level_not_security_level" not in USResearchAdapter(fundamental_fields=()).capabilities().capability_blockers
+    monkeypatch.setenv("QUANTGPT_US_PRICE_PROVIDER", "alpha_vantage")
+    assert USResearchAdapter().capabilities().universes == ("ibm_demo",)
+
+
+def test_legacy_adapter_preserves_explicit_fundamental_requests_without_network(monkeypatch):
+    monkeypatch.setenv("QUANTGPT_US_PRICE_PROVIDER", "alpha_vantage")
+    monkeypatch.delenv("QUANTGPT_US_SECURITIES_FILE", raising=False)
+    monkeypatch.delenv("QUANTGPT_US_FUNDAMENTAL_FIELDS", raising=False)
+    assert USResearchAdapter().fundamental_fields == ()
+    monkeypatch.setenv("QUANTGPT_US_FUNDAMENTAL_FIELDS", "net_income")
+    adapter = USResearchAdapter()
+    assert adapter.fundamental_fields == ("net_income",)
+    with pytest.raises(DataCapabilityError) as missing:
+        adapter.fetch_market_data("ibm_demo", "2024-01-02", "2024-01-03")
+    assert missing.value.error_code == "SEC_CIK_REQUIRED"
+    assert adapter._provider is None
+    monkeypatch.setenv("QUANTGPT_US_FUNDAMENTAL_FIELDS", "")
+    assert USResearchAdapter().fundamental_fields == ()
+
+
+def test_cli_uses_documented_settings_without_submitting(monkeypatch, tmp_path, capsys):
+    from scripts import freeze_us_research as cli
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("APCA_API_KEY_ID", "test-key")
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "test-secret")
+    observed = {}
+
+    def prepare(*args, **kwargs):
+        observed.update(kwargs)
+        return {"manifest_id": "mock-id", "external_data_acceptance": "not_run"}
+
+    monkeypatch.setattr(cli, "prepare_us_snapshot", prepare)
+    assert cli.main(["--securities", "mapping.json", "--start", "2024-01-01", "--end", "2024-02-01", "--price-only"]) == 0
+    assert observed["fields"] == () and observed["fundamentals"] is None
+    assert json.loads(capsys.readouterr().out)["manifest_id"] == "mock-id"

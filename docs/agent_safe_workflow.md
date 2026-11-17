@@ -13,7 +13,7 @@
 
 ## 2. 主代理登记数据、固定窗口并开轮
 
-1. 用 `list_research_snapshot_imports` 发现部署方发布的真实行情，用 `register_research_snapshot` 登记清单。保存原样返回的 `data_input`。调用 `get_research_preparation` 核对字段、证券数、日期覆盖和已有留出期。合成演练可改用 `prepare_research_demo` 返回的显式短窗 `round_setup`。
+1. 美股数据按[美股行情与基本面准备](#美股行情与基本面准备)获取和冻结。用 `list_research_snapshot_imports` 发现部署方发布的真实行情，用 `register_research_snapshot` 登记清单。保存原样返回的 `data_input`。调用 `get_research_preparation` 核对字段、证券数、日期覆盖和已有留出期。合成演练可改用 `prepare_research_demo` 返回的显式短窗 `round_setup`。
 2. 对真实日频行情，用 `plan_research_windows(project_id, config)` 只读规划。下面用 Python 表示传给 MCP 的参数，其中 `registered_snapshot` 是登记响应，`scope` 来自该面板的研究设计，含市场、币种、股票池 ID/模式/版本、日历 ID/版本、时区和基准。示例按每 5 个交易日调仓，费用和滑点按本次设计填写。
 
    ```python
@@ -64,6 +64,51 @@
 逐项读取 `prices`、`historical_universe`、`corporate_actions`、`benchmark` 的 `status` 和原因。只在服务明确返回 `not_run` 时这样记录。若预期字段缺失，核对任务类型、终态、`include_result` 和错误信息，再报告缺少哪项结果。快照登记时的 `external_data_acceptance` 只描述登记阶段，独立验证和轮次终验使用上表路径。
 
 轮次终验还返回 `result.trial_manifest`、`result.validation` 和 `result.validation_artifact`。用其中的 `artifact_id` 调用 `get_research_artifact` 可复读报告。需要导出时，以终验任务的 `result.strategy_run_id` 调用 `export_research_strategy`，保留服务端决定及阻断原因。
+
+## 美股行情与基本面准备
+
+主代理在开轮前准备一次数据，各子代理共用登记后的 `data_input`。Alpaca 历史 SIP 提供原始日线 OHLCV，SEC Company Facts 提供按披露时间对齐的财务数据。首次采集前，在本机 `.env` 中设置 `APCA_API_KEY_ID`、`APCA_API_SECRET_KEY` 和 `SEC_USER_AGENT`。`SEC_USER_AGENT` 包含应用名和实际联系邮箱，例如 `MyResearch contact@example.org` 中的邮箱应替换为自己的联系方式。
+
+将研究证券清单保存为 `data/us_securities.json`，填写 `universe_id` 和每只证券的身份、生效区间及发行人 CIK。下面展示一条清单记录，按同样结构添加本次研究的其他证券。
+
+```json
+{
+  "universe_id": "my_us_cohort",
+  "securities": [
+    {
+      "security_id": "apple-common",
+      "ticker": "AAPL",
+      "valid_from": "2020-01-01",
+      "valid_to": null,
+      "issuer_cik": "0000320193",
+      "exchange": "XNAS",
+      "identity_source": "caller_verified"
+    }
+  ]
+}
+```
+
+`security_id` 代表稳定证券身份。确认 ticker 在所请求日期内对应同一证券后填写映射生效区间，`issuer_cik` 则标识财务披露的发行人。同一发行人的不同股类需保留各自的证券身份。固定选择的清单使用 `universe_mode=fixed_cohort`，记录这次选择的范围和时间。
+
+在仓库根目录用项目虚拟环境运行下列命令，按研究设计替换日期和证券清单。
+
+```sh
+python -m scripts.freeze_us_research --securities data/us_securities.json --start 2020-01-01 --end 2025-12-31 --root data/us_research
+```
+
+首次运行会联网采集，原响应缓存在 `data/us_research/responses/`。同参数重跑复用缓存，显式传 `--refresh` 时重新获取并冻结当前响应，保留此前快照。保存命令回包中的 `manifest_id`、`scope` 和 `field_catalog`。将服务的 `QUANTGPT_RESEARCH_IMPORT_ROOT` 设置为返回的 `import_root`（上例为 `data/us_research/imports`）并重启服务。通过 `list_research_snapshot_imports` 找到生成的清单，再调用 `register_research_snapshot`、`get_research_preparation` 和 `plan_research_windows`。登记和准备回包会复读快照的 `scope` 和 `field_catalog`，主代理据此冻结配置并向子代理交付字段契约。共享导入目录与项目私有的 `QUANTGPT_RESEARCH_SNAPSHOT_ROOT` 应使用独立路径。
+
+Alpaca 请求固定为 `feed=sip`、`adjustment=raw` 和 `timeframe=1Day`，通过 `asof=-` 关闭供应商自动 ticker 更名映射。日线按纽约自然日聚合，包含盘后成交量；本仓库将完整日线的 `available_at` 和 `decision_at` 设为次日纽约时间 00:15，随后使用下一交易日开盘执行。仅采集已到该可用时刻的日线。[Alpaca 聚合规则](https://docs.alpaca.markets/us/docs/market-data-faq)
+
+日期缺口、分页异常或无权限时保留工具返回的原因，修正原配置后再准备数据。遇到限流，等待供应商允许再次读取后复用相同请求。各方向通过同一快照研究，避免重复下载同一面板。快照冻结本次取得的行情；供应商对历史行情的后续修订仍标记为 `upstream_vintages_unknown`，该可用时间约定不构成原始历史发布版本的证明。
+
+默认基本面字段为 `total_assets`、`total_liabilities`，也可用 `QUANTGPT_US_FUNDAMENTAL_FIELDS` 配置逗号分隔的字段列表。命令行 `--fundamental-fields` 覆盖该配置，可选 `reported_common_shares`、`net_income`、`diluted_eps_period`。后两者取明确的离散季度，原财务期间随字段保存。仅做价格研究时传 `--price-only`，此时清单可省略 `issuer_cik`。
+
+普通 `us` / `us_equity` 适配器也可通过 `QUANTGPT_US_SECURITIES_FILE=data/us_securities.json` 使用同一清单。其默认价格选择为 `QUANTGPT_US_PRICE_PROVIDER=alpaca_sip`，同时加载配置的 SEC 字段，CIK 映射须覆盖清单内全部证券。将 `QUANTGPT_US_FUNDAMENTAL_FIELDS` 设为空值可选择价格数据。既有 Alpha Vantage 探索场景可显式选择 `QUANTGPT_US_PRICE_PROVIDER=alpha_vantage`。使用 IBM demo 纯价格场景时，需将 `.env` 中的 `QUANTGPT_US_FUNDAMENTAL_FIELDS` 设为空值；显式请求 SEC 字段时仍须提供全部证券的 CIK，缺少映射会拒绝请求。
+
+每个财务字段带有 `<field>_available_at`、`<field>_revision_id`、财务期间和披露日期。日线决策按 `decision_at` 选择当时已披露的版本，未指定时使用交易所当日收盘。SEC 只有披露日期时，本仓库保守地以次日纽约时间 00:00 作为可用时刻；此前没有可用观测的日期保留缺失值。若任一证券的请求字段在整个日期区间均无已披露观测，准备命令返回 `SEC_FIELD_COVERAGE_INCOMPLETE` 并停止发布快照，需核对字段或研究范围。因子字段契约应按实际期间、单位和可用时间声明，净利润或每股收益的季度值需保留季度语义。构造跨字段财务比率前，核对各字段的财务期间是否一致。`reported_common_shares` 保留发行人披露的股数口径。
+
+价格与财务来源的请求范围、响应哈希和采集时间随快照保存。准备结果中的能力缺口继续交由现有外部验收核对，包括历史股票池、公司行动覆盖、退市终值和总回报基准。数据准备完成后按本指南第 2 节冻结窗口，再分派各研究方向。
 
 ## MCP 调用超时与恢复
 

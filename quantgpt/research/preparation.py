@@ -63,6 +63,8 @@ def _snapshot_summary(root: Path, manifest_id: str) -> dict:
         "external_data_acceptance": "not_run" if evidence.revision == "not_supplied" else "awaiting_validation",
         "external_evidence_revision": evidence.revision, "external_evidence_error": evidence.error,
         "unverified": ["historical_membership", "corporate_action_coverage", "total_return_benchmark"],
+        **({"scope": metadata["scope"]} if "scope" in metadata else {}),
+        **({"field_catalog": metadata["field_catalog"]} if "field_catalog" in metadata else {}),
     }
 
 
