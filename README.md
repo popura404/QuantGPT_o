@@ -20,7 +20,9 @@ cd QuantGPT_o
 | Windows PowerShell | `./scripts/setup.ps1` | `./scripts/dev.ps1` |
 | Linux | `make setup` | `make dev` |
 
-默认监听 `127.0.0.1:8003`。用 `GET /api/v1/health` 检查后端。需要浏览器工作台时，先运行 `npm --prefix frontend ci` 和 `npm --prefix frontend run build`，再启动 HTTP 服务，打开 `http://127.0.0.1:8003/`。[快速开始](docs/QUICKSTART.md) · [部署说明](docs/DEPLOYMENT.md)
+需要浏览器工作台时，在已安装 Node.js 和 npm 的 Windows 环境运行 `.\scripts\dev.ps1 -BuildFrontend`。脚本在缺少前端依赖目录时先运行 `npm ci`，前端构建成功后再启动后端。Linux 可运行 `make frontend && make dev`。
+
+启动后打开 `http://127.0.0.1:8003/` 访问工作台，用 `GET /api/v1/health` 检查后端。[快速开始](docs/QUICKSTART.md) · [部署说明](docs/DEPLOYMENT.md)
 
 MCP 客户端可以直接启动 stdio 服务。工作目录设为仓库根目录，Windows 选择 `.venv312/Scripts/python.exe`，Linux 选择 `.venv312/bin/python`，参数为 `-m quantgpt --transport stdio`。连接后用 `tools/list` 查看当前工具。[MCP 配置指南](docs/MCP_GUIDE.md)
 
