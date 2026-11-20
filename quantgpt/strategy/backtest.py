@@ -18,7 +18,7 @@ from ..neutralize import neutralize_factor
 from ..research.contracts import SEMANTICS_VERSION, SimulationConfigV1
 from ..research.ledger import simulate_target_weights
 from ..research.market_inputs import check_signal_availability
-from ..research.returns import annualized_return
+from ..research.returns import annualized_return, daily_asset_returns
 from ..validation.oos_score import compute_oos_score, compute_oos_selection_score
 from ..validation.split import OOSConfig, split_by_dates
 from .adapters import get_adapter
@@ -156,8 +156,8 @@ def run_strategy_backtest(
     market_frame = market_frame.copy()
     market_frame["trade_date"] = pd.to_datetime(market_frame["trade_date"])
     market_frame = market_frame.sort_values(["stock_code", "trade_date"])
-    if "daily_ret" not in market_frame.columns:
-        market_frame["daily_ret"] = market_frame.groupby("stock_code")["close"].pct_change(fill_method=None)
+    if "daily_ret" not in market_frame.columns or "corporate_actions" in market_frame.attrs:
+        market_frame["daily_ret"] = daily_asset_returns(market_frame)
 
     # Freeze all consumed fields after financial enrichment, not the price-only precursor.
     data_provenance = _strategy_data_provenance_fields(

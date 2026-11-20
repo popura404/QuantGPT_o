@@ -50,6 +50,35 @@ def test_constrained_solution_is_feasible_and_reports_economic_residuals(panel):
     assert result["research_decision"] == "not_evaluated" and result["out_of_sample_increment"] is None
 
 
+def test_raw_alpaca_risk_estimate_requires_actions_and_is_split_invariant(panel):
+    panel.attrs.update(adjustment="raw", data_provenance=[{"provider": "alpaca_sip", "adjustment": "raw"}])
+    settings = config(panel)
+    assert optimize_portfolio(signals(panel), panel, settings)["error_code"] == "ACTION_LEDGER_REQUIRED"
+    panel.attrs["corporate_actions"] = []
+    baseline = optimize_portfolio(signals(panel), panel, settings)
+    first_split_day = pd.Timestamp(sorted(panel.session.unique())[-12])
+    changed = panel.copy()
+    after_split = (changed.security_id == "A") & (changed.session >= first_split_day)
+    changed.loc[after_split, ["close", "raw_close", "raw_open"]] /= 2
+    changed.attrs["corporate_actions"] = [{"event_id": "split-a", "security_id": "A", "type": "split",
+                                         "session": first_split_day.date().isoformat(), "ratio": 2}]
+    evaluated = optimize_portfolio(signals(changed), changed, settings)
+    assert baseline["status"] == evaluated["status"] == "completed"
+    assert evaluated["expected_daily_return"] == pytest.approx(baseline["expected_daily_return"])
+    assert evaluated["objective"] == pytest.approx(baseline["objective"])
+
+
+def test_empty_raw_action_ledger_excludes_missing_session_from_risk_estimate(panel):
+    sessions = sorted(panel.session.unique())
+    frame = panel.loc[panel.session != sessions[-6]].copy()
+    frame.attrs.update(adjustment="raw", corporate_actions=[], calendar_sessions=sessions)
+    settings = config(frame)
+    result = optimize_portfolio(signals(frame), frame, settings)
+    assert result["status"] == "completed"
+    # Both the first price and the price following the gap lack a one-session return.
+    assert result["estimate_observations"] == settings.lookback_sessions - 2
+
+
 def test_future_prices_and_risk_fields_do_not_change_allocation(panel):
     cutoff = sorted(panel["session"].unique())[45]
     settings = config(panel).model_copy(update={"asof_session": pd.Timestamp(cutoff).date()})

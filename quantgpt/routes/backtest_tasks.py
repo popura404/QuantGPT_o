@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from ..auth import GUEST_USER_ID, get_current_user, get_current_user_or_guest, get_optional_user
 from ..data_quality import DataQualityConfig, run_data_quality_gate
@@ -1090,7 +1091,7 @@ async def list_tasks(
             raise HTTPException(status_code=422, detail="Invalid session_id") from exc
     projects = list((await db.scalars(select(ProjectMember.project_id).where(ProjectMember.user_id == user.id))).all())
     visible = (TaskModel.project_id.is_(None) & (TaskModel.user_id == user.id)) | TaskModel.project_id.in_(projects)
-    filters = [visible]
+    filters: list[ColumnElement[bool]] = [visible]
     if session_uuid is not None:
         filters.append(TaskModel.session_id == session_uuid)
     if task_type is not None:

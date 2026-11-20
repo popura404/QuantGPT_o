@@ -6,10 +6,16 @@ import hashlib
 import json
 from datetime import date
 from pathlib import Path
+from typing import cast
+
+import numpy as np
+import pandas as pd
 
 from quantgpt.data_snapshots import freeze_market_frame
 from quantgpt.research.contracts import FieldContract, ResearchScope
+from quantgpt.research.external_evidence import import_action_release
 from quantgpt.research.market_inputs import check_signal_availability
+from quantgpt.research.returns import daily_asset_returns
 from quantgpt.strategy.us_adapter import USResearchAdapter
 
 from .alpaca import AlpacaDailyProvider, daily_available_at
@@ -19,7 +25,7 @@ from .fundamentals import DEFAULT_FIELDS, QUARTER_FIELDS
 from .sec import FIELD_CONTRACTS, SECCompanyFactsProvider
 
 
-def field_catalog(fields: tuple[str, ...]) -> tuple[FieldContract, ...]:
+def field_catalog(fields: tuple[str, ...], *, with_actions: bool = False) -> tuple[FieldContract, ...]:
     prices = tuple(FieldContract(
         name=name, dtype="float64", unit="shares" if name == "volume" else "USD/share",
         currency=None if name == "volume" else "USD", economic_meaning=f"Alpaca SIP raw daily {name}",
@@ -33,12 +39,44 @@ def field_catalog(fields: tuple[str, ...]) -> tuple[FieldContract, ...]:
         available_at_rule="SEC filing date plus one calendar day at New York midnight; accession as of decision_at",
         period="quarter" if name in QUARTER_FIELDS else "instant", requires_vintage=True,
     ) for name in fields)
-    return prices + fundamentals
+    if not with_actions:
+        return prices + fundamentals
+    adjusted = tuple(field.model_copy(update={
+        "name": "split_" + field.name, "adjustment": "split_adjusted",
+        "economic_meaning": f"{field.name} on the first session's share basis, applying effective splits through this row",
+    }) for field in prices)
+    holding_return = FieldContract(
+        name="returns", dtype="float64", unit="fraction", adjustment="total_return", period="session",
+        economic_meaning="Close-to-close one-session holding return including cash entitlements and effective splits",
+        available_at_rule="after the ending session's price is available, using the frozen corporate-action release",
+    )
+    return prices + adjusted + (holding_return,) + fundamentals
+
+
+def _add_split_fields(panel: pd.DataFrame, events: list[dict]) -> None:
+    """Use only effective splits up to each row. Execution always uses the original columns."""
+    by_session: dict[tuple[str, str], float] = {}
+    first = cast(pd.Series, panel.groupby("security_id")["session"].min())
+    for event in events:
+        security, session = event["security_id"], event["session"]
+        if event["type"] == "split" and session > first.at[security]:
+            key = (security, session)
+            by_session[key] = by_session.get(key, 1.0) * event["ratio"]
+    keys = zip(panel["security_id"], panel["session"], strict=True)
+    ratios = pd.Series([by_session.get(key, 1.0) for key in keys], index=panel.index)
+    scale = ratios.groupby(panel["security_id"]).cumprod()
+    if not np.isfinite(scale).all() or (scale <= 0).any():
+        raise ValueError("Invalid cumulative split basis")
+    for name in ("open", "high", "low", "close", "volume"):
+        adjusted = panel[name] / scale if name == "volume" else panel[name] * scale
+        if not np.isfinite(adjusted).all():
+            raise ValueError("Invalid cumulative split basis")
+        panel["split_" + name] = adjusted
 
 
 def prepare_us_snapshot(securities_file: str | Path, start: date, end: date, root: str | Path, *,
                         prices: AlpacaDailyProvider, fundamentals: SECCompanyFactsProvider | None = None,
-                        fields: tuple[str, ...] = DEFAULT_FIELDS) -> dict:
+                        fields: tuple[str, ...] = DEFAULT_FIELDS, corporate_actions_file: Path | None = None) -> dict:
     """Fetch a declared cohort once and publish a snapshot for the existing project import tools."""
     if start > end:
         raise ValueError("start must not exceed end")
@@ -68,7 +106,21 @@ def prepare_us_snapshot(securities_file: str | Path, start: date, end: date, roo
     panel = panel.sort_values(["trade_date", "security_id"]).reset_index(drop=True)
     panel["trade_date"] = panel["trade_date"].astype("datetime64[ns]")
     panel.attrs["adjustment"] = "raw"
-    catalog = field_catalog(fields)
+    action_metadata = {}
+    if corporate_actions_file is not None:
+        raw = corporate_actions_file.read_bytes()
+        release = json.loads(raw)
+        if not isinstance(release, dict):
+            raise ValueError("Expected a corporate-action release object")
+        events, provenance = import_action_release(panel, release)
+        _add_split_fields(panel, events)
+        panel.attrs["corporate_actions"] = events
+        panel["returns"] = daily_asset_returns(panel)
+        panel.attrs["capability_blockers"] = [item for item in panel.attrs["capability_blockers"]
+                                              if item != "corporate_actions_unavailable"]
+        action_metadata["corporate_action_release"] = {"sha256": hashlib.sha256(raw).hexdigest(),
+                                                      "provenance": provenance, "event_count": len(events)}
+    catalog = field_catalog(fields, with_actions=corporate_actions_file is not None)
     availability = check_signal_availability(panel, catalog, calendar_id="XNYS", timezone="America/New_York")
     identities = [{**item.__dict__, "valid_from": item.valid_from.isoformat(),
                    "valid_to": item.valid_to.isoformat() if item.valid_to else None,
@@ -82,7 +134,7 @@ def prepare_us_snapshot(securities_file: str | Path, start: date, end: date, roo
         panel, Path(root) / "imports", vendor="alpaca_sip_sec" if fields else "alpaca_sip",
         query_params={"feed": "sip", "adjustment": "raw", "start": start.isoformat(), "end": end.isoformat(),
                       "securities": identities, "fundamental_fields": list(fields)},
-        source_metadata={"synthetic": False, "research_only": True, "scope": scope,
+        source_metadata={**action_metadata, "synthetic": False, "research_only": True, "scope": scope,
                          "field_catalog": serialized_catalog, "availability_check": availability,
                          "price_availability_policy": "next_calendar_day_0015_America_New_York"},
     )

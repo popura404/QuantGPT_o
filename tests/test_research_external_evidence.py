@@ -80,6 +80,22 @@ def test_each_release_is_reconciled_and_bound_to_exact_snapshot_and_scope(market
     assert validate_external_evidence(frame, config, bundle)["blockers"] == ["EXTERNAL_SNAPSHOT_IDENTITY_MISMATCH"]
 
 
+def test_action_reconciliation_preserves_same_security_dividend_basis(market):
+    panel, config, source = market
+    frame = panel.copy()
+    bundle = deepcopy(source)
+    actions = bundle["corporate_actions"]["events"]
+    split, dividend, unrelated = actions
+    dividend["session"] = split["session"]
+    frame.attrs["corporate_actions"] = deepcopy(actions)
+
+    actions[:] = [unrelated, split, dividend]
+    assert validate_external_evidence(frame, config, bundle)["checks"]["corporate_actions"]["status"] == "passed"
+    actions[:] = [unrelated, dividend, split]
+    check = validate_external_evidence(frame, config, bundle)["checks"]["corporate_actions"]
+    assert check["status"] == "failed" and check["reason"] == "FROZEN_CORPORATE_ACTION_MISMATCH"
+
+
 def test_research_only_preserves_numeric_reconciliation_without_upgrading_license(market):
     frame, config, original = market
     frame = frame.copy()

@@ -119,6 +119,7 @@ import numpy as np
 import pandas as pd
 
 from .research.contracts import OPERATOR_SEMANTICS_VERSION, CapabilityBlockerError, ResearchError
+from .research.returns import daily_asset_returns
 
 logger = logging.getLogger(__name__)
 
@@ -249,7 +250,9 @@ _WQ_EXTENDED_FIELDS = (
 _WQ_NEWS_PREFIXES = ('nws12_', 'nws24_', 'nws_', 'snt_')
 _WQ_GROUP_PREFIXES = ('indclass.', 'ind.', 'sector.', 'subindustry.')
 
-_LOCAL_ONLY_COLUMNS = {
+_SPLIT_FIELDS = {'split_open', 'split_high', 'split_low', 'split_close', 'split_volume'}
+
+_LOCAL_ONLY_COLUMNS = _SPLIT_FIELDS | {
     'amount', 'pct_change', 'float_market_cap', 'turnover_rate', 'shares',
 }
 
@@ -353,7 +356,7 @@ class ExpressionParser:
     # Special variable mappings (computed from DataFrame columns)
     _SPECIAL_VARS = {
         'vwap': lambda df: df['vwap'] if 'vwap' in df.columns else (df['amount'] / df['volume'].replace(0, np.nan) if 'amount' in df.columns else df['close']),
-        'returns': lambda df: df.groupby('stock_code')['close'].pct_change(fill_method=None) if 'stock_code' in df.columns else df['close'].pct_change(fill_method=None),
+        'returns': daily_asset_returns,
         'cap': _require_market_cap,
         'day': lambda df: pd.Series(df['trade_date'].dt.day, index=df.index, dtype=float),
         'weekday': lambda df: pd.Series(df['trade_date'].dt.weekday, index=df.index, dtype=float),  # 0=Mon, 4=Fri
@@ -925,7 +928,7 @@ class ExpressionParser:
         col_name = expr_lower.strip()
         from .fundamental_data import ALL_FUNDAMENTAL_NAMES
         _PRICE_COLUMNS = {'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_change', 'market_cap', 'shares'}
-        _ALLOWED_COLUMNS = _PRICE_COLUMNS | ALL_FUNDAMENTAL_NAMES
+        _ALLOWED_COLUMNS = _PRICE_COLUMNS | _SPLIT_FIELDS | ALL_FUNDAMENTAL_NAMES
         _ALIAS_MAP = {
             'pe_ratio': 'pe', 'pe_ttm': 'pe', 'pb_ratio': 'pb', 'ps_ratio': 'ps',
             'eps': 'eps_ttm', 'roe_avg': 'roe', 'div_yield': 'dividend_yield',

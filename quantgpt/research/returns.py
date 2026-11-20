@@ -8,7 +8,7 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
-from .ledger import cash_entitlement, event_session
+from .ledger import cash_entitlement, event_session, market_actions
 from .market_inputs import price_basis
 
 
@@ -32,9 +32,7 @@ def annualized_return(returns: pd.Series, periods_per_year: int = 252) -> float:
 
 def _event_records(frame: pd.DataFrame, sessions: pd.DatetimeIndex, end: pd.Timestamp) -> list[dict[str, Any]]:
     """Validate only events within the consumed price window, preserving same-day order."""
-    events = frame.attrs.get("corporate_actions", [])
-    if not isinstance(events, (list, tuple)):
-        raise ValueError("INVALID_CORPORATE_ACTION: corporate_actions must be an event sequence")
+    events = market_actions(frame)
     securities = set(frame["stock_code"])
     first = frame["trade_date"].min()
     seen: set[str] = set()
@@ -78,6 +76,29 @@ def _event_records(frame: pd.DataFrame, sessions: pd.DatetimeIndex, end: pd.Time
             raise ValueError(f"INVALID_CORPORATE_ACTION: {exc}") from exc
         records.append(record)
     return sorted(records, key=lambda event: (event["session"], event["type"] == "delisting"))
+
+
+def daily_asset_returns(frame: pd.DataFrame) -> pd.Series:
+    """Close-to-close returns indexed by the end of the holding session."""
+    events = market_actions(frame)
+    covered_calendar = (frame.attrs.get("corporate_actions") is not None and "calendar_sessions" in frame.attrs
+                        and price_basis(frame) in {"raw", "unknown"})
+    if not events and not covered_calendar:
+        # Existing parser inputs can be an ordered single-security close series.
+        if "stock_code" not in frame:
+            return cast(pd.Series, frame["close"]).pct_change(fill_method=None)
+        return cast(pd.Series, frame["close"]).groupby(frame["stock_code"]).pct_change(fill_method=None)
+
+    # Use an integer row identity since callers may retain duplicate index labels.
+    ordered = cast(pd.DataFrame, frame[["trade_date", "stock_code", "close"]]).reset_index(drop=True)
+    ordered = ordered.sort_values(["stock_code", "trade_date"])
+    calendar = pd.DatetimeIndex(pd.to_datetime(frame.attrs.get("calendar_sessions", ordered["trade_date"].unique()))).sort_values()
+    forward = forward_total_returns(ordered, 1)
+    securities = ordered["stock_code"]
+    position = pd.Series(calendar.get_indexer(pd.to_datetime(ordered["trade_date"])), index=ordered.index)
+    adjacent = position.groupby(securities).diff().eq(1)
+    trailing = forward.groupby(securities).shift().where(adjacent).sort_index()
+    return pd.Series(trailing.to_numpy(), index=frame.index, name="daily_ret")
 
 
 def forward_total_returns(frame: pd.DataFrame, horizon_sessions: int, *, evaluation_end: Any = None) -> pd.Series:

@@ -284,6 +284,14 @@ def _actions(s: Mapping, scope: Scope, config: EvaluationConfigV1) -> dict:
     needed: dict[str, set[date]] = {}
     for day, security in panel.index:
         needed.setdefault(security, set()).add(day)
+    if "corporate_actions" not in scope.panel.attrs:
+        raise _missing("FROZEN_ACTION_LEDGER_REQUIRED")
+    return _check_action_ledger(s, needed, scope.days, scope.start, scope.end, config.scope.currency,
+                                scope.panel.attrs["corporate_actions"])
+
+
+def _check_action_ledger(s: Mapping, needed: dict[str, set[date]], days: list[date], start_day: date,
+                         end_day: date, currency: str, actual: list[dict]) -> dict:
     coverage: dict[tuple[str, str], set[date]] = {}
     for item in _rows(s, "coverage"):
         security = _text(item, "security_id")
@@ -293,27 +301,34 @@ def _actions(s: Mapping, scope: Scope, config: EvaluationConfigV1) -> dict:
             raise _bad("INVALID_ACTION_COVERAGE")
         for kind in kinds:
             covered = coverage.setdefault((security, kind), set())
-            covered.update(day for day in scope.days if start <= day <= end)
-    if "corporate_actions" not in scope.panel.attrs:
-        raise _missing("FROZEN_ACTION_LEDGER_REQUIRED")
-    actual: list[dict] = scope.panel.attrs["corporate_actions"]
+            covered.update(day for day in days if start <= day <= end)
     expected = _rows(s, "events", allow_empty=True)
-    session_set = set(scope.days)
+    session_set = set(days)
 
     def selected(events: list[dict]) -> dict:
         entries = {}
+        applied_splits: dict[tuple[str, date], set[str]] = {}
         for item in events:
             raw_date = item.get("ex_session") or _required(item, "session")
             day = _day(raw_date)
-            if not scope.start <= day <= scope.end or item.get("security_id") not in needed:
+            if not start_day <= day <= end_day or _text(item, "security_id") not in needed:
                 continue
+            if item.get("session") is not None and _day(item["session"]) != day:
+                raise _bad("CONFLICTING_ACTION_SESSION")
             if day not in session_set:
                 raise _bad("CORPORATE_ACTION_OUTSIDE_EXCHANGE_SESSION")
-            if item.get("currency", config.scope.currency) != config.scope.currency:
+            if item.get("currency", currency) != currency:
                 raise _bad("CORPORATE_ACTION_CURRENCY_MISMATCH")
             event = _event(item, day)
             if event[0] in entries:
                 raise _bad("DUPLICATE_CORPORATE_ACTION_ID", event_id=event[0])
+            # The per-share amount is payable on the shares outstanding at
+            # this point in the same security's ex-session event sequence.
+            key = (event[1], day)
+            if event[2] == "split":
+                applied_splits.setdefault(key, set()).add(event[0])
+            elif event[2] == "cash_dividend":
+                event = (*event, frozenset(applied_splits.get(key, ())))
             entries[event[0]] = event
         return entries
 
@@ -331,8 +346,8 @@ def _actions(s: Mapping, scope: Scope, config: EvaluationConfigV1) -> dict:
     for security, dates in needed.items():
         # A disappearing price row is not proof that an investor's exposure
         # ended. Cover the interval through settlement or the report's cutoff.
-        first, last = min(dates), terminal.get(security, scope.end)
-        dates_to_cover = {day for day in scope.days if first <= day <= last}
+        first, last = min(dates), terminal.get(security, end_day)
+        dates_to_cover = {day for day in days if first <= day <= last}
         for kind in sorted(ACTION_TYPES):
             if not dates_to_cover.issubset(coverage.get((security, kind), set())):
                 raise _missing("ACTION_COVERAGE_INCOMPLETE", security_id=security, event_type=kind,
@@ -341,6 +356,29 @@ def _actions(s: Mapping, scope: Scope, config: EvaluationConfigV1) -> dict:
         if event[2] == "delisting" and any(d > event[3] for d in needed[event[1]]):
             raise _bad("SECURITY_TRADED_AFTER_DELISTING", security_id=event[1])
     return {"events": len(reference), "securities": len(needed), "covered_event_types": sorted(ACTION_TYPES)}
+
+
+def import_action_release(panel: pd.DataFrame, release: dict) -> tuple[list[dict], dict]:
+    """Validate an operator-supplied USD event ledger before freezing research input."""
+    provenance = _provenance(release)
+    events = _rows(release, "events", allow_empty=True)
+    needed: dict[str, set[date]] = {}
+    for security, session in zip(panel["security_id"], panel["session"], strict=True):
+        needed.setdefault(security, set()).add(_day(session))
+    days = sorted({_day(day) for day in panel.attrs["calendar_sessions"]})
+    # A release may cover additional dates or instruments. Freeze only the
+    # intersection, keeping the vendor's order for simultaneous entitlements.
+    selected = []
+    for event in events:
+        day = _day(event.get("ex_session") or _required(event, "session"))
+        if not days[0] <= day <= days[-1]:
+            continue
+        security = _text(event, "security_id")
+        if security in needed:
+            selected.append({**event, "event_id": _text(event, "event_id"), "type": _text(event, "type"),
+                             "security_id": security, "ex_session": day.isoformat(), "session": day.isoformat()})
+    _check_action_ledger(release, needed, days, days[0], days[-1], "USD", selected)
+    return selected, provenance
 
 
 def _benchmark(s: Mapping, scope: Scope, config: EvaluationConfigV1) -> dict:

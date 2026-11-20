@@ -2,7 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 const python = process.env.PLAYWRIGHT_PYTHON ?? (process.platform === "win32"
   ? "..\\.venv312\\Scripts\\python.exe"
-  : "../.venv/bin/python");
+  : "../.venv312/bin/python");
 const channel = process.env.PLAYWRIGHT_BROWSER_CHANNEL;
 
 export default defineConfig({

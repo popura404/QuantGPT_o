@@ -11,6 +11,7 @@ import os
 from datetime import date
 from pathlib import Path
 
+from quantgpt.research.external_evidence import EvidenceIssue
 from quantgpt.us_data.alpaca import AlpacaDailyProvider
 from quantgpt.us_data.cache import CachedJSONClient
 from quantgpt.us_data.contracts import DataCapabilityError
@@ -42,6 +43,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start", required=True, type=date.fromisoformat)
     parser.add_argument("--end", required=True, type=date.fromisoformat)
     parser.add_argument("--root", type=Path, default=Path("data/us_research"))
+    parser.add_argument("--corporate-actions-file", type=Path,
+                        help="JSON release with provenance, coverage, and events for the requested cohort")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--fundamental-fields", nargs="+", choices=tuple(FIELD_CONTRACTS))
     selection.add_argument("--price-only", action="store_true")
@@ -58,7 +61,10 @@ def main(argv: list[str] | None = None) -> int:
         result = prepare_us_snapshot(args.securities, args.start, args.end, args.root,
                                      prices=AlpacaDailyProvider(http=http),
                                      fundamentals=SECCompanyFactsProvider(os.environ.get("SEC_USER_AGENT", ""), http=http)
-                                     if fields else None, fields=fields)
+                                     if fields else None, fields=fields, corporate_actions_file=args.corporate_actions_file)
+    except EvidenceIssue as exc:
+        print(json.dumps({"error_code": exc.code, "details": exc.details, "next_action": "check_corporate_action_release"}))
+        return 1
     except DataCapabilityError as exc:
         print(json.dumps(exc.to_dict(), ensure_ascii=False))
         return 1

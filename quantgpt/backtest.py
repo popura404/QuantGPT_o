@@ -19,7 +19,7 @@ from scipy import stats as sp_stats
 from .expression_parser import parse_expression
 from .research.contracts import SEMANTICS_VERSION, SimulationConfigV1
 from .research.ledger import prepare_market_context, simulate_target_weights
-from .research.returns import annualized_return, forward_total_returns
+from .research.returns import annualized_return, daily_asset_returns, forward_total_returns
 from .wq_simulate import wq_simulate
 
 logger = logging.getLogger(__name__)
@@ -266,7 +266,7 @@ def run_factor_backtest(
         )
 
     # 3. Compute daily returns from close prices (T-1 close → T close)
-    market_df["daily_ret"] = market_df.groupby("stock_code")["close"].pct_change(fill_method=None)
+    market_df["daily_ret"] = daily_asset_returns(market_df)
 
     # 4. Identify rebalance dates
     rebalance_dates = build_rebalance_dates(

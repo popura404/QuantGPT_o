@@ -53,6 +53,25 @@ def _freeze_value(value: Any) -> Any:
     return deepcopy(value)
 
 
+def market_actions(frame: pd.DataFrame) -> Sequence[Mapping[str, Any]]:
+    """An Alpaca daily bar cannot establish that no corporate action occurred."""
+    attrs = frame.attrs
+    events = attrs.get("corporate_actions")
+    if events is None:
+        snapshot = attrs.get("data_snapshot") or {}
+        provenance = attrs.get("data_provenance") or []
+        if isinstance(provenance, dict):
+            provenance = [provenance]
+        if snapshot.get("vendor") in {"alpaca_sip", "alpaca_sip_sec"} or any(
+            source.get("provider") == "alpaca_sip" for source in provenance if isinstance(source, dict)
+        ):
+            raise LedgerError("ACTION_LEDGER_REQUIRED", "Freeze the Alpaca panel with a covered corporate-action ledger.")
+        return []
+    if not isinstance(events, (list, tuple)) or any(not isinstance(event, Mapping) for event in events):
+        raise LedgerError("INVALID_CORPORATE_ACTION", "Expected a sequence of event records")
+    return events
+
+
 def event_session(event: Mapping[str, Any]) -> pd.Timestamp:
     try:
         day = pd.Timestamp(event["ex_session"] if "ex_session" in event else event["session"])
@@ -114,7 +133,7 @@ def prepare_market_context(market_frame: pd.DataFrame) -> PreparedMarketContext:
     for day, stock, open_price, close_price, halted in zip(dates, stocks, opening, closing, suspended, strict=True):
         prices.setdefault(day, {})[stock] = MappingProxyType({"open": open_price, "close": close_price, "suspended": halted})
     actions: dict[pd.Timestamp, list[Mapping[str, Any]]] = {}
-    for event in attrs.get("corporate_actions", []):
+    for event in market_actions(market_frame):
         day = event_session(event)
         fields = {key: event[key] for key in ("event_id", "security_id", "type", "ratio", "per_share", "terminal_value", "pay_session") if key in event}
         actions.setdefault(day, []).append(_freeze_value(fields))

@@ -177,7 +177,7 @@ class Task(Base):
     parent_task_id = Column(String(12), ForeignKey("tasks.id"), nullable=True)
     params = Column(JSON, nullable=True)
     expression = Column(Text, nullable=True)
-    result = Column(JSON, nullable=True)
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=_utcnow, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)

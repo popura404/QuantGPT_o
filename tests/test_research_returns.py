@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from quantgpt.backtest import _calc_ic_series, run_factor_backtest
-from quantgpt.research.returns import annualized_return, forward_total_returns
+from quantgpt.research.returns import annualized_return, daily_asset_returns, forward_total_returns
 from quantgpt.strategy.backtest import StrategyBacktestRequest, _strategy_metrics, run_strategy_backtest
 from quantgpt.strategy.spec import example_strategy_spec_v1
 
@@ -101,6 +101,21 @@ def test_explicit_calendar_gap_never_compresses_the_forward_horizon():
     assert labels[frame["trade_date"] == sorted(frame["trade_date"].unique())[1]].notna().all()
     _, rank_ic = _calc_ic_series(frame, 1)
     assert first_day not in rank_ic.index
+
+
+@pytest.mark.parametrize("basis", ["raw", "unknown", "split_adjusted"])
+def test_daily_returns_with_empty_ledger_and_missing_session(basis):
+    sessions = pd.bdate_range("2024-01-02", periods=4)
+    frame = pd.DataFrame({"trade_date": sessions[[0, 2, 3]], "stock_code": ["A"] * 3, "close": [100., 110., 121.]})
+    frame.attrs.update(adjustment=basis, corporate_actions=[], calendar_sessions=sessions)
+    returns = daily_asset_returns(frame)
+    assert pd.isna(returns.iloc[0])
+    if basis == "split_adjusted":
+        # Existing adjusted panels retain their observed-close return convention.
+        assert returns.iloc[1] == pytest.approx(.1)
+    else:
+        assert pd.isna(returns.iloc[1])
+    assert returns.iloc[2] == pytest.approx(.1)
 
 
 def test_multiple_actions_preserve_order_and_count_unpaid_dividends_in_wealth():

@@ -8,6 +8,8 @@ from typing import Literal, cast
 import numpy as np
 import pandas as pd
 
+from .research.returns import daily_asset_returns
+
 
 @dataclass(frozen=True)
 class DataQualityConfig:
@@ -217,7 +219,7 @@ def run_data_quality_gate(
             invalid_masks.append(bad_amount)
 
     close_for_returns = df["close"].where(~bad_price)
-    decimal_ret = close_for_returns.groupby(df["stock_code"]).pct_change(fill_method=None)
+    decimal_ret = daily_asset_returns(df[["stock_code", "trade_date", "close"]].assign(close=close_for_returns))
     bad_extreme = decimal_ret.abs() > config.max_abs_daily_ret
     bad_extreme = bad_extreme.fillna(False)
     if int(bad_extreme.sum()) > 0:

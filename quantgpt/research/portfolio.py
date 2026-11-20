@@ -28,8 +28,10 @@ from quantgpt.research.evaluations import (
     verify_frozen_config,
     write_artifact,
 )
+from quantgpt.research.ledger import LedgerError, market_actions
 from quantgpt.research.market_inputs import check_signal_availability, price_basis
 from quantgpt.research.projects import require_project_member
+from quantgpt.research.returns import daily_asset_returns
 
 
 class PortfolioOptimizationConfig(BaseModel):
@@ -136,7 +138,19 @@ def optimize_portfolio(signals: pd.DataFrame, market_frame: pd.DataFrame,
         return _blocked("RISK_DATA_UNAVAILABLE", "The cutoff session has no complete observed prices")
     if (prices <= 0).to_numpy().any():
         return _blocked("RISK_DATA_UNAVAILABLE", "Observed prices must be positive")
-    returns = prices.pct_change(fill_method=None).replace([np.inf, -np.inf], np.nan).dropna()
+    try:
+        actions = market_actions(frame)
+    except LedgerError as exc:
+        return _blocked(exc.error_code, str(exc))
+    covered_calendar = frame.attrs.get("corporate_actions") is not None and "calendar_sessions" in frame.attrs
+    if (actions or covered_calendar) and price_basis(frame) == "raw":
+        history = frame.loc[frame["session"].isin(prices.index.to_list())].copy()
+        history["trade_date"], history["stock_code"] = history["session"], history["security_id"]
+        history["daily_return"] = daily_asset_returns(history)
+        returns = history.pivot(index="session", columns="security_id", values="daily_return").reindex_like(prices)
+    else:
+        returns = prices.pct_change(fill_method=None)
+    returns = returns.replace([np.inf, -np.inf], np.nan).dropna()
     if len(returns) < config.min_observations:
         return _blocked("RISK_DATA_UNAVAILABLE", "Insufficient common past return observations; gaps are not filled")
     current = cast(pd.DataFrame, frame[frame["session"] == cutoff]).set_index("security_id").reindex(assets)

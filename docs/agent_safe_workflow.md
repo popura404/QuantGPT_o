@@ -104,6 +104,20 @@ Alpaca 请求固定为 `feed=sip`、`adjustment=raw` 和 `timeframe=1Day`，通�
 
 默认基本面字段为 `total_assets`、`total_liabilities`，也可用 `QUANTGPT_US_FUNDAMENTAL_FIELDS` 配置逗号分隔的字段列表。命令行 `--fundamental-fields` 覆盖该配置，可选 `reported_common_shares`、`net_income`、`diluted_eps_period`。后两者取明确的离散季度，原财务期间随字段保存。仅做价格研究时传 `--price-only`，此时清单可省略 `issuer_cik`。
 
+### 为原始日线补公司行动
+
+首次冻结或使用相同缓存重新冻结时，可在上面命令末尾加入 `--corporate-actions-file /path/to/actions.json`。该文件使用外部证据包中 `corporate_actions` 一节的内容作为 JSON 根对象。提供以下三项。
+
+| JSON 键 | 内容 |
+| --- | --- |
+| `provenance` | 将实际来源、数据集、版本、原始发布物和使用授权分别填入 `provider`、`dataset`、`release`、`source_ref`、`license_ref`。 |
+| `coverage` | 每项包含 `security_id`、含首尾的 `start`、`end` 和 `event_types`。证券编号须匹配行情清单。每只证券在所需区间内均须有拆股、现金股息、退市结算三类覆盖。 |
+| `events` | 每项包含 `event_id`、`security_id`、`type`、`ex_session`。拆股 `split` 的 `ratio` 是每股换得的新股数。现金股息 `cash_dividend` 需要美元每股金额 `per_share` 和支付日 `pay_session`。退市 `delisting` 需要美元每股终值 `terminal_value`。同一证券同日的拆股和股息依来源记录的权利计算顺序排列，外部核验按股息发放依据的股数检查这一顺序。 |
+
+只有来源明确覆盖且期间确实无事件时，才可提供空 `events`。补入的事件、来源标识及文件 SHA-256 随新快照保存。仅有裸行情的 Alpaca 快照仍可用来检查原始行情，计算收益或模拟持仓时会返回 `ACTION_LEDGER_REQUIRED`。
+
+跨交易日的价格或成交量因子可显式使用 `split_open`、`split_high`、`split_low`、`split_close`、`split_volume`。这些列以各证券首个观测日的股本单位为基准，按生效日累计拆股；`open`、`high`、`low`、`close`、`volume` 保留原始口径。拆股列不含现金分配。行动覆盖完整的快照同时发布 `returns` 字段。它以小数表示截至当日收盘的单日持有收益，计入拆股和应得现金，各证券首日留空。使用 `rank(returns)` 时从该快照的 `field_catalog` 取 `returns` 契约传入因子评价。远期收益标签也按事件计算。事后取得的事件版本仍需独立核对历史可得性。该入口生成 `research_only` 快照，正式验收另需价格、历史成员、公司行动及总回报基准的参考资料。
+
 普通 `us` / `us_equity` 适配器也可通过 `QUANTGPT_US_SECURITIES_FILE=data/us_securities.json` 使用同一清单。其默认价格选择为 `QUANTGPT_US_PRICE_PROVIDER=alpaca_sip`，同时加载配置的 SEC 字段，CIK 映射须覆盖清单内全部证券。将 `QUANTGPT_US_FUNDAMENTAL_FIELDS` 设为空值可选择价格数据。既有 Alpha Vantage 探索场景可显式选择 `QUANTGPT_US_PRICE_PROVIDER=alpha_vantage`。使用 IBM demo 纯价格场景时，需将 `.env` 中的 `QUANTGPT_US_FUNDAMENTAL_FIELDS` 设为空值；显式请求 SEC 字段时仍须提供全部证券的 CIK，缺少映射会拒绝请求。
 
 每个财务字段带有 `<field>_available_at`、`<field>_revision_id`、财务期间和披露日期。日线决策按 `decision_at` 选择当时已披露的版本，未指定时使用交易所当日收盘。SEC 只有披露日期时，本仓库保守地以次日纽约时间 00:00 作为可用时刻；此前没有可用观测的日期保留缺失值。若任一证券的请求字段在整个日期区间均无已披露观测，准备命令返回 `SEC_FIELD_COVERAGE_INCOMPLETE` 并停止发布快照，需核对字段或研究范围。因子字段契约应按实际期间、单位和可用时间声明，净利润或每股收益的季度值需保留季度语义。构造跨字段财务比率前，核对各字段的财务期间是否一致。`reported_common_shares` 保留发行人披露的股数口径。

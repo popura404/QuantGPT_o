@@ -1,4 +1,4 @@
-"""Mock-only US preparation, immutable replay, and project sharing; no factor runs."""
+"""Mock-only US preparation, immutable replay, and shared project evaluations."""
 
 import json
 from datetime import date, datetime, timezone
@@ -8,11 +8,17 @@ import pandas as pd
 import pytest
 from sqlalchemy import func, select
 
+from quantgpt.data_quality import run_data_quality_gate
 from quantgpt.data_snapshots import load_frozen_market_frame
+from quantgpt.expression_parser import parse_expression
 from quantgpt.models import Experiment, Task
+from quantgpt.research.contracts import EvaluationConfigV1, FactorDefinitionV1
+from quantgpt.research.evaluations import evaluate_factor_batch
+from quantgpt.research.ledger import prepare_market_context
 from quantgpt.research.market_inputs import check_signal_availability
 from quantgpt.research.preparation import get_project_preparation, list_project_imports, register_project_snapshot
 from quantgpt.research.projects import create_project
+from quantgpt.research.returns import daily_asset_returns, forward_total_returns
 from quantgpt.strategy.us_adapter import USResearchAdapter
 from quantgpt.us_data.alpaca import AlpacaDailyProvider
 from quantgpt.us_data.cache import CachedJSONClient
@@ -39,9 +45,12 @@ def prepared(tmp_path):
             assert request.url.params["feed"] == "sip" and request.url.params["asof"] == "-"
             ticker = request.url.params["symbols"]
             days = ("01", "03") if state["missing"] else ("01", "02", "03")
-            return httpx.Response(200, json={"bars": {ticker: [
-                {"t": f"2024-05-{day}T04:00:00Z", "o": 10, "h": 12, "l": 9, "c": state["close"], "v": 1000}
-                for day in days]}, "next_page_token": None})
+            bars = []
+            for day in days:
+                scale = 0.5 if state.get("split") and ticker == "AAA" and day >= "02" else 1
+                bars.append({"t": f"2024-05-{day}T04:00:00Z", "o": 10 * scale, "h": 12 * scale,
+                             "l": 9 * scale, "c": state["close"] * scale, "v": 1000 / scale})
+            return httpx.Response(200, json={"bars": {ticker: bars}, "next_page_token": None})
         assert request.url.host == "data.sec.gov"
         facts = {tag: {"units": {"USD": [
             {"end": "2024-03-31", "filed": "2024-05-10" if tag in state["unpublished_tags"] else filed,
@@ -55,13 +64,13 @@ def prepared(tmp_path):
 
     client = httpx.Client(transport=httpx.MockTransport(respond))
 
-    def run(*, refresh=False, fields=("total_assets", "total_liabilities")):
+    def run(*, refresh=False, fields=("total_assets", "total_liabilities"), actions=None):
         http = CachedJSONClient(tmp_path / "responses", refresh=refresh, client=client, gate=RequestGate(0))
         prices = AlpacaDailyProvider("mock-key", "mock-secret", http=http,
                                      now=lambda: datetime(2025, 1, 1, tzinfo=timezone.utc))
         sec = SECCompanyFactsProvider("Test mock@example.org", http=http) if fields else None
         return prepare_us_snapshot(path, date(2024, 5, 1), date(2024, 5, 3), tmp_path,
-                                   prices=prices, fundamentals=sec, fields=fields)
+                                   prices=prices, fundamentals=sec, fields=fields, corporate_actions_file=actions)
 
     yield run, calls, state, path
     client.close()
@@ -117,6 +126,89 @@ def test_price_only_needs_no_sec_identity(prepared):
     result = run(fields=())
     assert len(calls) == 2 and result["source"] == "alpaca_sip"
     assert {field["name"] for field in result["field_catalog"]} == {"open", "high", "low", "close", "volume"}
+
+
+def test_legacy_alpaca_snapshot_rejects_missing_actions(prepared, tmp_path):
+    run, *_ = prepared
+    panel = load_frozen_market_frame(run(fields=())["manifest_id"], tmp_path / "imports")
+    for operation in (prepare_market_context, daily_asset_returns, lambda frame: forward_total_returns(frame, 1)):
+        with pytest.raises(ValueError, match="ACTION_LEDGER_REQUIRED"):
+            operation(panel)
+
+
+@pytest.fixture
+def action_release():
+    return {
+        "provenance": {"provider": "mock", "dataset": "actions", "release": "v1",
+                       "source_ref": "test-source", "license_ref": "test-license"},
+        "events": [{"ex_session": "2024-05-02", "type": "split", "event_id": "split-a",
+                    "security_id": "common:AAA", "ratio": 2}],
+        "coverage": [{"security_id": "common:" + ticker, "start": "2024-05-01", "end": "2024-05-03",
+                      "event_types": ["split", "cash_dividend", "delisting"]} for ticker in ("AAA", "BBB")],
+    }
+
+
+def test_freeze_operator_actions_and_replay(prepared, tmp_path, action_release):
+    run, _, state, _ = prepared
+    state["split"] = True
+    original = run(fields=())["manifest_id"]
+    path = tmp_path / "actions.json"
+    release = action_release
+    path.write_text(json.dumps(release))
+    result = run(fields=(), actions=path)
+    assert result["manifest_id"] != original and result["research_only"]
+    panel = load_frozen_market_frame(result["manifest_id"], tmp_path / "imports")
+    aaa = panel.loc[panel.ticker == "AAA"]
+    assert aaa.close.tolist() == [10, 5, 5]
+    assert parse_expression("split_close")(aaa).tolist() == [10, 10, 10]
+    assert aaa.split_volume.tolist() == [1000, 1000, 1000]
+    assert panel.loc[panel.ticker == "BBB", "split_close"].tolist() == [10, 10, 10]
+    assert forward_total_returns(aaa, 1).iloc[0] == pytest.approx(0)
+    assert daily_asset_returns(aaa).iloc[1] == pytest.approx(0)
+    assert parse_expression("returns")(aaa).iloc[1] == pytest.approx(0)
+    assert pd.isna(aaa["returns"].iloc[0])
+    assert aaa["returns"].iloc[1:].tolist() == [0.0, 0.0]
+    _, quality = run_data_quality_gate(panel.assign(amount=panel.close * panel.volume))
+    assert all(issue["rule"] != "extreme_return" for issue in quality["issues"])
+    assert prepare_market_context(panel).actions_by_session[pd.Timestamp("2024-05-02")][0]["ratio"] == 2
+    assert panel.attrs["data_snapshot"]["source_metadata"]["corporate_action_release"]["event_count"] == 1
+    release["coverage"].pop()
+    path.write_text(json.dumps(release))
+    with pytest.raises(ValueError, match="ACTION_COVERAGE_INCOMPLETE"):
+        run(fields=(), actions=path)
+
+
+@pytest.mark.asyncio
+async def test_project_evaluates_returns_from_covered_snapshot(prepared, tmp_path, action_release, db_session, test_user):
+    run, _, state, _ = prepared
+    state["split"] = True
+    for day in ("2024-05-02", "2024-05-03"):
+        action_release["events"].append({"ex_session": day, "type": " cash_dividend ", "event_id": f" {day} ",
+                                         "security_id": " common:AAA ", "per_share": 0.1, "pay_session": day})
+    path = tmp_path / "actions.json"
+    path.write_text(json.dumps(action_release))
+    frozen = run(fields=(), actions=path)
+    private = tmp_path / "private"
+    project = await create_project(db_session, test_user.id, name="Covered US returns", market="us")
+    registration = await register_project_snapshot(db_session, test_user.id, project.id, frozen["manifest_id"],
+                                                    snapshot_root=private, import_root=tmp_path / "imports")
+    field = next(item for item in registration["field_catalog"] if item["name"] == "returns")
+    assert field["unit"] == "fraction" and field["adjustment"] == "total_return"
+    panel = load_frozen_market_frame(frozen["manifest_id"], private)
+    assert panel.loc[panel.ticker == "AAA", "returns"].iloc[1:].tolist() == pytest.approx([0.02, 0.02])
+    definition = FactorDefinitionV1.model_validate({"expression": "rank(returns)", "fields": [field]})
+    config = EvaluationConfigV1.model_validate({
+        "backend": "local", "direction": "higher_is_better", "scope": registration["scope"],
+        "data_inputs": [registration["data_input"]],
+        "window": {"start_session": "2024-05-02", "end_session": "2024-05-03",
+                   "split_id": "test_returns", "split_hash": "a" * 64},
+        "simulation_config": {"currency": "USD", "rebalance_anchor_session": "2024-05-01",
+                              "rebalance_every_sessions": 1},
+        "engine": {"engine": "python", "version": "test", "code_version": "test"},
+    })
+    batch = await evaluate_factor_batch(db_session, test_user.id, project.id, [definition], config, snapshot_root=private)
+    evaluation = batch["evaluations"][0]
+    assert evaluation["summary"]["performance_observed"], evaluation["failure_reason"]
 
 
 def test_initial_unpublished_sec_values_remain_missing(prepared, tmp_path):
